@@ -391,7 +391,7 @@
           </div>
           
           <!-- 分页组件 -->
-          <div class="pagination-container" v-if="accountsStore.totalCount > accountsStore.pagination.pageSize">
+          <div class="pagination-container" v-if="accountsStore.totalCount > accountsStore.pagination.pageSizes[0]">
             <el-pagination
               v-model:current-page="accountsStore.pagination.currentPage"
               v-model:page-size="accountsStore.pagination.pageSize"
@@ -2537,6 +2537,9 @@ onUnmounted(() => {
 .main-content {
   background: #f5f7fa;
   padding: 8px 6px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .loading-container,
@@ -2549,9 +2552,14 @@ onUnmounted(() => {
 
 .accounts-container {
   width: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .accounts-grid {
+  flex: 1;
+  overflow-y: auto;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
   gap: 8px;
