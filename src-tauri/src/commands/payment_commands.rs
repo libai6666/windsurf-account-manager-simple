@@ -1035,20 +1035,31 @@ pub async fn open_external_link(url: String) -> Result<(), String> {
 /// 在浏览器无痕模式中打开链接
 #[command]
 pub async fn open_external_link_incognito(url: String) -> Result<(), String> {
+    open_in_incognito_new_window(&url)
+}
+
+/// 在浏览器无痕模式的新窗口中打开链接（每个链接独立窗口）
+#[command]
+pub async fn open_external_link_incognito_new_window(url: String) -> Result<(), String> {
+    open_in_incognito_new_window(&url)
+}
+
+/// 内部函数：在无痕模式的新窗口中打开链接
+fn open_in_incognito_new_window(url: &str) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        // 尝试使用 Chrome 无痕模式
+        // 尝试使用 Chrome 无痕模式 + 新窗口
         let chrome_result = Command::new("cmd")
-            .args(&["/C", "start", "chrome", "--incognito", &url])
+            .args(&["/C", "start", "chrome", "--incognito", "--new-window", url])
             .spawn();
         
         if chrome_result.is_ok() {
             return Ok(());
         }
         
-        // 如果 Chrome 失败，尝试 Edge 无痕模式
+        // 如果 Chrome 失败，尝试 Edge 无痕模式 + 新窗口
         let edge_result = Command::new("cmd")
-            .args(&["/C", "start", "msedge", "-inprivate", &url])
+            .args(&["/C", "start", "msedge", "-inprivate", "--new-window", url])
             .spawn();
         
         if edge_result.is_ok() {
@@ -1057,16 +1068,16 @@ pub async fn open_external_link_incognito(url: String) -> Result<(), String> {
         
         // 如果都失败，回退到默认浏览器
         Command::new("cmd")
-            .args(&["/C", "start", "", &url])
+            .args(&["/C", "start", "", url])
             .spawn()
             .map_err(|e| e.to_string())?;
     }
     
     #[cfg(target_os = "macos")]
     {
-        // macOS 上尝试使用 Chrome 无痕模式
+        // macOS 上尝试使用 Chrome 无痕模式 + 新窗口
         let chrome_result = Command::new("open")
-            .args(&["-na", "Google Chrome", "--args", "--incognito", &url])
+            .args(&["-na", "Google Chrome", "--args", "--incognito", "--new-window", url])
             .spawn();
         
         if chrome_result.is_ok() {
@@ -1075,16 +1086,16 @@ pub async fn open_external_link_incognito(url: String) -> Result<(), String> {
         
         // 回退到默认浏览器
         Command::new("open")
-            .arg(&url)
+            .arg(url)
             .spawn()
             .map_err(|e| e.to_string())?;
     }
     
     #[cfg(target_os = "linux")]
     {
-        // Linux 上尝试使用 Chrome 无痕模式
+        // Linux 上尝试使用 Chrome 无痕模式 + 新窗口
         let chrome_result = Command::new("google-chrome")
-            .args(&["--incognito", &url])
+            .args(&["--incognito", "--new-window", url])
             .spawn();
         
         if chrome_result.is_ok() {
@@ -1093,7 +1104,7 @@ pub async fn open_external_link_incognito(url: String) -> Result<(), String> {
         
         // 尝试 chromium
         let chromium_result = Command::new("chromium")
-            .args(&["--incognito", &url])
+            .args(&["--incognito", "--new-window", url])
             .spawn();
         
         if chromium_result.is_ok() {

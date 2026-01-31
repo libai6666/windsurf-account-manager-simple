@@ -180,6 +180,17 @@
             />
           </el-tooltip>
           
+          <!-- 批量获取试用链接 -->
+          <el-tooltip content="批量获取试用链接" placement="bottom" v-if="accountsStore.selectedAccounts.size > 0">
+            <el-button
+              type="warning"
+              :icon="Link"
+              circle
+              :loading="isBatchGettingTrialLinks"
+              @click="handleBatchGetTrialLinks"
+            />
+          </el-tooltip>
+          
           <!-- 导出选中账号 -->
           <el-tooltip content="导出选中账号" placement="bottom" v-if="accountsStore.selectedAccounts.size > 0">
             <el-button
@@ -421,6 +432,13 @@
     <!-- 虚拟卡生成对话框 -->
     <CardGeneratorDialog v-model="showCardGeneratorDialog" />
     
+    <!-- 批量试用链接人机验证对话框 -->
+    <TurnstileDialog
+      v-model:visible="showBatchTurnstileDialog"
+      @success="handleBatchTurnstileSuccess"
+      @cancel="handleBatchTurnstileCancel"
+    />
+    
     <!-- 账单对话框（传入当前查看的账号ID和数据） -->
     <BillingDialog 
       v-if="uiStore.currentViewingAccountId"
@@ -589,7 +607,8 @@ import {
   Timer,
   Switch,
   SortUp,
-  SortDown
+  SortDown,
+  Link
 } from '@element-plus/icons-vue';
 import { useAccountsStore, useSettingsStore, useUIStore } from '@/store';
 import { apiService, settingsApi, accountApi } from '@/api';
@@ -609,6 +628,7 @@ import BatchUpdatePlanDialog from '@/components/BatchUpdatePlanDialog.vue';
 import TagManageDialog from '@/components/TagManageDialog.vue';
 import AutoResetDialog from '@/components/AutoResetDialog.vue';
 import CardGeneratorDialog from '@/components/CardGeneratorDialog.vue';
+import TurnstileDialog from '@/components/TurnstileDialog.vue';
 
 const accountsStore = useAccountsStore();
 const settingsStore = useSettingsStore();
@@ -631,6 +651,12 @@ const batchGroupTarget = ref('');
 const isBatchUpdatingGroup = ref(false);
 const showAutoResetDialog = ref(false);
 const showCardGeneratorDialog = ref(false);
+const isBatchGettingTrialLinks = ref(false);
+const batchTrialLinkQueue = ref<string[]>([]);
+const currentBatchTrialIndex = ref(0);
+const showBatchTurnstileDialog = ref(false);
+const pendingBatchTurnstileResolve = ref<((token: string) => void) | null>(null);
+const currentBatchAccount = ref<string>('');
 
 // 排序相关
 const currentSortField = ref<string>('custom');
@@ -1135,11 +1161,42 @@ async function handleBatchImportConfirm(
   
   const modeLabel = mode === 'refresh_token' ? 'Refresh Token' : '邮箱密码';
   
-  // 显示进度提示
+  // 过滤已存在的账号（邮箱密码模式按邮箱过滤，Refresh Token模式按token过滤）
+  const existingEmails = new Set(accountsStore.accounts.map(a => a.email.toLowerCase()));
+  const existingTokens = new Set(accountsStore.accounts.map(a => a.refresh_token).filter(Boolean));
+  
+  let skippedCount = 0;
+  const filteredAccounts = accountsToImport.filter(item => {
+    if (mode === 'refresh_token' && item.refreshToken) {
+      // Refresh Token 模式：检查 token 是否已存在
+      if (existingTokens.has(item.refreshToken)) {
+        skippedCount++;
+        return false;
+      }
+    } else {
+      // 邮箱密码模式：检查邮箱是否已存在
+      if (existingEmails.has(item.email.toLowerCase())) {
+        skippedCount++;
+        return false;
+      }
+    }
+    return true;
+  });
+  
+  // 如果所有账号都已存在
+  if (filteredAccounts.length === 0) {
+    ElMessage.warning(`所有 ${accountsToImport.length} 个账号都已存在，无需导入`);
+    showBatchImportDialog.value = false;
+    batchImportDialogRef.value?.resetImporting();
+    return;
+  }
+  
+  // 显示进度提示（包含跳过信息）
+  const skipInfo = skippedCount > 0 ? `，跳过 ${skippedCount} 个已存在` : '';
   let progressMsg = ElMessage({
     message: unlimitedConcurrent
-      ? `正在全量并发导入 ${accountsToImport.length} 个账号（${modeLabel}模式）...`
-      : `正在导入 ${accountsToImport.length} 个账号（${modeLabel}模式，并发${concurrencyLimit}）...`,
+      ? `正在全量并发导入 ${filteredAccounts.length} 个账号（${modeLabel}模式）${skipInfo}...`
+      : `正在导入 ${filteredAccounts.length} 个账号（${modeLabel}模式，并发${concurrencyLimit}）${skipInfo}...`,
     duration: 0,
     icon: Loading
   });
@@ -1183,19 +1240,19 @@ async function handleBatchImportConfirm(
   try {
     if (unlimitedConcurrent) {
       // 全量并发导入
-      const allResults = await Promise.all(accountsToImport.map(item => importTask(item)));
+      const allResults = await Promise.all(filteredAccounts.map(item => importTask(item)));
       results.push(...allResults);
     } else {
       // 分批并发处理
-      for (let i = 0; i < accountsToImport.length; i += concurrencyLimit) {
-        const batch = accountsToImport.slice(i, i + concurrencyLimit);
+      for (let i = 0; i < filteredAccounts.length; i += concurrencyLimit) {
+        const batch = filteredAccounts.slice(i, i + concurrencyLimit);
         const batchResults = await Promise.all(batch.map(item => importTask(item)));
         results.push(...batchResults);
         
         // 更新进度
         progressMsg.close();
         progressMsg = ElMessage({
-          message: `导入进度: ${results.length}/${accountsToImport.length}`,
+          message: `导入进度: ${results.length}/${filteredAccounts.length}`,
           duration: 0,
           icon: Loading
         });
@@ -1273,6 +1330,9 @@ async function handleBatchImportConfirm(
       if (autoLogin && loginSuccessCount > 0) {
         message += `，${loginSuccessCount} 个已登录`;
       }
+      if (skippedCount > 0) {
+        message += `，跳过 ${skippedCount} 个已存在`;
+      }
       if (failedAccounts.length > 0) {
         message += `，失败 ${failedAccounts.length} 个`;
       }
@@ -1284,6 +1344,9 @@ async function handleBatchImportConfirm(
       await accountsStore.loadAccounts();
     } else {
       let errorMsg = '没有成功导入任何账号';
+      if (skippedCount > 0) {
+        errorMsg += `（跳过 ${skippedCount} 个已存在）`;
+      }
       if (failedAccounts.length > 0) {
         const details = failedAccounts.slice(0, 3).map(f => f.email).join(', ');
         errorMsg += `\n失败账号: ${details}${failedAccounts.length > 3 ? '...' : ''}`;
@@ -1384,6 +1447,185 @@ async function handleBatchRefresh() {
   } catch (error) {
     progressLoading.close();
     ElMessage.error(`批量刷新失败: ${error}`);
+  }
+}
+
+// 批量获取试用链接
+async function handleBatchGetTrialLinks() {
+  const selectedIds = Array.from(accountsStore.selectedAccounts);
+  if (selectedIds.length === 0) {
+    ElMessage.warning('请先选择账号');
+    return;
+  }
+  
+  // 获取选中的账号
+  const selectedAccounts = accountsStore.accounts.filter(a => selectedIds.includes(a.id));
+  
+  // 从设置中读取订阅参数
+  const teamsTier = settingsStore.settings?.subscriptionPlan ?? 2; // 默认 Pro
+  const paymentPeriod = settingsStore.settings?.paymentPeriod ?? 1; // 默认月付
+  const teamName = teamsTier === 1 ? (settingsStore.settings?.teamName || undefined) : undefined;
+  const seatCount = settingsStore.settings?.seatCount ?? 1;
+  
+  // Pro 计划需要 Turnstile 验证
+  const needsTurnstile = teamsTier === 2;
+  
+  if (needsTurnstile) {
+    // Pro 计划：提示用户需要逐个进行人机验证
+    try {
+      await ElMessageBox.confirm(
+        `已选择 ${selectedAccounts.length} 个账号，Pro 计划需要逐个进行人机验证。\n\n每个账号验证成功后会自动在独立的浏览器窗口中打开支付链接。\n\n是否继续？`,
+        '批量获取试用链接',
+        {
+          confirmButtonText: '开始',
+          cancelButtonText: '取消',
+          type: 'info'
+        }
+      );
+    } catch {
+      return;
+    }
+  }
+  
+  isBatchGettingTrialLinks.value = true;
+  batchTrialLinkQueue.value = selectedIds;
+  currentBatchTrialIndex.value = 0;
+  
+  const results: Array<{ email: string; success: boolean; error?: string }> = [];
+  
+  // 显示进度提示
+  let progressMsg = ElMessage({
+    message: `正在批量获取试用链接 (0/${selectedAccounts.length})...`,
+    duration: 0,
+    icon: Loading
+  });
+  
+  try {
+    for (let i = 0; i < selectedAccounts.length; i++) {
+      const account = selectedAccounts[i];
+      currentBatchTrialIndex.value = i;
+      
+      // 更新进度
+      progressMsg.close();
+      progressMsg = ElMessage({
+        message: `正在获取试用链接 (${i + 1}/${selectedAccounts.length}): ${account.email}`,
+        duration: 0,
+        icon: Loading
+      });
+      
+      try {
+        // 检查账号是否有 token
+        if (!account.token) {
+          results.push({ email: account.email, success: false, error: '无Token' });
+          continue;
+        }
+        
+        let turnstileToken = '';
+        
+        // Pro 计划需要 Turnstile 验证
+        if (needsTurnstile) {
+          // 弹出 Turnstile 验证对话框并等待用户完成验证
+          turnstileToken = await showTurnstileAndWait(account.email);
+          if (!turnstileToken) {
+            results.push({ email: account.email, success: false, error: '验证取消' });
+            continue;
+          }
+        }
+        
+        // 使用 API 获取支付链接，然后在外部浏览器中打开
+        const result = await apiService.getTrialPaymentLink(
+          account.id,
+          teamsTier,
+          paymentPeriod,
+          teamName,
+          teamsTier === 1 ? seatCount : undefined,
+          turnstileToken || undefined
+        );
+        
+        if (result.success && result.stripe_url) {
+          // 在外部浏览器中打开（无痕模式）
+          const browserMode = settingsStore.settings?.browserMode ?? 'incognito';
+          const openCommand = browserMode === 'incognito' ? 'open_external_link_incognito' : 'open_external_link';
+          
+          try {
+            await invoke(openCommand, { url: result.stripe_url });
+            results.push({ email: account.email, success: true });
+          } catch (err) {
+            results.push({ email: account.email, success: false, error: '打开浏览器失败' });
+          }
+        } else {
+          results.push({ email: account.email, success: false, error: result.error || '获取失败' });
+        }
+        
+        // 短暂延迟，避免请求过快
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+      } catch (error: any) {
+        results.push({ email: account.email, success: false, error: error.toString() });
+      }
+    }
+    
+    progressMsg.close();
+    
+    // 统计结果
+    const successCount = results.filter(r => r.success).length;
+    const failedCount = results.filter(r => !r.success).length;
+    
+    if (failedCount === 0) {
+      ElMessage.success(`批量获取完成：成功 ${successCount} 个`);
+    } else {
+      const failedItems = results.filter(r => !r.success).slice(0, 5);
+      const failedDetails = failedItems.map(f => `${f.email}: ${f.error}`).join('\n• ');
+      const moreCount = results.filter(r => !r.success).length - 5;
+      
+      let message = `获取完成\n成功: ${successCount}/${results.length}\n失败: ${failedCount}/${results.length}`;
+      if (failedItems.length > 0) {
+        message += `\n\n失败详情:\n• ${failedDetails}`;
+        if (moreCount > 0) {
+          message += `\n... 还有 ${moreCount} 个失败`;
+        }
+      }
+      
+      ElMessageBox.alert(message, '批量获取结果', {
+        type: failedCount === results.length ? 'error' : 'warning',
+        confirmButtonText: '确定'
+      });
+    }
+    
+  } catch (error) {
+    progressMsg.close();
+    ElMessage.error(`批量获取失败: ${error}`);
+  } finally {
+    isBatchGettingTrialLinks.value = false;
+    batchTrialLinkQueue.value = [];
+    currentBatchTrialIndex.value = 0;
+  }
+}
+
+// 显示 Turnstile 验证对话框并等待用户完成
+function showTurnstileAndWait(accountEmail: string): Promise<string> {
+  return new Promise((resolve) => {
+    currentBatchAccount.value = accountEmail;
+    pendingBatchTurnstileResolve.value = resolve;
+    showBatchTurnstileDialog.value = true;
+  });
+}
+
+// Turnstile 验证成功回调
+function handleBatchTurnstileSuccess(token: string) {
+  showBatchTurnstileDialog.value = false;
+  if (pendingBatchTurnstileResolve.value) {
+    pendingBatchTurnstileResolve.value(token);
+    pendingBatchTurnstileResolve.value = null;
+  }
+}
+
+// Turnstile 验证取消回调
+function handleBatchTurnstileCancel() {
+  showBatchTurnstileDialog.value = false;
+  if (pendingBatchTurnstileResolve.value) {
+    pendingBatchTurnstileResolve.value('');
+    pendingBatchTurnstileResolve.value = null;
   }
 }
 
