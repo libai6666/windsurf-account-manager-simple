@@ -342,6 +342,7 @@
   <!-- Turnstile 验证对话框 -->
   <TurnstileDialog
     :visible="showTurnstileDialog"
+    :auto-submit="settingsStore.settings?.autoOpenBrowser ?? true"
     @update:visible="showTurnstileDialog = $event"
     @success="handleTurnstileSuccess"
     @cancel="showTurnstileDialog = false"

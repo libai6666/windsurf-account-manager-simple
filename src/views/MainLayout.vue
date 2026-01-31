@@ -435,6 +435,7 @@
     <!-- 批量试用链接人机验证对话框 -->
     <TurnstileDialog
       v-model:visible="showBatchTurnstileDialog"
+      :auto-submit="true"
       @success="handleBatchTurnstileSuccess"
       @cancel="handleBatchTurnstileCancel"
     />
@@ -1599,6 +1600,8 @@ async function handleBatchGetTrialLinks() {
     isBatchGettingTrialLinks.value = false;
     batchTrialLinkQueue.value = [];
     currentBatchTrialIndex.value = 0;
+    // 清理选中状态，关闭全选任务栏
+    accountsStore.clearSelection();
   }
 }
 

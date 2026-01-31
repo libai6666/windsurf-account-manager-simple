@@ -53,6 +53,7 @@ const TURNSTILE_SITE_KEY = '0x4AAAAAAA447Bur1xJStKg5';
 
 const props = defineProps<{
   visible: boolean;
+  autoSubmit?: boolean; // 验证成功后是否自动提交，默认 false
 }>();
 
 const emit = defineEmits<{
@@ -155,6 +156,15 @@ async function loadTurnstile() {
           console.log('[Turnstile] Verification success');
           turnstileToken.value = token;
           status.value = 'success';
+          // 只有 autoSubmit 为 true 时才自动触发获取链接
+          if (props.autoSubmit) {
+            setTimeout(() => {
+              if (turnstileToken.value) {
+                isSubmitting.value = true;
+                emit('success', turnstileToken.value);
+              }
+            }, 800);
+          }
         },
         'error-callback': () => {
           console.error('[Turnstile] Verification failed');
