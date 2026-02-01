@@ -45,7 +45,7 @@ export const useAccountsStore = defineStore('accounts', () => {
   // 辅助函数：判断是否为付费计划
   function isPaidPlan(account: Account): boolean {
     const planName = account.plan_name?.toLowerCase();
-    return !!planName && planName !== 'free';
+    return !!planName && planName !== 'free' && planName !== 'trial';
   }
 
   // 辅助函数：获取账户状态类型

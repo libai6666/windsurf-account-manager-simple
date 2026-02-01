@@ -560,10 +560,10 @@ const showTurnstileDialog = ref(false);
 const pendingTurnstileToken = ref('');
 const seatsResultData = ref<any>(null);
 
-// 判断是否为付费计划（非 Free）
+// 判断是否为付费计划（非 Free 和 Trial）
 const isPaidPlan = computed(() => {
   const planName = props.account.plan_name?.toLowerCase();
-  return planName && planName !== 'free';
+  return planName && planName !== 'free' && planName !== 'trial';
 });
 
 const statusClass = computed(() => {

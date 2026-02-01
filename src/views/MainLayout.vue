@@ -630,6 +630,7 @@ import TagManageDialog from '@/components/TagManageDialog.vue';
 import AutoResetDialog from '@/components/AutoResetDialog.vue';
 import CardGeneratorDialog from '@/components/CardGeneratorDialog.vue';
 import TurnstileDialog from '@/components/TurnstileDialog.vue';
+import logger from '@/utils/logger';
 
 const accountsStore = useAccountsStore();
 const settingsStore = useSettingsStore();
@@ -1606,8 +1607,23 @@ async function handleBatchGetTrialLinks() {
 }
 
 // 显示 Turnstile 验证对话框并等待用户完成
-function showTurnstileAndWait(accountEmail: string): Promise<string> {
+async function showTurnstileAndWait(accountEmail: string): Promise<string> {
+  logger.info('BatchTurnstile', `showTurnstileAndWait called for ${accountEmail}`, {
+    currentVisible: showBatchTurnstileDialog.value,
+    hasPendingResolve: !!pendingBatchTurnstileResolve.value
+  });
+  
+  // 确保对话框已关闭并等待 DOM 完全清理
+  if (showBatchTurnstileDialog.value) {
+    logger.info('BatchTurnstile', 'Dialog still visible, closing first');
+    showBatchTurnstileDialog.value = false;
+  }
+  
+  // 始终等待一小段时间，确保上一个对话框的遮罩层完全销毁
+  await new Promise(r => setTimeout(r, 350));
+  
   return new Promise((resolve) => {
+    logger.info('BatchTurnstile', 'Creating new Promise, opening dialog');
     currentBatchAccount.value = accountEmail;
     pendingBatchTurnstileResolve.value = resolve;
     showBatchTurnstileDialog.value = true;
@@ -1616,19 +1632,33 @@ function showTurnstileAndWait(accountEmail: string): Promise<string> {
 
 // Turnstile 验证成功回调
 function handleBatchTurnstileSuccess(token: string) {
+  logger.info('BatchTurnstile', 'Success callback', { hasToken: !!token, hasResolve: !!pendingBatchTurnstileResolve.value });
   showBatchTurnstileDialog.value = false;
   if (pendingBatchTurnstileResolve.value) {
     pendingBatchTurnstileResolve.value(token);
     pendingBatchTurnstileResolve.value = null;
+    logger.info('BatchTurnstile', 'Promise resolved with token');
   }
 }
 
 // Turnstile 验证取消回调
 function handleBatchTurnstileCancel() {
+  logger.info('BatchTurnstile', 'Cancel callback received', { hasResolve: !!pendingBatchTurnstileResolve.value });
+  
+  // 立即获取并清理resolve函数
+  const resolveFunc = pendingBatchTurnstileResolve.value;
+  pendingBatchTurnstileResolve.value = null;
+  
+  // 关闭对话框
   showBatchTurnstileDialog.value = false;
-  if (pendingBatchTurnstileResolve.value) {
-    pendingBatchTurnstileResolve.value('');
-    pendingBatchTurnstileResolve.value = null;
+  
+  // 立即resolve Promise
+  if (resolveFunc) {
+    logger.info('BatchTurnstile', 'Resolving Promise with empty string');
+    resolveFunc('');
+    logger.info('BatchTurnstile', 'Promise resolved, continuing to next account');
+  } else {
+    logger.warn('BatchTurnstile', 'No resolve function found!');
   }
 }
 

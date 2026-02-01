@@ -209,6 +209,10 @@ pub fn run() {
             commands::get_reset_records,
             commands::get_reset_stats,
             commands::clear_reset_records,
+            
+            // 日志命令
+            commands::append_log_file,
+            commands::get_log_directory,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
