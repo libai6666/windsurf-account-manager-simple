@@ -15,13 +15,12 @@ pub async fn add_account(
     group: Option<String>,
     store: State<'_, Arc<DataStore>>,
 ) -> Result<Account, String> {
-    let mut account = store.add_account(email.clone(), password, nickname)
+    let mut account = store.add_account(email.clone(), password, nickname, group)
         .await
         .map_err(|e| e.to_string())?;
     
     // 设置标签和分组
     account.tags = tags;
-    account.group = group;
     
     store.update_account(account.clone())
         .await
@@ -76,13 +75,12 @@ pub async fn add_account_by_refresh_token(
     // Step 3: 创建账号（使用空密码，因为我们有 refresh_token）
     let final_nickname = nickname.unwrap_or_else(|| email.split('@').next().unwrap_or(&email).to_string());
     
-    let mut account = store.add_account(email.clone(), String::new(), final_nickname)
+    let mut account = store.add_account(email.clone(), String::new(), final_nickname, group)
         .await
         .map_err(|e| e.to_string())?;
     
     // 设置标签和分组
     account.tags = tags;
-    account.group = group;
     account.token = Some(token.clone());
     account.token_expires_at = Some(expires_at);
     account.refresh_token = Some(new_refresh_token);
@@ -196,8 +194,15 @@ pub async fn update_account(
         existing_account.nickname = nickname.to_string();
     }
 
-    if let Some(group) = account.get("group").and_then(|v| v.as_str()) {
-        existing_account.group = if group.is_empty() { None } else { Some(group.to_string()) };
+    if let Some(group_value) = account.get("group") {
+        if group_value.is_null() {
+            existing_account.group = None;
+        } else if let Some(group) = group_value.as_str() {
+            let trimmed_group = group.trim();
+            if !trimmed_group.is_empty() {
+                existing_account.group = Some(trimmed_group.to_string());
+            }
+        }
     }
 
     if let Some(tags) = account.get("tags").and_then(|v| v.as_array()) {

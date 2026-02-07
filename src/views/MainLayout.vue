@@ -1162,6 +1162,9 @@ async function handleBatchImportConfirm(
   const concurrencyLimit = settingsStore.settings?.concurrent_limit || 5;
   
   const modeLabel = mode === 'refresh_token' ? 'Refresh Token' : '邮箱密码';
+  const targetGroup = group.trim() || '默认分组';
+  const shouldApplyTags = tags.length > 0;
+  const retryTimes = Math.max(settingsStore.settings?.retry_times ?? 2, 0);
   
   // 过滤已存在的账号（邮箱密码模式按邮箱过滤，Refresh Token模式按token过滤）
   const existingEmails = new Set(accountsStore.accounts.map(a => a.email.toLowerCase()));
@@ -1204,39 +1207,76 @@ async function handleBatchImportConfirm(
   });
   
   const results: Array<{ email: string; success: boolean; accountId?: string; error?: string }> = [];
+
+  const buildMergedTags = (existingTags: string[]) => {
+    if (!shouldApplyTags) return existingTags;
+    const merged = [...existingTags];
+    for (const tag of tags) {
+      if (!merged.includes(tag)) {
+        merged.push(tag);
+      }
+    }
+    return merged;
+  };
+
+  const normalizeAccount = (account: Account) => {
+    const mergedTags = buildMergedTags(account.tags);
+    const groupChanged = account.group !== targetGroup;
+    const tagsChanged = shouldApplyTags && mergedTags.length !== account.tags.length;
+    if (!groupChanged && !tagsChanged) {
+      return { updatedAccount: account, changed: false };
+    }
+    return {
+      updatedAccount: {
+        ...account,
+        group: groupChanged ? targetGroup : account.group,
+        tags: tagsChanged ? mergedTags : account.tags
+      },
+      changed: true
+    };
+  };
+
+  const waitForRetry = async (attempt: number) => {
+    if (attempt >= retryTimes) return;
+    await new Promise(resolve => setTimeout(resolve, 300));
+  };
   
   // 单个导入任务
   const importTask = async (item: { email: string; password: string; remark: string; refreshToken?: string }) => {
-    try {
-      if (mode === 'refresh_token' && item.refreshToken) {
-        // Refresh Token 模式：调用后端命令
-        const result = await invoke<any>('add_account_by_refresh_token', {
-          refreshToken: item.refreshToken,
-          nickname: item.remark || undefined,
-          tags: tags.length > 0 ? [...tags] : [],
-          group: group
-        });
-        
-        if (result.success) {
-          return { email: result.email, success: true, accountId: result.account?.id };
+    let lastError: string | undefined;
+    for (let attempt = 0; attempt <= retryTimes; attempt++) {
+      try {
+        if (mode === 'refresh_token' && item.refreshToken) {
+          // Refresh Token 模式：调用后端命令
+          const result = await invoke<any>('add_account_by_refresh_token', {
+            refreshToken: item.refreshToken,
+            nickname: item.remark || undefined,
+            tags: shouldApplyTags ? [...tags] : [],
+            group: targetGroup
+          });
+          
+          if (result.success) {
+            return { email: result.email, success: true, accountId: result.account?.id };
+          }
+          lastError = result.error || '添加失败';
         } else {
-          return { email: item.email, success: false, error: result.error || '添加失败' };
+          // 邮箱密码模式
+          const newAccount = await accountsStore.addAccount({
+            email: item.email,
+            password: item.password,
+            nickname: item.remark || item.email.split('@')[0],
+            tags: shouldApplyTags ? [...tags] : [],
+            group: targetGroup
+          });
+          return { email: item.email, success: true, accountId: newAccount.id };
         }
-      } else {
-        // 邮箱密码模式
-        const newAccount = await accountsStore.addAccount({
-          email: item.email,
-          password: item.password,
-          nickname: item.remark || item.email.split('@')[0],
-          tags: tags.length > 0 ? [...tags] : [],
-          group: group
-        });
-        return { email: item.email, success: true, accountId: newAccount.id };
+      } catch (error) {
+        lastError = String(error);
       }
-    } catch (error) {
-      console.error(`导入账号 ${item.email} 失败:`, error);
-      return { email: item.email, success: false, error: String(error) };
+      await waitForRetry(attempt);
     }
+    console.error(`导入账号 ${item.email} 失败:`, lastError);
+    return { email: item.email, success: false, error: lastError || '添加失败' };
   };
   
   try {
@@ -1284,7 +1324,8 @@ async function handleBatchImportConfirm(
           if (loginResult.success) {
             // 从后端获取完整的账号信息（包含token）
             const latestAccount = await accountApi.getAccount(item.accountId!);
-            await accountsStore.updateAccount(latestAccount);
+            const { updatedAccount } = normalizeAccount(latestAccount);
+            await accountsStore.updateAccount(updatedAccount);
             return { success: true };
           }
           return { success: false };
@@ -1319,7 +1360,82 @@ async function handleBatchImportConfirm(
       
       loginSuccessCount = loginResults.filter(r => r.success).length;
     }
-    
+
+    let offlineRetryTotal = 0;
+    let offlineRetrySuccess = 0;
+
+    if (addedAccounts.length > 0) {
+      progressMsg.close();
+      progressMsg = ElMessage({
+        message: '正在检查离线账号并修复分组...',
+        duration: 0,
+        icon: Loading
+      });
+
+      const postImportResults: Array<{ offline: boolean; retrySuccess: boolean; groupFixed: boolean }> = [];
+
+      const postImportTask = async (item: { email: string; accountId?: string }) => {
+        if (!item.accountId) {
+          return { offline: false, retrySuccess: false, groupFixed: false };
+        }
+
+        try {
+          let latestAccount = await accountApi.getAccount(item.accountId);
+          const isOffline = !latestAccount.token_expires_at || dayjs(latestAccount.token_expires_at).isBefore(dayjs());
+          let retrySuccess = false;
+
+          if (isOffline) {
+            for (let attempt = 0; attempt <= retryTimes; attempt++) {
+              try {
+                const retryResult = mode === 'refresh_token'
+                  ? await apiService.refreshToken(item.accountId)
+                  : await apiService.loginAccount(item.accountId);
+                if (retryResult.success) {
+                  retrySuccess = true;
+                  latestAccount = await accountApi.getAccount(item.accountId);
+                  break;
+                }
+              } catch (retryError) {
+                console.error(`账号 ${item.email} 重试失败:`, retryError);
+              }
+              await waitForRetry(attempt);
+            }
+          }
+
+          const { updatedAccount, changed } = normalizeAccount(latestAccount);
+          if (changed || retrySuccess) {
+            await accountsStore.updateAccount(updatedAccount);
+          }
+
+          return { offline: isOffline, retrySuccess, groupFixed: changed };
+        } catch (error) {
+          console.error(`处理账号 ${item.email} 失败:`, error);
+          return { offline: false, retrySuccess: false, groupFixed: false };
+        }
+      };
+
+      if (unlimitedConcurrent) {
+        const allPostResults = await Promise.all(addedAccounts.map(item => postImportTask(item)));
+        postImportResults.push(...allPostResults);
+      } else {
+        for (let i = 0; i < addedAccounts.length; i += concurrencyLimit) {
+          const batch = addedAccounts.slice(i, i + concurrencyLimit);
+          const batchResults = await Promise.all(batch.map(item => postImportTask(item)));
+          postImportResults.push(...batchResults);
+
+          progressMsg.close();
+          progressMsg = ElMessage({
+            message: `离线检查进度: ${postImportResults.length}/${addedAccounts.length}`,
+            duration: 0,
+            icon: Loading
+          });
+        }
+      }
+
+      offlineRetryTotal = postImportResults.filter(result => result.offline).length;
+      offlineRetrySuccess = postImportResults.filter(result => result.retrySuccess).length;
+    }
+
     progressMsg.close();
     
     // 关闭对话框
@@ -1337,6 +1453,13 @@ async function handleBatchImportConfirm(
       }
       if (failedAccounts.length > 0) {
         message += `，失败 ${failedAccounts.length} 个`;
+      }
+      if (offlineRetryTotal > 0) {
+        if (offlineRetrySuccess === offlineRetryTotal) {
+          message += `，离线重试成功 ${offlineRetrySuccess} 个`;
+        } else {
+          message += `，离线重试成功 ${offlineRetrySuccess}/${offlineRetryTotal}`;
+        }
       }
       ElMessage.success({
         message,

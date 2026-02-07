@@ -213,7 +213,7 @@ async function loadTurnstile() {
       widgetId.value = turnstile.render(turnstileRef.value, {
         sitekey: TURNSTILE_SITE_KEY,
         theme: 'light',
-        execution: 'execute',  // 使用execute模式，允许通过turnstile.execute()触发
+        execution: 'render',  // 使用render模式，widget渲染后自动开始验证
         callback: (token: string) => {
           console.log('[Turnstile] Verification success');
           clearAutoClickTimer();
@@ -245,20 +245,8 @@ async function loadTurnstile() {
       
       status.value = 'idle';
       
-      // 立即尝试执行验证（widget渲染完成后）
-      setTimeout(() => {
-        if (widgetId.value && status.value === 'idle') {
-          console.log('[Turnstile] Auto-executing after render');
-          try {
-            turnstile.execute(widgetId.value);
-          } catch (e) {
-            console.log('[Turnstile] Initial execute failed:', e);
-          }
-        }
-      }, 300);
-      
-      // 启动自动点击检测（作为备用）
-      startAutoClickDetection();
+      // render模式下会自动开始验证，记录状态
+      logger.info('TurnstileDialog', 'Widget rendered, auto-verification started', { widgetId: widgetId.value });
     }
   } catch (error) {
     console.error('[Turnstile] Load error:', error);
@@ -326,50 +314,40 @@ function startAutoClickDetection() {
   }, 500);
 }
 
-// 尝试点击Turnstile复选框
+// 尝试触发Turnstile验证
 function tryClickTurnstileCheckbox() {
+  const turnstile = (window as any).turnstile;
+  if (!turnstile || !widgetId.value) {
+    logger.warn('TurnstileDialog', 'Turnstile not ready', { hasTurnstile: !!turnstile, widgetId: widgetId.value });
+    return;
+  }
+  
   try {
-    // 方法1: 尝试使用turnstile.execute()触发验证
-    const turnstile = (window as any).turnstile;
-    if (turnstile && widgetId.value) {
+    // 每5次尝试后，使用 reset 重新开始验证流程
+    if (autoClickAttempts.value > 0 && autoClickAttempts.value % 5 === 0) {
+      logger.info('TurnstileDialog', 'Resetting turnstile after multiple attempts', { attempt: autoClickAttempts.value });
       try {
-        turnstile.execute(widgetId.value);
-        console.log('[Turnstile] Execute called');
+        turnstile.reset(widgetId.value);
+        logger.info('TurnstileDialog', 'Reset called successfully');
       } catch (e) {
-        console.log('[Turnstile] Execute failed:', e);
+        logger.error('TurnstileDialog', 'Reset failed', e);
       }
     }
     
-    // 方法2: 尝试点击iframe内的复选框
-    const container = turnstileRef.value;
-    if (container) {
-      const iframe = container.querySelector('iframe');
-      if (iframe) {
-        try {
-          // 尝试聚焦iframe并模拟点击
-          iframe.focus();
-          
-          // 尝试发送点击事件到iframe
-          const iframeRect = iframe.getBoundingClientRect();
-          const clickX = iframeRect.left + iframeRect.width / 4;
-          const clickY = iframeRect.top + iframeRect.height / 2;
-          
-          // 创建并分发鼠标事件
-          const clickEvent = new MouseEvent('click', {
-            bubbles: true,
-            cancelable: true,
-            clientX: clickX,
-            clientY: clickY
-          });
-          iframe.dispatchEvent(clickEvent);
-          console.log('[Turnstile] Dispatched click to iframe');
-        } catch (e) {
-          console.log('[Turnstile] Click iframe failed:', e);
-        }
+    // 尝试获取 Turnstile 的响应状态
+    try {
+      const response = turnstile.getResponse(widgetId.value);
+      if (response) {
+        logger.info('TurnstileDialog', 'Already have response, skipping retry');
+        return;
       }
+    } catch (e) {
+      // 忽略获取响应失败
     }
+    
+    logger.info('TurnstileDialog', 'Retry attempt', { attempt: autoClickAttempts.value });
   } catch (e) {
-    console.log('[Turnstile] Auto-click error:', e);
+    logger.error('TurnstileDialog', 'Auto-click error', e);
   }
 }
 

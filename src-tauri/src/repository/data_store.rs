@@ -199,16 +199,32 @@ impl DataStore {
     }
 
     // 账号管理方法
-    pub async fn add_account(&self, email: String, password: String, nickname: String) -> AppResult<Account> {
+    pub async fn add_account(&self, email: String, password: String, nickname: String, group: Option<String>) -> AppResult<Account> {
         let mut config = self.config.write().await;
         
         // 检查邮箱是否已存在
         if config.accounts.iter().any(|a| a.email == email) {
             return Err(AppError::Config(format!("Account with email {} already exists", email)));
         }
+
+        let final_group = group
+            .and_then(|g| {
+                let trimmed = g.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                }
+            })
+            .unwrap_or_else(|| "默认分组".to_string());
+
+        if !config.groups.contains(&final_group) {
+            config.groups.push(final_group.clone());
+        }
         
         // 直接保存密码，不加密，初始化标签为空
-        let account = Account::new(email, password, nickname, Vec::new());
+        let mut account = Account::new(email, password, nickname, Vec::new());
+        account.group = Some(final_group);
         
         config.accounts.push(account.clone());
         drop(config); // 释放写锁
