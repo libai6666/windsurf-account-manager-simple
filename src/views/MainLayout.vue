@@ -61,21 +61,6 @@
           <template #title>统计信息</template>
         </el-menu-item>
         
-        <el-menu-item index="auto-reset" @click="showAutoResetDialog = true">
-          <el-icon><Timer /></el-icon>
-          <template #title>自动重置</template>
-        </el-menu-item>
-        
-        <el-menu-item index="card-generator" @click="showCardGeneratorDialog = true">
-          <el-icon><CreditCard /></el-icon>
-          <template #title>虚拟卡生成</template>
-        </el-menu-item>
-        
-        <el-menu-item index="about" @click="showAboutDialog">
-          <el-icon><InfoFilled /></el-icon>
-          <template #title>关于</template>
-        </el-menu-item>
-        
         <el-menu-item index="settings" @click="uiStore.openSettingsDialog">
           <el-icon><Setting /></el-icon>
           <template #title>设置</template>
@@ -420,18 +405,6 @@
     <StatsDialog />
     <AccountInfoDialog />
     
-    <!-- 关于对话框 -->
-    <AboutDialog 
-      v-model="showAbout"
-      :current-email="currentWindsurfEmail"
-      :windsurf-version="windsurfVersion"
-    />
-    
-    <AutoResetDialog v-model="showAutoResetDialog" />
-    
-    <!-- 虚拟卡生成对话框 -->
-    <CardGeneratorDialog v-model="showCardGeneratorDialog" />
-    
     <!-- 批量试用链接人机验证对话框 -->
     <TurnstileDialog
       v-model:visible="showBatchTurnstileDialog"
@@ -583,7 +556,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
+import { ref, computed, watch, onMounted } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { invoke } from '@tauri-apps/api/core';
 import {
@@ -602,7 +575,6 @@ import {
   Connection,
   Loading,
   DataAnalysis,
-  InfoFilled,
   Select,
   Download,
   Upload,
@@ -611,7 +583,6 @@ import {
   Close,
   PriceTag,
   DocumentChecked,
-  Timer,
   Switch,
   SortUp,
   SortDown,
@@ -630,11 +601,8 @@ import LogsDialog from '@/components/LogsDialog.vue';
 import StatsDialog from '@/components/StatsDialog.vue';
 import BillingDialog from '@/components/BillingDialog.vue';
 import AccountInfoDialog from '@/components/AccountInfoDialog.vue';
-import AboutDialog from '@/components/AboutDialog.vue';
 import BatchUpdatePlanDialog from '@/components/BatchUpdatePlanDialog.vue';
 import TagManageDialog from '@/components/TagManageDialog.vue';
-import AutoResetDialog from '@/components/AutoResetDialog.vue';
-import CardGeneratorDialog from '@/components/CardGeneratorDialog.vue';
 import TurnstileDialog from '@/components/TurnstileDialog.vue';
 import BatchTrialLinksDialog from '@/components/BatchTrialLinksDialog.vue';
 import type { TrialLinkItem } from '@/components/BatchTrialLinksDialog.vue';
@@ -651,7 +619,6 @@ const billingLoading = ref(false);
 const currentWindsurfEmail = ref<string>('');
 const windsurfVersion = ref<string>('');
 const showBatchUpdatePlanDialog = ref(false);
-const showAbout = ref(false);
 const showTagManageDialog = ref(false);
 const showBatchImportDialog = ref(false);
 const batchImportDialogRef = ref<InstanceType<typeof BatchImportDialog> | null>(null);
@@ -659,8 +626,6 @@ const appVersion = ref<string>('');  // 版本号从后端动态获取
 const showBatchGroupDialog = ref(false);
 const batchGroupTarget = ref('');
 const isBatchUpdatingGroup = ref(false);
-const showAutoResetDialog = ref(false);
-const showCardGeneratorDialog = ref(false);
 const isBatchGettingTrialLinks = ref(false);
 const batchTrialLinkQueue = ref<string[]>([]);
 const currentBatchTrialIndex = ref(0);
@@ -713,62 +678,6 @@ const parsedTransferEmails = computed(() => {
     })
     .filter(e => e && e.includes('@'));
 });
-
-// 自动重置定时器
-interface AutoResetConfig {
-  id: string;
-  targetType: string;
-  targetId: string;
-  enabled: boolean;
-  checkInterval: number;
-  usageThreshold: number;
-  remainingThreshold: number;
-}
-const autoResetTimerMap = ref<Map<string, ReturnType<typeof setInterval>>>(new Map());
-
-// 初始化自动重置定时器
-async function initAutoResetTimers() {
-  try {
-    const configs = await invoke<AutoResetConfig[]>('get_auto_reset_configs');
-    
-    // 清除现有定时器
-    autoResetTimerMap.value.forEach(timer => clearInterval(timer));
-    autoResetTimerMap.value.clear();
-    
-    // 为每个启用的配置设置定时器
-    configs.filter(c => c.enabled).forEach(config => {
-      // 立即执行一次检查
-      executeAutoResetCheck(config.id);
-      
-      // 设置定时器
-      const timer = setInterval(() => {
-        executeAutoResetCheck(config.id);
-      }, config.checkInterval * 60 * 1000);
-      
-      autoResetTimerMap.value.set(config.id, timer);
-    });
-    
-    if (configs.filter(c => c.enabled).length > 0) {
-      console.log(`[AutoReset] 已启动 ${configs.filter(c => c.enabled).length} 个自动重置定时器`);
-    }
-  } catch (error) {
-    console.error('[AutoReset] 初始化定时器失败:', error);
-  }
-}
-
-// 执行自动重置检查
-async function executeAutoResetCheck(configId: string) {
-  try {
-    const result = await invoke<any>('check_and_auto_reset', { configId });
-    
-    if (result.reset_count > 0) {
-      ElMessage.success(`自动重置: 重置了 ${result.reset_count} 个账号的积分`);
-      await accountsStore.loadAccounts();
-    }
-  } catch (error) {
-    console.error('[AutoReset] 检查失败:', error);
-  }
-}
 
 // 筛选面板状态
 const showFilterPanel = ref(false);
@@ -2072,10 +1981,6 @@ async function handleBatchUpdateGroup() {
   }
 }
 
-// 显示关于对话框
-function showAboutDialog() {
-  showAbout.value = true;
-}
 
 // 初始化时获取当前账号信息和应用版本
 onMounted(async () => {
@@ -2092,15 +1997,8 @@ onMounted(async () => {
   // 初始化排序配置
   initSortConfig();
   
-  // 初始化自动重置定时器
-  initAutoResetTimers();
 });
 
-// 组件卸载时清除自动重置定时器
-onUnmounted(() => {
-  autoResetTimerMap.value.forEach(timer => clearInterval(timer));
-  autoResetTimerMap.value.clear();
-});
 </script>
 
 <style scoped>
