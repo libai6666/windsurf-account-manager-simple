@@ -440,6 +440,12 @@
       @cancel="handleBatchTurnstileCancel"
     />
     
+    <!-- 批量试用链接结果对话框 -->
+    <BatchTrialLinksDialog
+      v-model="showBatchTrialLinksDialog"
+      :links="batchTrialLinksData"
+    />
+    
     <!-- 账单对话框（传入当前查看的账号ID和数据） -->
     <BillingDialog 
       v-if="uiStore.currentViewingAccountId"
@@ -630,6 +636,8 @@ import TagManageDialog from '@/components/TagManageDialog.vue';
 import AutoResetDialog from '@/components/AutoResetDialog.vue';
 import CardGeneratorDialog from '@/components/CardGeneratorDialog.vue';
 import TurnstileDialog from '@/components/TurnstileDialog.vue';
+import BatchTrialLinksDialog from '@/components/BatchTrialLinksDialog.vue';
+import type { TrialLinkItem } from '@/components/BatchTrialLinksDialog.vue';
 import logger from '@/utils/logger';
 
 const accountsStore = useAccountsStore();
@@ -659,6 +667,8 @@ const currentBatchTrialIndex = ref(0);
 const showBatchTurnstileDialog = ref(false);
 const pendingBatchTurnstileResolve = ref<((token: string) => void) | null>(null);
 const currentBatchAccount = ref<string>('');
+const showBatchTrialLinksDialog = ref(false);
+const batchTrialLinksData = ref<TrialLinkItem[]>([]);
 
 // 排序相关
 const currentSortField = ref<string>('custom');
@@ -1599,7 +1609,7 @@ async function handleBatchGetTrialLinks() {
     // Pro 计划：提示用户需要逐个进行人机验证
     try {
       await ElMessageBox.confirm(
-        `已选择 ${selectedAccounts.length} 个账号，Pro 计划需要逐个进行人机验证。\n\n每个账号验证成功后会自动在独立的浏览器窗口中打开支付链接。\n\n是否继续？`,
+        `已选择 ${selectedAccounts.length} 个账号，Pro 计划需要逐个进行人机验证。\n\n所有账号验证完成后将汇总展示试用链接，您可以选择性打开。\n\n是否继续？`,
         '批量获取试用链接',
         {
           confirmButtonText: '开始',
@@ -1616,7 +1626,7 @@ async function handleBatchGetTrialLinks() {
   batchTrialLinkQueue.value = selectedIds;
   currentBatchTrialIndex.value = 0;
   
-  const results: Array<{ email: string; success: boolean; error?: string }> = [];
+  const collectedLinks: import('@/components/BatchTrialLinksDialog.vue').TrialLinkItem[] = [];
   
   // 显示进度提示
   let progressMsg = ElMessage({
@@ -1641,7 +1651,7 @@ async function handleBatchGetTrialLinks() {
       try {
         // 检查账号是否有 token
         if (!account.token) {
-          results.push({ email: account.email, success: false, error: '无Token' });
+          collectedLinks.push({ email: account.email, success: false, error: '无Token' });
           continue;
         }
         
@@ -1652,12 +1662,12 @@ async function handleBatchGetTrialLinks() {
           // 弹出 Turnstile 验证对话框并等待用户完成验证
           turnstileToken = await showTurnstileAndWait(account.email);
           if (!turnstileToken) {
-            results.push({ email: account.email, success: false, error: '验证取消' });
+            collectedLinks.push({ email: account.email, success: false, error: '验证取消' });
             continue;
           }
         }
         
-        // 使用 API 获取支付链接，然后在外部浏览器中打开
+        // 使用 API 获取支付链接
         const result = await apiService.getTrialPaymentLink(
           account.id,
           teamsTier,
@@ -1668,54 +1678,24 @@ async function handleBatchGetTrialLinks() {
         );
         
         if (result.success && result.stripe_url) {
-          // 在外部浏览器中打开（无痕模式）
-          const browserMode = settingsStore.settings?.browserMode ?? 'incognito';
-          const openCommand = browserMode === 'incognito' ? 'open_external_link_incognito' : 'open_external_link';
-          
-          try {
-            await invoke(openCommand, { url: result.stripe_url });
-            results.push({ email: account.email, success: true });
-          } catch (err) {
-            results.push({ email: account.email, success: false, error: '打开浏览器失败' });
-          }
+          collectedLinks.push({ email: account.email, success: true, url: result.stripe_url });
         } else {
-          results.push({ email: account.email, success: false, error: result.error || '获取失败' });
+          collectedLinks.push({ email: account.email, success: false, error: result.error || '获取失败' });
         }
         
         // 短暂延迟，避免请求过快
         await new Promise(resolve => setTimeout(resolve, 500));
         
       } catch (error: any) {
-        results.push({ email: account.email, success: false, error: error.toString() });
+        collectedLinks.push({ email: account.email, success: false, error: error.toString() });
       }
     }
     
     progressMsg.close();
     
-    // 统计结果
-    const successCount = results.filter(r => r.success).length;
-    const failedCount = results.filter(r => !r.success).length;
-    
-    if (failedCount === 0) {
-      ElMessage.success(`批量获取完成：成功 ${successCount} 个`);
-    } else {
-      const failedItems = results.filter(r => !r.success).slice(0, 5);
-      const failedDetails = failedItems.map(f => `${f.email}: ${f.error}`).join('\n• ');
-      const moreCount = results.filter(r => !r.success).length - 5;
-      
-      let message = `获取完成\n成功: ${successCount}/${results.length}\n失败: ${failedCount}/${results.length}`;
-      if (failedItems.length > 0) {
-        message += `\n\n失败详情:\n• ${failedDetails}`;
-        if (moreCount > 0) {
-          message += `\n... 还有 ${moreCount} 个失败`;
-        }
-      }
-      
-      ElMessageBox.alert(message, '批量获取结果', {
-        type: failedCount === results.length ? 'error' : 'warning',
-        confirmButtonText: '确定'
-      });
-    }
+    // 将收集到的链接展示在对话框中
+    batchTrialLinksData.value = collectedLinks;
+    showBatchTrialLinksDialog.value = true;
     
   } catch (error) {
     progressMsg.close();
@@ -1724,8 +1704,6 @@ async function handleBatchGetTrialLinks() {
     isBatchGettingTrialLinks.value = false;
     batchTrialLinkQueue.value = [];
     currentBatchTrialIndex.value = 0;
-    // 清理选中状态，关闭全选任务栏
-    accountsStore.clearSelection();
   }
 }
 
