@@ -257,11 +257,25 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
           sudo dpkg --add-architecture arm64
-          sudo sed -i 's/^deb /deb [arch=amd64] /' /etc/apt/sources.list
-          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list
-          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list
+          # 兼容新旧 apt 源格式（新版 runner 使用 DEB822 格式）
+          if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+            # 新 DEB822 格式：限制现有源为 amd64
+            sudo sed -i '/^Types:/a Architectures: amd64' /etc/apt/sources.list.d/ubuntu.sources
+          elif [ -f /etc/apt/sources.list ]; then
+            # 旧格式
+            sudo sed -i 's/^deb /deb [arch=amd64] /' /etc/apt/sources.list
+          fi
+          # 添加 arm64 源（使用独立文件，兼容所有格式）
+          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main restricted universe multiverse" | sudo tee /etc/apt/sources.list.d/arm64-ports.list
+          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list.d/arm64-ports.list
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev:arm64 libappindicator3-dev:arm64 librsvg2-dev:arm64 libssl-dev:arm64 patchelf || true
+          # 验证关键依赖是否安装成功
+          if [ ! -d /usr/include/aarch64-linux-gnu/openssl ]; then
+            echo "::warning::OpenSSL arm64 headers not found, retrying installation..."
+            sudo apt-get install -y --fix-broken
+            sudo apt-get install -y libssl-dev:arm64
+          fi
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -327,7 +341,7 @@ jobs:
       - build-linux-x64
       - build-linux-arm64
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    if: always() && (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') && !cancelled()
     permissions:
       contents: write
     steps:
