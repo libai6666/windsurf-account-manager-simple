@@ -1,14 +1,31 @@
 <template>
-  <el-dialog
+  <el-drawer
     v-model="dialogVisible"
     title="批量试用链接"
-    width="750px"
+    direction="rtl"
+    size="750px"
     :close-on-click-modal="false"
     :close-on-press-escape="false"
     :append-to-body="true"
-    :show-close="!isOpening"
+    :show-close="!isOpening && !isRetrying"
+    :with-header="true"
     @close="handleClose"
   >
+    <template #header>
+      <div class="drawer-header">
+        <span class="drawer-title">批量试用链接</span>
+        <el-button
+          v-if="!isOpening && !isRetrying"
+          type="primary"
+          text
+          size="small"
+          @click="handleMinimize"
+        >
+          <el-icon><Minus /></el-icon>
+          最小化
+        </el-button>
+      </div>
+    </template>
     <div class="batch-links-container">
       <!-- 顶部操作栏 -->
       <div class="links-toolbar">
@@ -43,6 +60,17 @@
             <el-option :value="8" label="间隔 8s" />
             <el-option :value="10" label="间隔 10s" />
           </el-select>
+          <el-button
+            v-if="failedCount > 0"
+            type="warning"
+            size="small"
+            :icon="RefreshRight"
+            :disabled="isOpening || isRetrying"
+            :loading="isRetrying"
+            @click="handleRetryFailed"
+          >
+            重试失败 ({{ failedCount }})
+          </el-button>
           <el-button
             type="primary"
             size="small"
@@ -87,6 +115,17 @@
               <el-tag v-if="item.data.success" type="success" size="small">成功</el-tag>
               <el-tag v-else type="danger" size="small">{{ item.data.error || '失败' }}</el-tag>
               <el-tag v-if="openedLinks.has(item.realIndex)" type="warning" size="small" effect="light">已打开</el-tag>
+              <el-button
+                v-if="!item.data.success && item.data.accountId"
+                type="primary"
+                link
+                size="small"
+                :disabled="isRetrying"
+                @click="handleRetrySingle(item.data)"
+              >
+                <el-icon><RefreshRight /></el-icon>
+                重试
+              </el-button>
             </div>
             <div v-if="item.data.success && item.data.url" class="link-url">
               <el-link
@@ -145,29 +184,42 @@
     </div>
 
     <template #footer>
-      <el-button @click="handleClose" :disabled="isOpening">关闭</el-button>
-      <el-button
-        type="primary"
-        :icon="ChromeFilled"
-        :disabled="selectedLinks.size === 0 || isOpening"
-        :loading="isOpening"
-        @click="handleOpenSelected"
-      >
-        打开选中链接 ({{ selectedLinks.size }})
-      </el-button>
+      <div class="drawer-footer">
+        <el-button @click="handleClose" :disabled="isOpening || isRetrying">关闭</el-button>
+        <el-button
+          v-if="failedCount > 0"
+          type="warning"
+          :icon="RefreshRight"
+          :disabled="isOpening || isRetrying"
+          :loading="isRetrying"
+          @click="handleRetryFailed"
+        >
+          重试失败项 ({{ failedCount }})
+        </el-button>
+        <el-button
+          type="primary"
+          :icon="ChromeFilled"
+          :disabled="selectedLinks.size === 0 || isOpening"
+          :loading="isOpening"
+          @click="handleOpenSelected"
+        >
+          打开选中链接 ({{ selectedLinks.size }})
+        </el-button>
+      </div>
     </template>
-  </el-dialog>
+  </el-drawer>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import { invoke } from '@tauri-apps/api/core';
-import { ChromeFilled, CopyDocument } from '@element-plus/icons-vue';
+import { ChromeFilled, CopyDocument, RefreshRight, Minus } from '@element-plus/icons-vue';
 import { useSettingsStore } from '@/store';
 
 export interface TrialLinkItem {
   email: string;
+  accountId?: string;
   success: boolean;
   url?: string;
   error?: string;
@@ -180,6 +232,9 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'update:modelValue', value: boolean): void;
+  (e: 'retry', accounts: { email: string; accountId: string }[]): void;
+  (e: 'minimize'): void;
+  (e: 'close'): void;
 }>();
 
 const settingsStore = useSettingsStore();
@@ -187,6 +242,8 @@ const dialogVisible = ref(false);
 const selectedLinks = ref<Set<number>>(new Set());
 const openedLinks = ref<Set<number>>(new Set());
 const isOpening = ref(false);
+const isRetrying = ref(false);
+const isMinimizing = ref(false);
 const openProgress = ref({ current: 0, total: 0, currentEmail: '' });
 const openDelay = ref(3);
 
@@ -375,11 +432,51 @@ async function handleCopySelected() {
 }
 
 function handleClose() {
-  if (isOpening.value) return;
+  if (isOpening.value || isRetrying.value) return;
+  
+  // 如果是最小化操作，不清空数据
+  if (isMinimizing.value) {
+    isMinimizing.value = false;
+    return;
+  }
+  
   dialogVisible.value = false;
   selectedLinks.value = new Set();
   openedLinks.value = new Set();
+  // 通知父组件真正关闭并清空数据
+  emit('close');
 }
+
+function handleMinimize() {
+  isMinimizing.value = true;
+  dialogVisible.value = false;
+  emit('minimize');
+}
+
+function handleRetryFailed() {
+  const failedItems = props.links.filter(item => !item.success && item.accountId);
+  if (failedItems.length === 0) {
+    ElMessage.warning('没有可重试的失败项');
+    return;
+  }
+  
+  isRetrying.value = true;
+  emit('retry', failedItems.map(item => ({ email: item.email, accountId: item.accountId! })));
+}
+
+function handleRetrySingle(item: TrialLinkItem) {
+  if (!item.accountId) return;
+  isRetrying.value = true;
+  emit('retry', [{ email: item.email, accountId: item.accountId }]);
+}
+
+function setRetrying(value: boolean) {
+  isRetrying.value = value;
+}
+
+defineExpose({
+  setRetrying
+});
 </script>
 
 <style scoped>
@@ -526,5 +623,25 @@ function handleClose() {
 .summary-text {
   font-size: 13px;
   color: #909399;
+}
+
+.drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding-right: 40px;
+}
+
+.drawer-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: #303133;
+}
+
+.drawer-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
 }
 </style>
