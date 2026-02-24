@@ -7,23 +7,33 @@
     :close-on-click-modal="false"
     :close-on-press-escape="false"
     :append-to-body="true"
-    :show-close="!isOpening && !isRetrying"
+    :show-close="true"
     :with-header="true"
     @close="handleClose"
   >
     <template #header>
       <div class="drawer-header">
         <span class="drawer-title">批量试用链接</span>
-        <el-button
-          v-if="!isOpening && !isRetrying"
-          type="primary"
-          text
-          size="small"
-          @click="handleMinimize"
-        >
-          <el-icon><Minus /></el-icon>
-          最小化
-        </el-button>
+        <div class="drawer-header-btns">
+          <el-button
+            type="primary"
+            text
+            size="small"
+            @click="handleMinimize"
+          >
+            <el-icon><Minus /></el-icon>
+            最小化
+          </el-button>
+          <el-button
+            type="danger"
+            text
+            size="small"
+            @click="handleClose"
+          >
+            <el-icon><Close /></el-icon>
+            关闭
+          </el-button>
+        </div>
       </div>
     </template>
     <div class="batch-links-container">
@@ -146,7 +156,7 @@
         <el-pagination
           v-model:current-page="currentPage"
           v-model:page-size="pageSize"
-          :page-sizes="[10, 20, 50, 100]"
+          :page-sizes="[10, 15, 20, 50, 100]"
           :total="links.length"
           :small="true"
           layout="total, sizes, prev, pager, next, jumper"
@@ -214,7 +224,7 @@
 import { ref, computed, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import { invoke } from '@tauri-apps/api/core';
-import { ChromeFilled, CopyDocument, RefreshRight, Minus } from '@element-plus/icons-vue';
+import { ChromeFilled, CopyDocument, RefreshRight, Minus, Close } from '@element-plus/icons-vue';
 import { useSettingsStore } from '@/store';
 
 export interface TrialLinkItem {
@@ -244,6 +254,7 @@ const openedLinks = ref<Set<number>>(new Set());
 const isOpening = ref(false);
 const isRetrying = ref(false);
 const isMinimizing = ref(false);
+const cancelOpening = ref(false);
 const openProgress = ref({ current: 0, total: 0, currentEmail: '' });
 const openDelay = ref(3);
 
@@ -355,6 +366,7 @@ async function handleOpenSelected() {
   if (selectedLinks.value.size === 0) return;
 
   isOpening.value = true;
+  cancelOpening.value = false;
   const browserMode = settingsStore.settings?.browserMode ?? 'incognito';
   const openCommand = browserMode === 'incognito' ? 'open_external_link_incognito' : 'open_external_link';
 
@@ -366,6 +378,7 @@ async function handleOpenSelected() {
 
   try {
     for (let i = 0; i < selectedIndices.length; i++) {
+      if (cancelOpening.value) break;
       const idx = selectedIndices[i];
       const item = props.links[idx];
       if (!item?.url) continue;
@@ -432,12 +445,15 @@ async function handleCopySelected() {
 }
 
 function handleClose() {
-  if (isOpening.value || isRetrying.value) return;
-  
   // 如果是最小化操作，不清空数据
   if (isMinimizing.value) {
     isMinimizing.value = false;
     return;
+  }
+  
+  // 如果正在打开链接，先中断
+  if (isOpening.value) {
+    cancelOpening.value = true;
   }
   
   dialogVisible.value = false;
@@ -630,7 +646,13 @@ defineExpose({
   align-items: center;
   justify-content: space-between;
   width: 100%;
-  padding-right: 40px;
+  padding-right: 8px;
+}
+
+.drawer-header-btns {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .drawer-title {

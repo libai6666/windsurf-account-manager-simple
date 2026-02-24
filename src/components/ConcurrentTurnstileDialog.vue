@@ -107,12 +107,18 @@
           {{ isProcessing ? '验证中...' : '关闭' }}
         </el-button>
         <el-button 
-          v-if="failedCount > 0"
+          v-if="failedCount > 0 && !isProcessing"
           type="warning" 
           @click="retryAllFailed"
-          :disabled="isProcessing"
         >
           重试失败项 ({{ failedCount }})
+        </el-button>
+        <el-button 
+          v-if="failedCount > 0 && !isProcessing"
+          type="primary" 
+          @click="finishVerification"
+        >
+          继续到结果页
         </el-button>
       </div>
     </template>
@@ -252,7 +258,15 @@ function fillSlots() {
     activeSlots.value.every(s => s.status === 'success' || s.status === 'error');
   
   if (allCompleted) {
-    finishVerification();
+    // 有失败项时不自动完成，让用户决定是否重试
+    const hasFailures = activeSlots.value.some(s => s.status === 'error') || 
+      completedResults.value.some(r => r.error);
+    if (hasFailures) {
+      // 停止处理状态，让用户可以点击重试或继续
+      isProcessing.value = false;
+    } else {
+      finishVerification();
+    }
   }
 }
 
