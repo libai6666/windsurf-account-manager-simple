@@ -478,3 +478,116 @@ async fn restart_windsurf() -> Result<(), String> {
     #[allow(unreachable_code)]
     Err("不支持的操作系统".to_string())
 }
+
+/// 获取 Windsurf 数据目录列表（跨平台）
+fn get_windsurf_data_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    
+    #[cfg(target_os = "windows")]
+    {
+        // %APPDATA%\Windsurf
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            dirs.push(PathBuf::from(&appdata).join("Windsurf"));
+        }
+        // %USERPROFILE%\.codeium\windsurf
+        if let Ok(userprofile) = std::env::var("USERPROFILE") {
+            dirs.push(PathBuf::from(&userprofile).join(".codeium").join("windsurf"));
+        }
+        // %LOCALAPPDATA%\Windsurf (Electron cache)
+        if let Ok(localappdata) = std::env::var("LOCALAPPDATA") {
+            dirs.push(PathBuf::from(&localappdata).join("Windsurf"));
+        }
+    }
+    
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            // ~/Library/Application Support/Windsurf
+            dirs.push(PathBuf::from(&home).join("Library").join("Application Support").join("Windsurf"));
+            // ~/.codeium/windsurf
+            dirs.push(PathBuf::from(&home).join(".codeium").join("windsurf"));
+            // ~/.config/Windsurf
+            dirs.push(PathBuf::from(&home).join(".config").join("Windsurf"));
+            // ~/Library/Caches/Windsurf
+            dirs.push(PathBuf::from(&home).join("Library").join("Caches").join("Windsurf"));
+        }
+    }
+    
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            // ~/.config/Windsurf
+            dirs.push(PathBuf::from(&home).join(".config").join("Windsurf"));
+            // ~/.codeium/windsurf
+            dirs.push(PathBuf::from(&home).join(".codeium").join("windsurf"));
+            // ~/.local/share/Windsurf
+            dirs.push(PathBuf::from(&home).join(".local").join("share").join("Windsurf"));
+            // ~/.cache/Windsurf
+            dirs.push(PathBuf::from(&home).join(".cache").join("Windsurf"));
+        }
+    }
+    
+    dirs
+}
+
+/// 初始化 Windsurf（清除所有配置、缓存和用户数据）
+#[command]
+pub async fn reset_windsurf() -> Result<serde_json::Value, String> {
+    let dirs = get_windsurf_data_dirs();
+    let mut deleted_dirs: Vec<String> = Vec::new();
+    let mut failed_dirs: Vec<String> = Vec::new();
+    let mut skipped_dirs: Vec<String> = Vec::new();
+    
+    for dir in &dirs {
+        if dir.exists() {
+            match fs::remove_dir_all(dir) {
+                Ok(()) => {
+                    deleted_dirs.push(dir.to_string_lossy().to_string());
+                }
+                Err(e) => {
+                    failed_dirs.push(format!("{}: {}", dir.to_string_lossy(), e));
+                }
+            }
+        } else {
+            skipped_dirs.push(dir.to_string_lossy().to_string());
+        }
+    }
+    
+    if !failed_dirs.is_empty() && deleted_dirs.is_empty() {
+        // 全部失败
+        Ok(serde_json::json!({
+            "success": false,
+            "message": format!("初始化失败，无法删除以下目录:\n{}", failed_dirs.join("\n")),
+            "deleted": deleted_dirs,
+            "failed": failed_dirs,
+            "skipped": skipped_dirs,
+        }))
+    } else if !failed_dirs.is_empty() {
+        // 部分成功
+        Ok(serde_json::json!({
+            "success": true,
+            "message": format!("部分初始化完成，已删除 {} 个目录，{} 个目录删除失败", deleted_dirs.len(), failed_dirs.len()),
+            "deleted": deleted_dirs,
+            "failed": failed_dirs,
+            "skipped": skipped_dirs,
+        }))
+    } else if deleted_dirs.is_empty() {
+        // 没有找到任何数据目录
+        Ok(serde_json::json!({
+            "success": true,
+            "message": "Windsurf 数据目录不存在，无需初始化",
+            "deleted": deleted_dirs,
+            "failed": failed_dirs,
+            "skipped": skipped_dirs,
+        }))
+    } else {
+        // 全部成功
+        Ok(serde_json::json!({
+            "success": true,
+            "message": format!("Windsurf 已初始化，已清除 {} 个数据目录", deleted_dirs.len()),
+            "deleted": deleted_dirs,
+            "failed": failed_dirs,
+            "skipped": skipped_dirs,
+        }))
+    }
+}

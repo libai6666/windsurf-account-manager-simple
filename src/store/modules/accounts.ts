@@ -248,8 +248,13 @@ export const useAccountsStore = defineStore('accounts', () => {
       await accountApi.updateAccount(account);
       const index = accounts.value.findIndex(a => a.id === account.id);
       if (index !== -1) {
+        // 保留原有password（若传入账号未携带password，则不覆盖，防止导出时密码为空）
+        const existing = accounts.value[index];
+        const merged = (account.password === undefined && existing.password)
+          ? { ...account, password: existing.password }
+          : account;
         // 使用splice确保触发响应式更新
-        accounts.value.splice(index, 1, account);
+        accounts.value.splice(index, 1, merged);
       }
     } catch (e) {
       error.value = (e as Error).message;
@@ -295,7 +300,11 @@ export const useAccountsStore = defineStore('accounts', () => {
     // 一次性更新所有账号（只触发一次响应式更新）
     accounts.value = accounts.value.map(acc => {
       const updated = updateMap.get(acc.id);
-      return updated || acc;
+      if (!updated) return acc;
+      // 保留原有password，防止批量更新时密码丢失
+      return (updated.password === undefined && acc.password)
+        ? { ...updated, password: acc.password }
+        : updated;
     });
     
     // 批量保存到后端（使用 Promise.all 但不等待）

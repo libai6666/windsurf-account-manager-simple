@@ -180,6 +180,15 @@
             />
           </el-tooltip>
           
+          <el-tooltip content="批量取消订阅" placement="bottom" v-if="accountsStore.selectedAccounts.size > 0">
+            <el-button
+              type="danger"
+              :icon="CircleClose"
+              circle
+              @click="showBatchCancelSubscriptionDialog = true"
+            />
+          </el-tooltip>
+          
           <!-- 批量获取试用链接 -->
           <el-tooltip content="批量获取试用链接" placement="bottom" v-if="accountsStore.selectedAccounts.size > 0">
             <el-button
@@ -477,6 +486,15 @@
       @success="accountsStore.loadAccounts()"
     />
     
+    <!-- 批量取消订阅对话框 -->
+    <BatchCancelSubscriptionDialog
+      v-model="showBatchCancelSubscriptionDialog"
+      :selected-account-ids="Array.from(accountsStore.selectedAccounts)"
+      :accounts="accountsStore.accounts"
+      @success="handleBatchCancelSuccess"
+      @close="handleBatchCancelClose"
+    />
+    
     <!-- 标签管理对话框 -->
     <TagManageDialog 
       v-model="showTagManageDialog"
@@ -642,7 +660,8 @@ import {
   Switch,
   SortUp,
   SortDown,
-  Link
+  Link,
+  CircleClose
 } from '@element-plus/icons-vue';
 import { useAccountsStore, useSettingsStore, useUIStore } from '@/store';
 import { apiService, settingsApi, accountApi } from '@/api';
@@ -659,6 +678,7 @@ import BillingDialog from '@/components/BillingDialog.vue';
 import AccountInfoDialog from '@/components/AccountInfoDialog.vue';
 import AboutDialog from '@/components/AboutDialog.vue';
 import BatchUpdatePlanDialog from '@/components/BatchUpdatePlanDialog.vue';
+import BatchCancelSubscriptionDialog from '@/components/BatchCancelSubscriptionDialog.vue';
 import TagManageDialog from '@/components/TagManageDialog.vue';
 import AutoResetDialog from '@/components/AutoResetDialog.vue';
 import CardGeneratorDialog from '@/components/CardGeneratorDialog.vue';
@@ -679,6 +699,7 @@ const billingLoading = ref(false);
 const currentWindsurfEmail = ref<string>('');
 const windsurfVersion = ref<string>('');
 const showBatchUpdatePlanDialog = ref(false);
+const showBatchCancelSubscriptionDialog = ref(false);
 const showAbout = ref(false);
 const showTagManageDialog = ref(false);
 const showBatchImportDialog = ref(false);
@@ -715,6 +736,18 @@ async function handleSortChange(field: string) {
 async function toggleSortDirection() {
   sortDirection.value = sortDirection.value === 'asc' ? 'desc' : 'asc';
   await accountsStore.setSortConfig(currentSortField.value as any, sortDirection.value);
+}
+
+// 批量取消订阅成功处理（保留排序，清除选中）
+async function handleBatchCancelSuccess() {
+  await accountsStore.loadAccounts();
+  await accountsStore.applySorting();
+  accountsStore.clearSelection();
+}
+
+// 批量取消订阅对话框关闭时清除选中状态
+function handleBatchCancelClose() {
+  accountsStore.clearSelection();
 }
 
 // 初始化排序配置

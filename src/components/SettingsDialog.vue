@@ -399,43 +399,33 @@
             </template>
           </el-alert>
           
-          <el-divider content-position="left">Windsurf 伟哥</el-divider>
+          <el-divider content-position="left">初始化 Windsurf</el-divider>
           
-          <el-form-item label="启用伟哥功能">
-            <el-switch 
-              v-model="settings.cunzhiEnabled"
-              active-text="开启"
-              inactive-text="关闭"
-              :loading="cunzhiLoading"
-              @change="handleCunzhiSwitch"
-            />
-          </el-form-item>
-          
-          <el-form-item label="寸止状态">
-            <el-tag v-if="cunzhiStatus.installed" type="success">已安装</el-tag>
-            <el-tag v-else-if="cunzhiStatus.error" type="danger">{{ cunzhiStatus.error }}</el-tag>
-            <el-tag v-else type="info">未安装</el-tag>
-            <el-button 
-              v-if="cunzhiStatus.installed" 
-              size="small" 
-              style="margin-left: 10px;"
-              @click="checkCunzhiStatus"
+          <el-form-item label="重置 Windsurf">
+            <el-button
+              type="danger"
+              :loading="resettingWindsurf"
+              @click="handleResetWindsurf"
             >
-              重新检测
+              初始化 Windsurf
             </el-button>
+            <div style="margin-top: 5px; color: #909399; font-size: 12px;">
+              清除 Windsurf 所有配置、缓存和用户数据，恢复到初始状态
+            </div>
           </el-form-item>
           
           <el-alert
-            title="伟哥功能说明"
-            type="success"
+            title="初始化说明"
+            type="warning"
             :closable="false"
             show-icon
             style="margin-top: 10px;"
           >
             <template #default>
               <div style="font-size: 12px; line-height: 1.6;">
-                <p>💊 伟哥功能：防止 AI 擅自结束对话，让你掌控对话节奏</p>
-                <p>⚠️ 注意：开启/关闭后需要重启 Windsurf 生效</p>
+                <p>� 初始化将清除 Windsurf 的所有配置文件、缓存和用户数据</p>
+                <p>⚠️ 初始化后如需使用无感换号功能，需要重新开启</p>
+                <p>⚠️ 初始化前请确保 Windsurf 已关闭</p>
               </div>
             </template>
           </el-alert>
@@ -518,7 +508,6 @@ const settings = reactive<{
   proxyEnabled: boolean;
   proxyUrl: string | null;
   useLightweightApi: boolean;
-  cunzhiEnabled: boolean;
 }>({
   auto_refresh_token: true,
   seat_count_options: [18, 19, 20],
@@ -546,7 +535,6 @@ const settings = reactive<{
   proxyEnabled: false,  // 默认关闭代理
   proxyUrl: null,  // 默认无代理地址
   useLightweightApi: true,  // 默认使用轻量级API
-  cunzhiEnabled: false,  // 默认关闭伟哥功能
 });
 
 // 成功BIN池相关
@@ -625,12 +613,8 @@ const patchStatus = reactive({
   error: '',
 });
 
-// 伟哥(寸止)相关
-const cunzhiLoading = ref(false);
-const cunzhiStatus = reactive({
-  installed: false,
-  error: '',
-});
+// 初始化 Windsurf 相关
+const resettingWindsurf = ref(false);
 
 watch(() => uiStore.showSettingsDialog, async (show) => {
   if (show && settingsStore.settings) {
@@ -644,8 +628,6 @@ watch(() => uiStore.showSettingsDialog, async (show) => {
     if (windsurfPath.value) {
       await checkPatchStatus();
     }
-    // 检查伟哥状态
-    await checkCunzhiStatus();
     // 加载成功BIN池数量和测试模式进度
     await loadSuccessBinCount();
     await loadTestModeProgress();
@@ -901,75 +883,57 @@ async function handleResetHttpClient() {
   }
 }
 
-// 检查伟哥(寸止)状态
-async function checkCunzhiStatus() {
-  try {
-    const status = await invoke<any>('check_cunzhi_status');
-    cunzhiStatus.installed = status.installed;
-    cunzhiStatus.error = status.error || '';
-    
-    // 同步开关状态与实际状态
-    if (status.installed !== settings.cunzhiEnabled) {
-      settings.cunzhiEnabled = status.installed;
-      await settingsStore.updateSettings(settings);
-    }
-  } catch (error) {
-    cunzhiStatus.installed = false;
-    cunzhiStatus.error = error as string;
-  }
-}
-
-// 处理伟哥开关
-async function handleCunzhiSwitch(value: boolean) {
-  const action = value ? '开启' : '关闭';
-  const message = value 
-    ? '开启伟哥功能将安装 MCP 服务器和全局规则，是否继续？'
-    : '关闭伟哥功能将删除 MCP 配置和全局规则，是否继续？';
-  
+// 初始化 Windsurf
+async function handleResetWindsurf() {
   try {
     await ElMessageBox.confirm(
-      message,
-      `${action}伟哥功能`,
+      '此操作将清除 Windsurf 的所有配置文件、缓存和用户数据，恢复到初始状态。\n\n⚠️ 初始化后如需使用无感换号功能，需要重新开启。\n⚠️ 请确保 Windsurf 已关闭。\n\n确定要继续吗？',
+      '初始化 Windsurf',
       {
-        confirmButtonText: '确定',
+        confirmButtonText: '确定初始化',
         cancelButtonText: '取消',
         type: 'warning',
+        confirmButtonClass: 'el-button--danger',
       }
     );
   } catch {
-    // 用户取消，恢复开关状态
-    settings.cunzhiEnabled = !value;
     return;
   }
   
-  cunzhiLoading.value = true;
+  // 二次确认
   try {
-    let result;
-    if (value) {
-      // 安装伟哥
-      result = await invoke<any>('install_cunzhi', { windsurfPath: settings.windsurfPath || null });
-    } else {
-      // 卸载伟哥
-      result = await invoke<any>('uninstall_cunzhi', { windsurfPath: settings.windsurfPath || null });
-    }
-    
+    await ElMessageBox.confirm(
+      '⚠️ 再次确认：初始化将不可恢复地删除 Windsurf 所有配置和数据！',
+      '二次确认',
+      {
+        confirmButtonText: '我确定要初始化',
+        cancelButtonText: '取消',
+        type: 'error',
+        confirmButtonClass: 'el-button--danger',
+      }
+    );
+  } catch {
+    return;
+  }
+  
+  resettingWindsurf.value = true;
+  try {
+    const result = await invoke<any>('reset_windsurf');
     if (result.success) {
-      ElMessage.success(result.message || `伟哥功能已${action}`);
-      // 更新状态
-      await checkCunzhiStatus();
-      // 保存设置
+      ElMessage.success(result.message || 'Windsurf 已初始化');
+      // 重置无感换号状态
+      settings.seamlessSwitchEnabled = false;
+      patchStatus.installed = false;
+      patchStatus.error = '';
       await settingsStore.updateSettings(settings);
-      // 提示重启
-      ElMessage.warning('请重启 Windsurf 以使更改生效');
+      ElMessage.warning('如需使用无感换号功能，请重新开启');
     } else {
-      ElMessage.error(result.message || `${action}失败`);
-      settings.cunzhiEnabled = !value;
+      ElMessage.error(result.message || '初始化失败');
     }
   } catch (error) {
-    ElMessage.error(`${action}失败: ${error}`);
-    settings.cunzhiEnabled = !value;
+    ElMessage.error(`初始化失败: ${error}`);
   } finally {
-    cunzhiLoading.value = false;
+    resettingWindsurf.value = false;
   }
 }
 
