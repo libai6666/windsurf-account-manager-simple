@@ -169,6 +169,8 @@ const completedResults = ref<{ accountId: string; email: string; token?: string;
 const turnstileRefs = ref<Map<string, HTMLElement>>(new Map());
 const isProcessing = ref(false);
 const accountQueue = ref<AccountItem[]>([]);
+const autoRetryCount = ref(0);
+const MAX_AUTO_RETRIES = 3;
 
 const pendingSlots = computed(() => activeSlots.value.filter(s => s.status === 'pending' || s.status === 'loading'));
 const errorSlots = computed(() => activeSlots.value.filter(s => s.status === 'error'));
@@ -230,6 +232,7 @@ function initializeVerification() {
   completedResults.value = [];
   activeSlots.value = [];
   accountQueue.value = [...props.accounts];
+  autoRetryCount.value = 0;
   // 使用传入的初始并发数
   concurrencyCount.value = props.initialConcurrency;
   
@@ -258,12 +261,20 @@ function fillSlots() {
     activeSlots.value.every(s => s.status === 'success' || s.status === 'error');
   
   if (allCompleted) {
-    // 有失败项时不自动完成，让用户决定是否重试
     const hasFailures = activeSlots.value.some(s => s.status === 'error') || 
       completedResults.value.some(r => r.error);
     if (hasFailures) {
-      // 停止处理状态，让用户可以点击重试或继续
-      isProcessing.value = false;
+      if (autoRetryCount.value < MAX_AUTO_RETRIES) {
+        // 自动重试失败项
+        autoRetryCount.value++;
+        logger.info('ConcurrentTurnstile', `Auto-retrying failed items (attempt ${autoRetryCount.value}/${MAX_AUTO_RETRIES})`);
+        setTimeout(() => {
+          retryAllFailed();
+        }, 1000);
+      } else {
+        // 超过最大自动重试次数，停止处理，让用户决定
+        isProcessing.value = false;
+      }
     } else {
       finishVerification();
     }

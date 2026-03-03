@@ -71,17 +71,6 @@
             <el-option :value="10" label="间隔 10s" />
           </el-select>
           <el-button
-            v-if="failedCount > 0"
-            type="warning"
-            size="small"
-            :icon="RefreshRight"
-            :disabled="isOpening || isRetrying"
-            :loading="isRetrying"
-            @click="handleRetryFailed"
-          >
-            重试失败 ({{ failedCount }})
-          </el-button>
-          <el-button
             type="primary"
             size="small"
             :icon="ChromeFilled"
@@ -99,6 +88,37 @@
           >
             复制选中
           </el-button>
+        </div>
+      </div>
+
+      <!-- 完成状态操作栏 -->
+      <div class="links-check-bar">
+        <el-button
+          size="small"
+          type="success"
+          :disabled="selectedLinks.size === 0 || isOpening"
+          @click="handleMarkSelectedCompleted"
+        >
+          标记选中为已完成 ({{ selectedLinks.size }})
+        </el-button>
+        <el-button
+          size="small"
+          type="warning"
+          :disabled="completedLinks.size === 0 || isOpening"
+          @click="handleUnmarkAllCompleted"
+        >
+          清除已完成标记
+        </el-button>
+        <span v-if="completedLinks.size > 0" class="completed-count">
+          已完成: <strong>{{ completedLinks.size }}</strong> 个
+        </span>
+        <div style="margin-left: auto; display: flex; gap: 12px; align-items: center;">
+          <el-checkbox v-model="hideCompleted">
+            隐藏已完成
+          </el-checkbox>
+          <el-checkbox v-model="skipCompleted">
+            打开时跳过已完成
+          </el-checkbox>
         </div>
       </div>
 
@@ -124,18 +144,8 @@
               <span class="email-text">{{ item.data.email }}</span>
               <el-tag v-if="item.data.success" type="success" size="small">成功</el-tag>
               <el-tag v-else type="danger" size="small">{{ item.data.error || '失败' }}</el-tag>
+              <el-tag v-if="completedLinks.has(item.realIndex)" size="small" class="completed-tag">已完成</el-tag>
               <el-tag v-if="openedLinks.has(item.realIndex)" type="warning" size="small" effect="light">已打开</el-tag>
-              <el-button
-                v-if="!item.data.success && item.data.accountId"
-                type="primary"
-                link
-                size="small"
-                :disabled="isRetrying"
-                @click="handleRetrySingle(item.data)"
-              >
-                <el-icon><RefreshRight /></el-icon>
-                重试
-              </el-button>
             </div>
             <div v-if="item.data.success && item.data.url" class="link-url">
               <el-link
@@ -157,7 +167,7 @@
           v-model:current-page="currentPage"
           v-model:page-size="pageSize"
           :page-sizes="[10, 15, 20, 50, 100]"
-          :total="links.length"
+          :total="filteredLinks.length"
           :small="true"
           layout="total, sizes, prev, pager, next, jumper"
           @size-change="handlePageSizeChange"
@@ -186,6 +196,9 @@
       <div class="links-summary">
         <span class="summary-text">
           共 {{ links.length }} 个账号，成功 {{ successCount }} 个，失败 {{ failedCount }} 个
+          <template v-if="completedLinks.size > 0">
+            ，已完成 {{ completedLinks.size }} 个
+          </template>
           <template v-if="openedLinks.size > 0">
             ，已打开 {{ openedLinks.size }} 个
           </template>
@@ -195,17 +208,7 @@
 
     <template #footer>
       <div class="drawer-footer">
-        <el-button @click="handleClose" :disabled="isOpening || isRetrying">关闭</el-button>
-        <el-button
-          v-if="failedCount > 0"
-          type="warning"
-          :icon="RefreshRight"
-          :disabled="isOpening || isRetrying"
-          :loading="isRetrying"
-          @click="handleRetryFailed"
-        >
-          重试失败项 ({{ failedCount }})
-        </el-button>
+        <el-button @click="handleClose" :disabled="isOpening">关闭</el-button>
         <el-button
           type="primary"
           :icon="ChromeFilled"
@@ -224,7 +227,7 @@
 import { ref, computed, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import { invoke } from '@tauri-apps/api/core';
-import { ChromeFilled, CopyDocument, RefreshRight, Minus, Close } from '@element-plus/icons-vue';
+import { ChromeFilled, CopyDocument, Minus, Close } from '@element-plus/icons-vue';
 import { useSettingsStore } from '@/store';
 
 export interface TrialLinkItem {
@@ -242,7 +245,6 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'update:modelValue', value: boolean): void;
-  (e: 'retry', accounts: { email: string; accountId: string }[]): void;
   (e: 'minimize'): void;
   (e: 'close'): void;
 }>();
@@ -251,8 +253,10 @@ const settingsStore = useSettingsStore();
 const dialogVisible = ref(false);
 const selectedLinks = ref<Set<number>>(new Set());
 const openedLinks = ref<Set<number>>(new Set());
+const completedLinks = ref<Set<number>>(new Set());
+const skipCompleted = ref(true);
+const hideCompleted = ref(false);
 const isOpening = ref(false);
-const isRetrying = ref(false);
 const isMinimizing = ref(false);
 const cancelOpening = ref(false);
 const openProgress = ref({ current: 0, total: 0, currentEmail: '' });
@@ -262,20 +266,31 @@ const openDelay = ref(3);
 const currentPage = ref(1);
 const pageSize = ref(20);
 
+// 记录上一次的links引用，用于判断是否是新数据
+let lastLinksRef: TrialLinkItem[] | null = null;
+
 // 同步 visible
 watch(() => props.modelValue, (val) => {
   dialogVisible.value = val;
   if (val) {
-    // 打开时重置状态
-    currentPage.value = 1;
-    openedLinks.value = new Set();
-    // 默认不选中任何链接，让用户手动选择
-    selectedLinks.value = new Set();
+    // 只有当links数据变化时（新批次），才重置状态
+    if (lastLinksRef !== props.links) {
+      lastLinksRef = props.links;
+      currentPage.value = 1;
+      openedLinks.value = new Set();
+      completedLinks.value = new Set();
+      selectedLinks.value = new Set();
+    }
+    // 从最小化恢复时不重置任何状态
   }
 });
 
 watch(dialogVisible, (val) => {
   emit('update:modelValue', val);
+});
+
+watch(hideCompleted, () => {
+  currentPage.value = 1;
 });
 
 const successCount = computed(() => props.links.filter(l => l.success).length);
@@ -286,14 +301,21 @@ const successLinks = computed(() =>
     .filter(({ item }) => item.success && item.url)
 );
 
-// 当前页数据（带原始索引）
+// 筛选后的链接列表（带原始索引）
+const filteredLinks = computed(() => {
+  return props.links
+    .map((data, index) => ({ data, realIndex: index }))
+    .filter(({ realIndex }) => {
+      if (hideCompleted.value && completedLinks.value.has(realIndex)) return false;
+      return true;
+    });
+});
+
+// 当前页数据（基于筛选后的列表）
 const currentPageItems = computed(() => {
   const start = (currentPage.value - 1) * pageSize.value;
   const end = start + pageSize.value;
-  return props.links.slice(start, end).map((data, i) => ({
-    data,
-    realIndex: start + i
-  }));
+  return filteredLinks.value.slice(start, end);
 });
 
 // 当前页中成功的链接索引
@@ -370,11 +392,23 @@ async function handleOpenSelected() {
   const browserMode = settingsStore.settings?.browserMode ?? 'incognito';
   const openCommand = browserMode === 'incognito' ? 'open_external_link_incognito' : 'open_external_link';
 
-  const selectedIndices = Array.from(selectedLinks.value);
+  // 过滤掉已完成的链接（如果开启了跳过已完成）
+  const selectedIndices = Array.from(selectedLinks.value).filter(idx => {
+    if (skipCompleted.value && completedLinks.value.has(idx)) return false;
+    return true;
+  });
+
+  if (selectedIndices.length === 0) {
+    ElMessage.info('所有选中链接均已完成，无需打开');
+    isOpening.value = false;
+    return;
+  }
+
   openProgress.value = { current: 0, total: selectedIndices.length, currentEmail: '' };
 
   let openedCount = 0;
   let openFailedCount = 0;
+  let skippedCount = Array.from(selectedLinks.value).length - selectedIndices.length;
 
   try {
     for (let i = 0; i < selectedIndices.length; i++) {
@@ -400,10 +434,14 @@ async function handleOpenSelected() {
       }
     }
 
+    let msg = `已打开 ${openedCount} 个链接`;
+    if (skippedCount > 0) msg += `，跳过已完成 ${skippedCount} 个`;
+    if (openFailedCount > 0) msg += `，${openFailedCount} 个打开失败`;
+    
     if (openFailedCount === 0) {
-      ElMessage.success(`已打开 ${openedCount} 个链接`);
+      ElMessage.success(msg);
     } else {
-      ElMessage.warning(`已打开 ${openedCount} 个链接，${openFailedCount} 个打开失败`);
+      ElMessage.warning(msg);
     }
   } finally {
     isOpening.value = false;
@@ -412,6 +450,22 @@ async function handleOpenSelected() {
     selectedLinks.value = new Set();
   }
 }
+
+// 手动标记选中链接为已完成
+function handleMarkSelectedCompleted() {
+  if (selectedLinks.value.size === 0) return;
+  const newCompleted = new Set(completedLinks.value);
+  selectedLinks.value.forEach(idx => newCompleted.add(idx));
+  completedLinks.value = newCompleted;
+  ElMessage.success(`已标记 ${selectedLinks.value.size} 个链接为已完成`);
+}
+
+// 清除所有已完成标记
+function handleUnmarkAllCompleted() {
+  completedLinks.value = new Set();
+  ElMessage.info('已清除所有完成标记');
+}
+
 
 async function handleOpenSingle(url: string, index: number) {
   const browserMode = settingsStore.settings?.browserMode ?? 'incognito';
@@ -459,6 +513,7 @@ function handleClose() {
   dialogVisible.value = false;
   selectedLinks.value = new Set();
   openedLinks.value = new Set();
+  completedLinks.value = new Set();
   // 通知父组件真正关闭并清空数据
   emit('close');
 }
@@ -469,30 +524,6 @@ function handleMinimize() {
   emit('minimize');
 }
 
-function handleRetryFailed() {
-  const failedItems = props.links.filter(item => !item.success && item.accountId);
-  if (failedItems.length === 0) {
-    ElMessage.warning('没有可重试的失败项');
-    return;
-  }
-  
-  isRetrying.value = true;
-  emit('retry', failedItems.map(item => ({ email: item.email, accountId: item.accountId! })));
-}
-
-function handleRetrySingle(item: TrialLinkItem) {
-  if (!item.accountId) return;
-  isRetrying.value = true;
-  emit('retry', [{ email: item.email, accountId: item.accountId }]);
-}
-
-function setRetrying(value: boolean) {
-  isRetrying.value = value;
-}
-
-defineExpose({
-  setRetrying
-});
 </script>
 
 <style scoped>
@@ -665,5 +696,27 @@ defineExpose({
   display: flex;
   justify-content: flex-end;
   gap: 10px;
+}
+
+.links-check-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  background: #fdf6ec;
+  border: 1px solid #faecd8;
+  border-radius: 6px;
+}
+
+.completed-count {
+  font-size: 13px;
+  color: #e6a23c;
+}
+
+.completed-tag {
+  background-color: #ff4500 !important;
+  color: #fff !important;
+  border-color: #ff4500 !important;
+  font-weight: 600;
 }
 </style>

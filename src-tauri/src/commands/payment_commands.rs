@@ -1431,3 +1431,38 @@ pub async fn get_test_mode_progress(
     let settings = data_store.get_settings().await.map_err(|e| e.to_string())?;
     Ok(settings.test_mode_last_bin)
 }
+
+/// 从 HTML 中移除 script/style 标签及其内容，只保留可见文本部分
+fn strip_script_tags(html: &str) -> String {
+    let mut result = html.to_string();
+    
+    // 移除 <script>...</script> 标签及内容（不区分大小写）
+    loop {
+        let lower = result.to_lowercase();
+        if let Some(start) = lower.find("<script") {
+            if let Some(end_offset) = lower[start..].find("</script>") {
+                let end = start + end_offset + "</script>".len();
+                result = format!("{}{}", &result[..start], &result[end..]);
+                continue;
+            }
+        }
+        break;
+    }
+    
+    // 同样移除 <style>...</style> 标签
+    loop {
+        let lower = result.to_lowercase();
+        if let Some(start) = lower.find("<style") {
+            if let Some(end_offset) = lower[start..].find("</style>") {
+                let end = start + end_offset + "</style>".len();
+                result = format!("{}{}", &result[..start], &result[end..]);
+                continue;
+            }
+        }
+        break;
+    }
+    
+    result
+}
+
+

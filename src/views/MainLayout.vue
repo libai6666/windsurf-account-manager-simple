@@ -451,10 +451,8 @@
     
     <!-- 批量试用链接结果对话框 -->
     <BatchTrialLinksDialog
-      ref="batchTrialLinksDialogRef"
       v-model="showBatchTrialLinksDialog"
       :links="batchTrialLinksData"
-      @retry="handleBatchTrialLinksRetry"
       @minimize="handleBatchTrialLinksMinimize"
       @close="handleBatchTrialLinksClose"
     />
@@ -717,7 +715,6 @@ const showBatchTrialLinksDialog = ref(false);
 const batchTrialLinksData = ref<TrialLinkItem[]>([]);
 const showConcurrentTurnstileDialog = ref(false);
 const concurrentVerifyAccounts = ref<{ id: string; email: string }[]>([]);
-const batchTrialLinksDialogRef = ref<InstanceType<typeof BatchTrialLinksDialog> | null>(null);
 const pendingTrialLinksResults = ref<Map<string, { token?: string; error?: string }>>(new Map());
 const batchTrialSelectedAccounts = ref<{ id: string; email: string; token?: string }[]>([]);
 const defaultConcurrencyCount = ref(4);
@@ -1882,61 +1879,6 @@ async function handleConcurrentVerifyCompleted(results: { accountId: string; ema
   isBatchGettingTrialLinks.value = false;
 }
 
-// 处理批量试用链接结果对话框的重试事件
-async function handleBatchTrialLinksRetry(accounts: { email: string; accountId: string }[]) {
-  const teamsTier = settingsStore.settings?.subscriptionPlan ?? 2;
-  const needsTurnstile = teamsTier === 2;
-  
-  if (needsTurnstile) {
-    // 需要重新验证
-    concurrentVerifyAccounts.value = accounts.map(a => ({ id: a.accountId, email: a.email }));
-    showConcurrentTurnstileDialog.value = true;
-  } else {
-    // 不需要验证，直接重试
-    const accountsToRetry = accountsStore.accounts.filter(a => accounts.some(acc => acc.accountId === a.id));
-    await retryFailedTrialLinks(accountsToRetry);
-  }
-}
-
-// 重试失败的链接获取
-async function retryFailedTrialLinks(accounts: any[]) {
-  const teamsTier = settingsStore.settings?.subscriptionPlan ?? 2;
-  const paymentPeriod = settingsStore.settings?.paymentPeriod ?? 1;
-  const teamName = teamsTier === 1 ? (settingsStore.settings?.teamName || undefined) : undefined;
-  const seatCount = settingsStore.settings?.seatCount ?? 1;
-  
-  const newResults: TrialLinkItem[] = [];
-  
-  for (const account of accounts) {
-    try {
-      const result = await apiService.getTrialPaymentLink(
-        account.id,
-        teamsTier,
-        paymentPeriod,
-        teamName,
-        teamsTier === 1 ? seatCount : undefined,
-        undefined
-      );
-      
-      if (result.success && result.stripe_url) {
-        newResults.push({ email: account.email, accountId: account.id, success: true, url: result.stripe_url });
-      } else {
-        newResults.push({ email: account.email, accountId: account.id, success: false, error: result.error || '获取失败' });
-      }
-    } catch (error: any) {
-      newResults.push({ email: account.email, accountId: account.id, success: false, error: error.toString() });
-    }
-  }
-  
-  // 更新结果列表
-  const updatedLinks = batchTrialLinksData.value.map(link => {
-    const newResult = newResults.find(r => r.accountId === link.accountId);
-    return newResult || link;
-  });
-  
-  batchTrialLinksData.value = updatedLinks;
-  batchTrialLinksDialogRef.value?.setRetrying(false);
-}
 
 // 处理结果对话框最小化
 function handleBatchTrialLinksMinimize() {
