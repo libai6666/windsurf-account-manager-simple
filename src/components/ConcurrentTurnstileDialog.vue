@@ -403,6 +403,8 @@ function removeSlotAndFillNext(slot: TurnstileSlot) {
 }
 
 function retrySlot(slot: TurnstileSlot) {
+  // 清理 completedResults 中该账号的旧记录，避免重复
+  completedResults.value = completedResults.value.filter(r => r.accountId !== slot.accountId);
   slot.status = 'pending';
   slot.token = undefined;
   nextTick(() => {

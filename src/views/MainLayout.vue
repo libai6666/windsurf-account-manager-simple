@@ -718,6 +718,7 @@ const concurrentVerifyAccounts = ref<{ id: string; email: string }[]>([]);
 const pendingTrialLinksResults = ref<Map<string, { token?: string; error?: string }>>(new Map());
 const batchTrialSelectedAccounts = ref<{ id: string; email: string; token?: string }[]>([]);
 const defaultConcurrencyCount = ref(4);
+const pendingApiCalls = ref(0);
 
 // 排序相关
 const currentSortField = ref<string>('custom');
@@ -1820,6 +1821,7 @@ async function handleSingleVerifySuccess(accountId: string, token: string) {
   const account = batchTrialSelectedAccounts.value.find(a => a.id === accountId);
   if (!account) return;
   
+  pendingApiCalls.value++;
   try {
     const result = await apiService.getTrialPaymentLink(
       accountId,
@@ -1853,6 +1855,8 @@ async function handleSingleVerifySuccess(accountId: string, token: string) {
     } else {
       batchTrialLinksData.value[existingIndex] = { email: account.email, accountId, success: false, error: error.toString() };
     }
+  } finally {
+    pendingApiCalls.value--;
   }
 }
 
@@ -1860,7 +1864,19 @@ async function handleSingleVerifySuccess(accountId: string, token: string) {
 async function handleConcurrentVerifyCompleted(results: { accountId: string; email: string; token?: string; error?: string }[]) {
   showConcurrentTurnstileDialog.value = false;
   
-  // 添加验证失败的到结果列表
+  // 等待所有进行中的 API 调用完成，避免竞态条件
+  if (pendingApiCalls.value > 0) {
+    await new Promise<void>(resolve => {
+      const checkInterval = setInterval(() => {
+        if (pendingApiCalls.value <= 0) {
+          clearInterval(checkInterval);
+          resolve();
+        }
+      }, 200);
+    });
+  }
+  
+  // 添加验证失败的到结果列表（只添加 batchTrialLinksData 中不存在的）
   const failedVerify = results.filter(r => !r.token);
   failedVerify.forEach(r => {
     const existingIndex = batchTrialLinksData.value.findIndex(l => l.accountId === r.accountId);
@@ -2044,7 +2060,7 @@ async function handleExportAccounts(selectedOnly: boolean = false) {
         accounts.forEach(account => {
           content += `"${account.email}","${getCredential(account)}","${account.nickname || ''}","${account.group || ''}","${account.status || ''}","${account.plan_name || ''}"\n`;
         });
-        filename = `accounts${fileSuffix}_${timestamp}.csv`;
+        filename = `accounts${fileSuffix}_${accounts.length}_${timestamp}.csv`;
         break;
         
       case '2': // JSON
@@ -2056,14 +2072,14 @@ async function handleExportAccounts(selectedOnly: boolean = false) {
           status: account.status,
           plan: account.plan_name
         })), null, 2);
-        filename = `accounts${fileSuffix}_${timestamp}.json`;
+        filename = `accounts${fileSuffix}_${accounts.length}_${timestamp}.json`;
         break;
         
       case '3': // 文本
         accounts.forEach(account => {
           content += `${account.email} ${getCredential(account)}\n`;
         });
-        filename = `accounts${fileSuffix}_${timestamp}.txt`;
+        filename = `accounts${fileSuffix}_${accounts.length}_${timestamp}.txt`;
         break;
     }
     
@@ -2072,18 +2088,20 @@ async function handleExportAccounts(selectedOnly: boolean = false) {
       await navigator.clipboard.writeText(content);
       ElMessage.success(`已复制 ${accounts.length} 个账号到剪贴板`);
     } else {
-      // 创建下载链接
-      const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
-      const url = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = filename;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      window.URL.revokeObjectURL(url);
-      
-      ElMessage.success(`已导出 ${accounts.length} 个账号`);
+      // 使用 Tauri save 对话框让用户选择保存路径和文件名
+      const { save } = await import('@tauri-apps/plugin-dialog');
+      const ext = filename.split('.').pop() || 'txt';
+      const filterName = ext === 'csv' ? 'CSV 文件' : ext === 'json' ? 'JSON 文件' : '文本文件';
+      const savePath = await save({
+        defaultPath: filename,
+        filters: [{ name: filterName, extensions: [ext] }]
+      });
+      if (!savePath) {
+        // 用户取消了保存对话框
+        return;
+      }
+      await invoke('write_export_file', { path: savePath, content });
+      ElMessage.success(`已导出 ${accounts.length} 个账号到 ${savePath}`);
     }
   } catch (error) {
     if (error !== 'cancel') {

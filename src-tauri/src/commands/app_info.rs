@@ -74,6 +74,14 @@ pub async fn append_log_file(app: AppHandle, content: String) -> Result<(), Stri
     Ok(())
 }
 
+/// 写入导出文件到指定路径
+#[command]
+pub async fn write_export_file(path: String, content: String) -> Result<(), String> {
+    fs::write(&path, content.as_bytes())
+        .map_err(|e| format!("Failed to write export file: {}", e))?;
+    Ok(())
+}
+
 /// 获取日志目录路径
 #[command]
 pub async fn get_log_directory(_app: AppHandle) -> Result<String, String> {

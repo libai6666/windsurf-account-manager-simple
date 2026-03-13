@@ -211,6 +211,7 @@ pub fn run() {
             // 日志命令
             commands::append_log_file,
             commands::get_log_directory,
+            commands::write_export_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
