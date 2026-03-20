@@ -42,14 +42,15 @@ async function runAutoSwitchCheck() {
   try {
     const result = await apiService.checkAutoSwitch();
     console.log('[自动换号] 检测结果:', result.action, result.reason || '');
+    // 每次检测后都刷新账号列表（后端会更新配额数据到数据库）
+    await accountsStore.loadAccounts();
+    
     if (result.action === 'switched') {
       ElNotification.success({
         title: '自动换号成功',
-        message: `已从 ${result.from_account} (剩余${result.from_daily_remaining}%) 切换到 ${result.to_account} (剩余${result.to_daily_remaining}%)`,
+        message: `${result.reason ? `原因：${result.reason}\n` : ''}已从 ${result.from_account} (日${result.from_daily_remaining}%/周${result.from_weekly_remaining}%) 切换到 ${result.to_account} (日${result.to_daily_remaining}%/周${result.to_weekly_remaining}%)`,
         duration: 8000,
       });
-      // 刷新账号列表
-      await accountsStore.loadAccounts();
       // 重新加载设置（因为后端更新了currentAccountId）
       await settingsStore.loadSettings();
     } else if (result.action === 'no_candidate') {

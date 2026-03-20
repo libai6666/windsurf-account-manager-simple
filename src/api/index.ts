@@ -329,11 +329,14 @@ export const apiService = {
     reason?: string;
     from_account?: string;
     from_daily_remaining?: number;
+    from_weekly_remaining?: number;
     to_account?: string;
     to_account_id?: string;
     to_daily_remaining?: number;
+    to_weekly_remaining?: number;
     current_account?: string;
     daily_remaining?: number;
+    weekly_remaining?: number;
   }> {
     return await invoke('check_auto_switch');
   },

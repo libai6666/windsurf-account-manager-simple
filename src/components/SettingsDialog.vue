@@ -422,7 +422,7 @@
               <el-option
                 v-for="acc in groupAccounts"
                 :key="acc.id"
-                :label="`${acc.email}${acc.daily_quota_remaining !== undefined ? ` (日配额 ${acc.daily_quota_remaining}%)` : ''}`"
+                :label="`${acc.email}${acc.daily_quota_remaining !== undefined ? ` (日${acc.daily_quota_remaining}%/周${acc.weekly_quota_remaining ?? '?'}%)` : ''}`"
                 :value="acc.id"
               />
             </el-select>
@@ -441,7 +441,7 @@
             />
             <span style="margin-left: 8px; color: #606266;">%</span>
             <div style="margin-top: 5px; color: #909399; font-size: 12px;">
-              当前账号每日配额剩余低于此百分比时自动切换
+              当前账号每日配额剩余低于此百分比，或每周配额为0时自动切换
             </div>
           </el-form-item>
           
@@ -469,8 +469,8 @@
               <div style="font-size: 12px; line-height: 1.6;">
                 <p>🚀 无感换号功能：实现 Windsurf 账号无感切换</p>
                 <p>⚠️ 注意：开启/关闭时会自动重启 Windsurf</p>
-                <p>🔄 自动换号：定时检测当前账号每日配额，低于阈值时自动从指定分组切换到配额充足的账号</p>
-                <p>💡 如果分组内没有满足配额要求的账号，将暂停切换并发送通知</p>
+                <p>🔄 自动换号：定时检测当前账号每日配额和每周配额，日配额低于阈值或周配额为0时自动切换</p>
+                <p>💡 候选账号需同时满足：日配额>阈值 且 周配额>0%，否则暂停切换并通知</p>
               </div>
             </template>
           </el-alert>
