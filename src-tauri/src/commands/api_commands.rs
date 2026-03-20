@@ -162,6 +162,20 @@ pub async fn login_account(
                         updated_account.subscription_expires_at = chrono::DateTime::from_timestamp(plan_end, 0);
                     }
                     
+                    // 更新每日/每周配额信息（新配额系统）
+                    if let Some(v) = plan_status.get("daily_quota_remaining").and_then(|v| v.as_i64()) {
+                        updated_account.daily_quota_remaining = Some(v as i32);
+                    }
+                    if let Some(v) = plan_status.get("weekly_quota_remaining").and_then(|v| v.as_i64()) {
+                        updated_account.weekly_quota_remaining = Some(v as i32);
+                    }
+                    if let Some(v) = plan_status.get("daily_quota_reset").and_then(|v| v.as_i64()) {
+                        updated_account.daily_quota_reset = Some(v);
+                    }
+                    if let Some(v) = plan_status.get("weekly_quota_reset").and_then(|v| v.as_i64()) {
+                        updated_account.weekly_quota_reset = Some(v);
+                    }
+                    
                     updated_account.last_quota_update = Some(chrono::Utc::now());
                     store.update_account(updated_account.clone()).await
                         .map_err(|e| format!("保存账户信息失败: {}", e))?;
@@ -335,6 +349,20 @@ pub async fn refresh_token(
                     if let Some(plan_end) = plan_status.get("plan_end").and_then(|v| v.as_i64()) {
                         updated_account.subscription_expires_at = chrono::DateTime::from_timestamp(plan_end, 0);
                     }
+                    
+                    // 提取每日/每周配额信息（新配额系统）
+                    if let Some(v) = plan_status.get("daily_quota_remaining").and_then(|v| v.as_i64()) {
+                        updated_account.daily_quota_remaining = Some(v as i32);
+                    }
+                    if let Some(v) = plan_status.get("weekly_quota_remaining").and_then(|v| v.as_i64()) {
+                        updated_account.weekly_quota_remaining = Some(v as i32);
+                    }
+                    if let Some(v) = plan_status.get("daily_quota_reset").and_then(|v| v.as_i64()) {
+                        updated_account.daily_quota_reset = Some(v);
+                    }
+                    if let Some(v) = plan_status.get("weekly_quota_reset").and_then(|v| v.as_i64()) {
+                        updated_account.weekly_quota_reset = Some(v);
+                    }
 
                     updated_account.last_quota_update = Some(chrono::Utc::now());
                     store.update_account(updated_account.clone()).await
@@ -387,6 +415,24 @@ pub async fn refresh_token(
                     .unwrap_or(false);
                 updated_account.is_team_owner = Some(is_root_admin);
 
+                // 补充调用 GetPlanStatus 获取每日/每周配额信息
+                if let Ok(plan_result) = windsurf_service.get_plan_status(&token).await {
+                    if let Some(ps) = plan_result.get("plan_status") {
+                        if let Some(v) = ps.get("daily_quota_remaining").and_then(|v| v.as_i64()) {
+                            updated_account.daily_quota_remaining = Some(v as i32);
+                        }
+                        if let Some(v) = ps.get("weekly_quota_remaining").and_then(|v| v.as_i64()) {
+                            updated_account.weekly_quota_remaining = Some(v as i32);
+                        }
+                        if let Some(v) = ps.get("daily_quota_reset").and_then(|v| v.as_i64()) {
+                            updated_account.daily_quota_reset = Some(v);
+                        }
+                        if let Some(v) = ps.get("weekly_quota_reset").and_then(|v| v.as_i64()) {
+                            updated_account.weekly_quota_reset = Some(v);
+                        }
+                    }
+                }
+
                 updated_account.last_quota_update = Some(chrono::Utc::now());
                 store.update_account(updated_account.clone()).await
                     .map_err(|e| format!("保存账户信息失败: {}", e))?;
@@ -425,7 +471,11 @@ pub async fn refresh_token(
         "is_disabled": updated_account.is_disabled,
         "is_team_owner": updated_account.is_team_owner,
         "windsurf_api_key": updated_account.windsurf_api_key,
-        "last_quota_update": updated_account.last_quota_update.map(|t| t.to_rfc3339())
+        "last_quota_update": updated_account.last_quota_update.map(|t| t.to_rfc3339()),
+        "daily_quota_remaining": updated_account.daily_quota_remaining,
+        "weekly_quota_remaining": updated_account.weekly_quota_remaining,
+        "daily_quota_reset": updated_account.daily_quota_reset,
+        "weekly_quota_reset": updated_account.weekly_quota_reset
     }))
 }
 
@@ -1055,6 +1105,20 @@ fn get_current_user_internal<'a>(
                     expires_at = plan_end;
                     updated_account.subscription_expires_at = chrono::DateTime::from_timestamp(plan_end, 0);
                 }
+                
+                // 更新每日/每周配额信息（新配额系统）
+                if let Some(v) = plan_status.get("daily_quota_remaining").and_then(|v| v.as_i64()) {
+                    updated_account.daily_quota_remaining = Some(v as i32);
+                }
+                if let Some(v) = plan_status.get("weekly_quota_remaining").and_then(|v| v.as_i64()) {
+                    updated_account.weekly_quota_remaining = Some(v as i32);
+                }
+                if let Some(v) = plan_status.get("daily_quota_reset").and_then(|v| v.as_i64()) {
+                    updated_account.daily_quota_reset = Some(v);
+                }
+                if let Some(v) = plan_status.get("weekly_quota_reset").and_then(|v| v.as_i64()) {
+                    updated_account.weekly_quota_reset = Some(v);
+                }
 
                 updated_account.last_quota_update = Some(chrono::Utc::now());
                 store.update_account(updated_account).await
@@ -1146,6 +1210,24 @@ fn get_current_user_internal<'a>(
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
             updated_account.is_team_owner = Some(is_root_admin);
+
+            // 补充调用 GetPlanStatus 获取每日/每周配额信息
+            if let Ok(plan_result) = windsurf_service.get_plan_status(&token).await {
+                if let Some(plan_status) = plan_result.get("plan_status") {
+                    if let Some(v) = plan_status.get("daily_quota_remaining").and_then(|v| v.as_i64()) {
+                        updated_account.daily_quota_remaining = Some(v as i32);
+                    }
+                    if let Some(v) = plan_status.get("weekly_quota_remaining").and_then(|v| v.as_i64()) {
+                        updated_account.weekly_quota_remaining = Some(v as i32);
+                    }
+                    if let Some(v) = plan_status.get("daily_quota_reset").and_then(|v| v.as_i64()) {
+                        updated_account.daily_quota_reset = Some(v);
+                    }
+                    if let Some(v) = plan_status.get("weekly_quota_reset").and_then(|v| v.as_i64()) {
+                        updated_account.weekly_quota_reset = Some(v);
+                    }
+                }
+            }
 
             updated_account.last_quota_update = Some(chrono::Utc::now());
 
@@ -1458,6 +1540,21 @@ async fn refresh_token_internal(
                     if let Some(plan_end) = plan_status.get("plan_end").and_then(|v| v.as_i64()) {
                         updated_account.subscription_expires_at = chrono::DateTime::from_timestamp(plan_end, 0);
                     }
+                    
+                    // 提取每日/每周配额信息（新配额系统）
+                    if let Some(v) = plan_status.get("daily_quota_remaining").and_then(|v| v.as_i64()) {
+                        updated_account.daily_quota_remaining = Some(v as i32);
+                    }
+                    if let Some(v) = plan_status.get("weekly_quota_remaining").and_then(|v| v.as_i64()) {
+                        updated_account.weekly_quota_remaining = Some(v as i32);
+                    }
+                    if let Some(v) = plan_status.get("daily_quota_reset").and_then(|v| v.as_i64()) {
+                        updated_account.daily_quota_reset = Some(v);
+                    }
+                    if let Some(v) = plan_status.get("weekly_quota_reset").and_then(|v| v.as_i64()) {
+                        updated_account.weekly_quota_reset = Some(v);
+                    }
+                    
                     updated_account.last_quota_update = Some(chrono::Utc::now());
                 }
             }
@@ -1507,6 +1604,24 @@ async fn refresh_token_internal(
                     .unwrap_or(false);
                 updated_account.is_team_owner = Some(is_root_admin);
 
+                // 补充调用 GetPlanStatus 获取每日/每周配额信息
+                if let Ok(plan_result) = windsurf_service.get_plan_status(&token).await {
+                    if let Some(plan_status) = plan_result.get("plan_status") {
+                        if let Some(v) = plan_status.get("daily_quota_remaining").and_then(|v| v.as_i64()) {
+                            updated_account.daily_quota_remaining = Some(v as i32);
+                        }
+                        if let Some(v) = plan_status.get("weekly_quota_remaining").and_then(|v| v.as_i64()) {
+                            updated_account.weekly_quota_remaining = Some(v as i32);
+                        }
+                        if let Some(v) = plan_status.get("daily_quota_reset").and_then(|v| v.as_i64()) {
+                            updated_account.daily_quota_reset = Some(v);
+                        }
+                        if let Some(v) = plan_status.get("weekly_quota_reset").and_then(|v| v.as_i64()) {
+                            updated_account.weekly_quota_reset = Some(v);
+                        }
+                    }
+                }
+
                 updated_account.last_quota_update = Some(chrono::Utc::now());
             }
         }
@@ -1540,7 +1655,11 @@ async fn refresh_token_internal(
         "is_team_owner": updated_account.is_team_owner,
         "subscription_expires_at": updated_account.subscription_expires_at.map(|t| t.to_rfc3339()),
         "subscription_active": updated_account.subscription_active,
-        "last_quota_update": updated_account.last_quota_update.map(|t| t.to_rfc3339())
+        "last_quota_update": updated_account.last_quota_update.map(|t| t.to_rfc3339()),
+        "daily_quota_remaining": updated_account.daily_quota_remaining,
+        "weekly_quota_remaining": updated_account.weekly_quota_remaining,
+        "daily_quota_reset": updated_account.daily_quota_reset,
+        "weekly_quota_reset": updated_account.weekly_quota_reset
     }))
 }
 

@@ -464,6 +464,19 @@ export const useAccountsStore = defineStore('accounts', () => {
         if (result.is_team_owner !== undefined) {
           updatedAccount.is_team_owner = result.is_team_owner;
         }
+        // 更新每日/每周配额信息
+        if (result.daily_quota_remaining !== undefined && result.daily_quota_remaining !== null) {
+          updatedAccount.daily_quota_remaining = result.daily_quota_remaining;
+        }
+        if (result.weekly_quota_remaining !== undefined && result.weekly_quota_remaining !== null) {
+          updatedAccount.weekly_quota_remaining = result.weekly_quota_remaining;
+        }
+        if (result.daily_quota_reset !== undefined && result.daily_quota_reset !== null) {
+          updatedAccount.daily_quota_reset = result.daily_quota_reset;
+        }
+        if (result.weekly_quota_reset !== undefined && result.weekly_quota_reset !== null) {
+          updatedAccount.weekly_quota_reset = result.weekly_quota_reset;
+        }
         updatedAccount.last_quota_update = dayjs().toISOString();
         
         // 根据模式选择更新方式
@@ -556,6 +569,10 @@ export const useAccountsStore = defineStore('accounts', () => {
             if (item.data.subscription_active !== undefined) updatedAcc.subscription_active = item.data.subscription_active;
             if (item.data.subscription_expires_at) updatedAcc.subscription_expires_at = dayjs.unix(item.data.subscription_expires_at).toISOString();
             if (item.data.last_quota_update) updatedAcc.last_quota_update = item.data.last_quota_update;
+            if (item.data.daily_quota_remaining !== undefined && item.data.daily_quota_remaining !== null) updatedAcc.daily_quota_remaining = item.data.daily_quota_remaining;
+            if (item.data.weekly_quota_remaining !== undefined && item.data.weekly_quota_remaining !== null) updatedAcc.weekly_quota_remaining = item.data.weekly_quota_remaining;
+            if (item.data.daily_quota_reset !== undefined && item.data.daily_quota_reset !== null) updatedAcc.daily_quota_reset = item.data.daily_quota_reset;
+            if (item.data.weekly_quota_reset !== undefined && item.data.weekly_quota_reset !== null) updatedAcc.weekly_quota_reset = item.data.weekly_quota_reset;
             updatedAcc.status = 'active';
             accounts.value.splice(idx, 1, updatedAcc);
             

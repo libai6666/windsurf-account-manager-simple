@@ -73,6 +73,10 @@ export const apiService = {
     subscription_expires_at?: string;
     is_disabled?: boolean;
     is_team_owner?: boolean;
+    daily_quota_remaining?: number;
+    weekly_quota_remaining?: number;
+    daily_quota_reset?: number;
+    weekly_quota_reset?: number;
   }> {
     return await invoke('refresh_token', { id });
   },

@@ -88,6 +88,11 @@ export interface Account {
   used_quota?: number;
   total_quota?: number;
   last_quota_update?: string;
+  // 每日/每周配额信息（新配额系统）
+  daily_quota_remaining?: number;   // 每日配额剩余百分比 (0-100)
+  weekly_quota_remaining?: number;  // 每周配额剩余百分比 (0-100)
+  daily_quota_reset?: number;       // 每日配额重置时间 (Unix时间戳秒)
+  weekly_quota_reset?: number;      // 每周配额重置时间 (Unix时间戳秒)
   // 订阅到期时间
   subscription_expires_at?: string;
   // 订阅是否激活 (从 GetCurrentUser API 的 team_info.subscription_active 获取)
