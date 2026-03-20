@@ -384,6 +384,80 @@
             </el-button>
           </el-form-item>
           
+          <el-divider content-position="left">自动换号</el-divider>
+          
+          <el-form-item label="启用自动换号">
+            <el-switch 
+              v-model="settings.autoSwitchEnabled"
+              active-text="开启"
+              inactive-text="关闭"
+              :disabled="!settings.seamlessSwitchEnabled"
+            />
+            <div style="margin-top: 5px; color: #909399; font-size: 12px;" v-if="!settings.seamlessSwitchEnabled">
+              需要先启用无感换号功能
+            </div>
+          </el-form-item>
+          
+          <el-form-item label="换号分组" v-if="settings.autoSwitchEnabled">
+            <el-select v-model="settings.autoSwitchGroup" placeholder="选择分组" style="width: 200px;">
+              <el-option
+                v-for="group in settingsStore.groups"
+                :key="group"
+                :label="group"
+                :value="group"
+              />
+            </el-select>
+            <div style="margin-top: 5px; color: #909399; font-size: 12px;">
+              从该分组中选择可用账号进行切换
+            </div>
+          </el-form-item>
+          
+          <el-form-item label="当前账号" v-if="settings.autoSwitchEnabled">
+            <el-select 
+              v-model="settings.autoSwitchCurrentAccountId" 
+              placeholder="选择当前使用的账号" 
+              style="width: 320px;"
+              filterable
+            >
+              <el-option
+                v-for="acc in groupAccounts"
+                :key="acc.id"
+                :label="`${acc.email}${acc.daily_quota_remaining !== undefined ? ` (日${acc.daily_quota_remaining}%/周${acc.weekly_quota_remaining ?? '?'}%)` : ''}`"
+                :value="acc.id"
+              />
+            </el-select>
+            <div style="margin-top: 5px; color: #909399; font-size: 12px;">
+              当前在 Windsurf 中使用的账号，手动切号时会自动更新
+            </div>
+          </el-form-item>
+          
+          <el-form-item label="切号阈值" v-if="settings.autoSwitchEnabled">
+            <el-input-number
+              v-model="settings.autoSwitchThreshold"
+              :min="1"
+              :max="50"
+              :step="5"
+              style="width: 160px;"
+            />
+            <span style="margin-left: 8px; color: #606266;">%</span>
+            <div style="margin-top: 5px; color: #909399; font-size: 12px;">
+              当前账号每日配额剩余低于此百分比，或每周配额为0时自动切换
+            </div>
+          </el-form-item>
+          
+          <el-form-item label="检测间隔" v-if="settings.autoSwitchEnabled">
+            <el-select v-model="settings.autoSwitchCheckInterval" style="width: 200px;">
+              <el-option :label="'1 分钟'" :value="60" />
+              <el-option :label="'3 分钟'" :value="180" />
+              <el-option :label="'5 分钟'" :value="300" />
+              <el-option :label="'10 分钟'" :value="600" />
+              <el-option :label="'15 分钟'" :value="900" />
+            </el-select>
+            <div style="margin-top: 5px; color: #909399; font-size: 12px;">
+              定时检测当前账号配额的时间间隔
+            </div>
+          </el-form-item>
+
           <el-alert
             title="功能说明"
             type="info"
@@ -395,6 +469,8 @@
               <div style="font-size: 12px; line-height: 1.6;">
                 <p>🚀 无感换号功能：实现 Windsurf 账号无感切换</p>
                 <p>⚠️ 注意：开启/关闭时会自动重启 Windsurf</p>
+                <p>🔄 自动换号：定时检测当前账号每日配额和每周配额，日配额低于阈值或周配额为0时自动切换</p>
+                <p>💡 候选账号需同时满足：日配额>阈值 且 周配额>0%，否则暂停切换并通知</p>
               </div>
             </template>
           </el-alert>
@@ -443,15 +519,32 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, watch, onMounted } from 'vue';
+import { ref, reactive, watch, onMounted, computed } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Connection } from '@element-plus/icons-vue';
-import { useSettingsStore, useUIStore } from '@/store';
+import { useSettingsStore, useUIStore, useAccountsStore } from '@/store';
 import { invoke } from '@tauri-apps/api/core';
 import { systemApi } from '@/api';
 
 const settingsStore = useSettingsStore();
 const uiStore = useUIStore();
+const accountsStore = useAccountsStore();
+
+// 当前分组内的账号列表（用于自动换号的当前账号选择）
+const groupAccounts = computed(() => {
+  const group = settings.autoSwitchGroup;
+  if (!group) return [];
+  const inGroup = accountsStore.accounts.filter(a => a.group === group);
+  // 如果当前选中的账号不在分组内（被移走了），也加入列表以避免显示原始UUID
+  const currentId = settings.autoSwitchCurrentAccountId;
+  if (currentId && !inGroup.some(a => a.id === currentId)) {
+    const currentAcc = accountsStore.accounts.find(a => a.id === currentId);
+    if (currentAcc) {
+      return [...inGroup, currentAcc];
+    }
+  }
+  return inGroup;
+});
 
 const loading = ref(false);
 const activeTab = ref('basic');  // 当前激活的标签页
@@ -508,6 +601,11 @@ const settings = reactive<{
   proxyEnabled: boolean;
   proxyUrl: string | null;
   useLightweightApi: boolean;
+  autoSwitchEnabled: boolean;
+  autoSwitchGroup: string;
+  autoSwitchThreshold: number;
+  autoSwitchCheckInterval: number;
+  autoSwitchCurrentAccountId: string | null;
 }>({
   auto_refresh_token: true,
   seat_count_options: [18, 19, 20],
@@ -535,6 +633,11 @@ const settings = reactive<{
   proxyEnabled: false,  // 默认关闭代理
   proxyUrl: null,  // 默认无代理地址
   useLightweightApi: true,  // 默认使用轻量级API
+  autoSwitchEnabled: false,  // 默认关闭自动换号
+  autoSwitchGroup: '默认分组',
+  autoSwitchThreshold: 10,  // 默认10%
+  autoSwitchCheckInterval: 300,  // 默认5分钟
+  autoSwitchCurrentAccountId: null,
 });
 
 // 成功BIN池相关

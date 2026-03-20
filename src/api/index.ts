@@ -73,6 +73,10 @@ export const apiService = {
     subscription_expires_at?: string;
     is_disabled?: boolean;
     is_team_owner?: boolean;
+    daily_quota_remaining?: number;
+    weekly_quota_remaining?: number;
+    daily_quota_reset?: number;
+    weekly_quota_reset?: number;
   }> {
     return await invoke('refresh_token', { id });
   },
@@ -315,6 +319,26 @@ export const apiService = {
     error?: string;
   }> {
     return await invoke('switch_account', { id });
+  },
+  
+  /**
+   * 自动换号检测：检查当前账号配额，低于阈值时自动切换
+   */
+  async checkAutoSwitch(): Promise<{
+    action: 'skip' | 'switched' | 'no_candidate' | 'error';
+    reason?: string;
+    from_account?: string;
+    from_daily_remaining?: number;
+    from_weekly_remaining?: number;
+    to_account?: string;
+    to_account_id?: string;
+    to_daily_remaining?: number;
+    to_weekly_remaining?: number;
+    current_account?: string;
+    daily_remaining?: number;
+    weekly_remaining?: number;
+  }> {
+    return await invoke('check_auto_switch');
   },
   
   /**

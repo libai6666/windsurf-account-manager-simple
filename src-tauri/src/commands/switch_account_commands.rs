@@ -352,6 +352,12 @@ pub async fn switch_account(
         error!("Failed to update account token: {:?}", e);
     }
     
+    // 更新自动换号设置中的当前账号ID（手动切号时同步更新）
+    if let Ok(mut current_settings) = data_store.get_settings().await {
+        current_settings.auto_switch_current_account_id = Some(id.clone());
+        let _ = data_store.update_settings(current_settings).await;
+    }
+    
     info!("Successfully triggered Windsurf login for account");
     
     Ok(json!({
@@ -620,4 +626,330 @@ pub async fn check_admin_privileges() -> Result<bool, String> {
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub fn is_root() -> bool {
     unsafe { libc::geteuid() == 0 }
+}
+
+/// 自动换号检测命令
+/// 检查当前账号的每日配额和每周配额，满足以下任一条件时自动切换：
+/// 1. 每日配额低于阈值
+/// 2. 每周配额为0（即使日配额充足）
+/// 候选账号需同时满足：周配额>0 且 日配额>阈值
+#[tauri::command]
+pub async fn check_auto_switch(
+    data_store: State<'_, Arc<DataStore>>,
+) -> Result<Value, String> {
+    let settings = data_store.get_settings().await.map_err(|e| e.to_string())?;
+    
+    // 检查是否启用了自动换号
+    if !settings.auto_switch_enabled || !settings.seamless_switch_enabled {
+        return Ok(json!({
+            "action": "skip",
+            "reason": "自动换号未启用"
+        }));
+    }
+    
+    let group = &settings.auto_switch_group;
+    let threshold = settings.auto_switch_threshold;
+    
+    // 获取当前正在使用的账号ID
+    let current_id_str = match &settings.auto_switch_current_account_id {
+        Some(id) if !id.is_empty() => id.clone(),
+        _ => {
+            return Ok(json!({
+                "action": "skip",
+                "reason": "未设置当前使用的账号，请先手动切换一次账号"
+            }));
+        }
+    };
+    
+    let current_uuid = Uuid::parse_str(&current_id_str).map_err(|e| e.to_string())?;
+    
+    // 获取当前账号信息
+    let current_account = match data_store.get_account(current_uuid).await {
+        Ok(acc) => acc,
+        Err(_) => {
+            return Ok(json!({
+                "action": "skip",
+                "reason": "当前账号不存在，请重新设置"
+            }));
+        }
+    };
+    
+    // 先刷新当前账号的配额信息（日配额+周配额）
+    let windsurf_service = crate::services::windsurf_service::WindsurfService::new();
+    let mut current_daily_remaining = current_account.daily_quota_remaining.unwrap_or(100);
+    let mut current_weekly_remaining = current_account.weekly_quota_remaining.unwrap_or(100);
+    
+    if let Some(ref token) = current_account.token {
+        if let Ok(result) = windsurf_service.get_plan_status(token).await {
+            if let Some(plan_status) = result.get("plan_status") {
+                if let Some(v) = plan_status.get("daily_quota_remaining").and_then(|v| v.as_i64()) {
+                    current_daily_remaining = v as i32;
+                }
+                if let Some(v) = plan_status.get("weekly_quota_remaining").and_then(|v| v.as_i64()) {
+                    current_weekly_remaining = v as i32;
+                }
+                // 更新数据库
+                let mut updated = current_account.clone();
+                updated.daily_quota_remaining = Some(current_daily_remaining);
+                updated.weekly_quota_remaining = Some(current_weekly_remaining);
+                if let Some(v) = plan_status.get("daily_quota_reset").and_then(|v| v.as_i64()) {
+                    updated.daily_quota_reset = Some(v);
+                }
+                if let Some(v) = plan_status.get("weekly_quota_reset").and_then(|v| v.as_i64()) {
+                    updated.weekly_quota_reset = Some(v);
+                }
+                updated.last_quota_update = Some(chrono::Utc::now());
+                let _ = data_store.update_account(updated).await;
+            }
+        }
+    }
+    
+    println!("[自动换号] 当前账号: {}, 每日配额剩余: {}%, 每周配额剩余: {}%, 阈值: {}%", 
+        current_account.email, current_daily_remaining, current_weekly_remaining, threshold);
+    
+    // 检查是否需要切换（满足任一条件即触发）：
+    // 1. 每日配额 <= 阈值
+    // 2. 每周配额 == 0（即使日配额充足）
+    let need_switch_daily = current_daily_remaining <= threshold;
+    let need_switch_weekly = current_weekly_remaining <= 0;
+    let switch_reason = if need_switch_daily && need_switch_weekly {
+        format!("日配额不足 ({}% <= {}%) 且周配额耗尽 ({}%)", current_daily_remaining, threshold, current_weekly_remaining)
+    } else if need_switch_daily {
+        format!("日配额不足 ({}% <= {}%)", current_daily_remaining, threshold)
+    } else if need_switch_weekly {
+        format!("周配额耗尽 ({}%)，即使日配额充足 ({}%)", current_weekly_remaining, current_daily_remaining)
+    } else {
+        String::new()
+    };
+    
+    if !need_switch_daily && !need_switch_weekly {
+        return Ok(json!({
+            "action": "skip",
+            "reason": format!("当前账号配额充足 (日{}% > {}%, 周{}%)", current_daily_remaining, threshold, current_weekly_remaining),
+            "current_account": current_account.email,
+            "daily_remaining": current_daily_remaining,
+            "weekly_remaining": current_weekly_remaining
+        }));
+    }
+    
+    // 需要切换，从分组中查找配额充足的账号
+    println!("[自动换号] {}，从分组 '{}' 中查找可用账号...", switch_reason, group);
+    
+    let all_accounts = data_store.get_all_accounts().await.map_err(|e| e.to_string())?;
+    let group_accounts: Vec<_> = all_accounts.iter()
+        .filter(|a| {
+            a.group.as_deref() == Some(group) 
+            && a.id != current_uuid
+            && !matches!(a.status, crate::models::AccountStatus::Error(_))
+            && a.refresh_token.is_some()
+        })
+        .collect();
+    
+    if group_accounts.is_empty() {
+        return Ok(json!({
+            "action": "no_candidate",
+            "reason": format!("分组 '{}' 中没有其他可用账号", group),
+            "current_account": current_account.email,
+            "daily_remaining": current_daily_remaining
+        }));
+    }
+    
+    // 辅助函数：判断是否为Free计划（优先级最低）
+    let is_free_plan = |acc: &crate::models::Account| -> bool {
+        acc.plan_name.as_ref().map(|p| p.to_lowercase().contains("free")).unwrap_or(true)
+    };
+    
+    // 候选号比较逻辑：非Free优先，然后日配额最高
+    let is_better_candidate = |new_daily: i32, new_is_free: bool, cur: &Option<(Uuid, String, i32, i32, bool)>| -> bool {
+        match cur {
+            None => true,
+            Some((_, _, cur_daily, _, cur_is_free)) => {
+                if !new_is_free && *cur_is_free {
+                    return true;
+                }
+                if new_is_free && !*cur_is_free {
+                    return false;
+                }
+                new_daily > *cur_daily
+            }
+        }
+    };
+    
+    // 查找配额最高的账号（候选条件：周配额>0 且 日配额>阈值，Free账号优先级最低）
+    let mut best_candidate: Option<(Uuid, String, i32, i32, bool)> = None;
+    
+    for acc in &group_accounts {
+        let daily = acc.daily_quota_remaining.unwrap_or(0);
+        let weekly = acc.weekly_quota_remaining.unwrap_or(0);
+        let acc_is_free = is_free_plan(acc);
+        if daily > threshold && weekly > 0 {
+            if is_better_candidate(daily, acc_is_free, &best_candidate) {
+                best_candidate = Some((acc.id, acc.email.clone(), daily, weekly, acc_is_free));
+            }
+        }
+    }
+    
+    // 如果没有找到已缓存的合适账号，逐个刷新分组账号配额再验证
+    if best_candidate.is_none() {
+        let cache_ttl = chrono::Duration::minutes(3);
+        let now = chrono::Utc::now();
+        let mut refreshed_count = 0;
+        let mut skipped_count = 0;
+        
+        println!("[自动换号] 缓存数据中未找到合适账号，逐个刷新分组账号配额...");
+        for acc in &group_accounts {
+            if let Some(last_update) = acc.last_quota_update {
+                if now - last_update < cache_ttl {
+                    skipped_count += 1;
+                    let daily = acc.daily_quota_remaining.unwrap_or(0);
+                    let weekly = acc.weekly_quota_remaining.unwrap_or(0);
+                    let acc_is_free = is_free_plan(acc);
+                    if daily > threshold && weekly > 0 {
+                        if is_better_candidate(daily, acc_is_free, &best_candidate) {
+                            best_candidate = Some((acc.id, acc.email.clone(), daily, weekly, acc_is_free));
+                        }
+                    }
+                    continue;
+                }
+            }
+            
+            if let Some(ref token) = acc.token {
+                if let Ok(result) = windsurf_service.get_plan_status(token).await {
+                    if let Some(plan_status) = result.get("plan_status") {
+                        let daily = plan_status.get("daily_quota_remaining")
+                            .and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+                        let weekly = plan_status.get("weekly_quota_remaining")
+                            .and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+                        
+                        // 更新数据库
+                        let mut updated = (*acc).clone();
+                        updated.daily_quota_remaining = Some(daily);
+                        updated.weekly_quota_remaining = Some(weekly);
+                        if let Some(v) = plan_status.get("daily_quota_reset").and_then(|v| v.as_i64()) {
+                            updated.daily_quota_reset = Some(v);
+                        }
+                        if let Some(v) = plan_status.get("weekly_quota_reset").and_then(|v| v.as_i64()) {
+                            updated.weekly_quota_reset = Some(v);
+                        }
+                        updated.last_quota_update = Some(now);
+                        let _ = data_store.update_account(updated).await;
+                        refreshed_count += 1;
+                        
+                        let acc_is_free = is_free_plan(acc);
+                        println!("[自动换号] 刷新账号 {}: 日{}%, 周{}%{}", acc.email, daily, weekly, if acc_is_free { " (Free)" } else { "" });
+                        
+                        if daily > threshold && weekly > 0 {
+                            if is_better_candidate(daily, acc_is_free, &best_candidate) {
+                                best_candidate = Some((acc.id, acc.email.clone(), daily, weekly, acc_is_free));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        println!("[自动换号] 刷新完成: 实际刷新 {} 个, 跳过(缓存有效) {} 个", refreshed_count, skipped_count);
+    }
+    
+    let (target_id, target_email, target_daily, target_weekly, _is_free) = match best_candidate {
+        Some(c) => c,
+        None => {
+            return Ok(json!({
+                "action": "no_candidate",
+                "reason": format!("分组 '{}' 中没有配额充足的账号 (需日配额>{}% 且 周配额>0%)", group, threshold),
+                "current_account": current_account.email,
+                "daily_remaining": current_daily_remaining,
+                "weekly_remaining": current_weekly_remaining
+            }));
+        }
+    };
+    
+    println!("[自动换号] 找到目标账号: {} (日配额: {}%, 周配额: {}%)，开始切换...", target_email, target_daily, target_weekly);
+    
+    // 执行切换
+    let target_account = data_store.get_account(target_id).await.map_err(|e| e.to_string())?;
+    
+    let refresh_token = match &target_account.refresh_token {
+        Some(rt) if !rt.is_empty() => rt.clone(),
+        _ => {
+            return Ok(json!({
+                "action": "error",
+                "reason": format!("目标账号 {} 没有refresh_token", target_email)
+            }));
+        }
+    };
+    
+    // 获取 access token
+    let (access_token, expires_in) = if let (Some(token), Some(expires_at)) = (&target_account.token, &target_account.token_expires_at) {
+        let now = Utc::now();
+        let buffer = chrono::Duration::minutes(5);
+        if *expires_at > now + buffer {
+            let remaining = (*expires_at - now).num_seconds();
+            (token.clone(), remaining.to_string())
+        } else {
+            match refresh_access_token(&refresh_token).await {
+                Ok(resp) => (resp.access_token, resp.expires_in),
+                Err(e) => {
+                    return Ok(json!({
+                        "action": "error",
+                        "reason": format!("刷新目标账号token失败: {}", e)
+                    }));
+                }
+            }
+        }
+    } else {
+        match refresh_access_token(&refresh_token).await {
+            Ok(resp) => (resp.access_token, resp.expires_in),
+            Err(e) => {
+                return Ok(json!({
+                    "action": "error",
+                    "reason": format!("获取目标账号token失败: {}", e)
+                }));
+            }
+        }
+    };
+    
+    // 获取 auth_token
+    let auth_token = match get_auth_token(&access_token).await {
+        Ok(token) => token,
+        Err(e) => {
+            return Ok(json!({
+                "action": "error",
+                "reason": format!("获取auth_token失败: {}", e)
+            }));
+        }
+    };
+    
+    // 重置机器ID
+    let _ = reset_machine_id_internal().await;
+    
+    // 触发 Windsurf 回调
+    if let Err(e) = trigger_windsurf_callback(&auth_token).await {
+        return Ok(json!({
+            "action": "error",
+            "reason": format!("触发Windsurf登录失败: {}", e)
+        }));
+    }
+    
+    // 更新目标账号的token信息
+    let expires_at = Utc::now() + chrono::Duration::seconds(expires_in.parse::<i64>().unwrap_or(3600));
+    let _ = data_store.update_account_token(target_id, access_token, expires_at).await;
+    
+    // 更新设置中的当前账号ID
+    let mut new_settings = settings.clone();
+    new_settings.auto_switch_current_account_id = Some(target_id.to_string());
+    let _ = data_store.update_settings(new_settings).await;
+    
+    println!("[自动换号] 成功切换到账号: {}", target_email);
+    
+    Ok(json!({
+        "action": "switched",
+        "reason": switch_reason,
+        "from_account": current_account.email,
+        "from_daily_remaining": current_daily_remaining,
+        "from_weekly_remaining": current_weekly_remaining,
+        "to_account": target_email,
+        "to_account_id": target_id.to_string(),
+        "to_daily_remaining": target_daily,
+        "to_weekly_remaining": target_weekly
+    }))
 }

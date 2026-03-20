@@ -473,6 +473,19 @@ export const useAccountsStore = defineStore('accounts', () => {
         if (result.is_team_owner !== undefined) {
           updatedAccount.is_team_owner = result.is_team_owner;
         }
+        // 更新每日/每周配额信息
+        if (result.daily_quota_remaining !== undefined && result.daily_quota_remaining !== null) {
+          updatedAccount.daily_quota_remaining = result.daily_quota_remaining;
+        }
+        if (result.weekly_quota_remaining !== undefined && result.weekly_quota_remaining !== null) {
+          updatedAccount.weekly_quota_remaining = result.weekly_quota_remaining;
+        }
+        if (result.daily_quota_reset !== undefined && result.daily_quota_reset !== null) {
+          updatedAccount.daily_quota_reset = result.daily_quota_reset;
+        }
+        if (result.weekly_quota_reset !== undefined && result.weekly_quota_reset !== null) {
+          updatedAccount.weekly_quota_reset = result.weekly_quota_reset;
+        }
         updatedAccount.last_quota_update = dayjs().toISOString();
         
         // 根据模式选择更新方式

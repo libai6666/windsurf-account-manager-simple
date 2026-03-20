@@ -88,6 +88,11 @@ export interface Account {
   used_quota?: number;
   total_quota?: number;
   last_quota_update?: string;
+  // 每日/每周配额信息（新配额系统）
+  daily_quota_remaining?: number;   // 每日配额剩余百分比 (0-100)
+  weekly_quota_remaining?: number;  // 每周配额剩余百分比 (0-100)
+  daily_quota_reset?: number;       // 每日配额重置时间 (Unix时间戳秒)
+  weekly_quota_reset?: number;      // 每周配额重置时间 (Unix时间戳秒)
   // 订阅到期时间
   subscription_expires_at?: string;
   // 订阅是否激活 (从 GetCurrentUser API 的 team_info.subscription_active 获取)
@@ -322,10 +327,16 @@ export interface Settings {
   proxyEnabled?: boolean;  // 是否启用代理
   proxyUrl?: string | null;  // 代理地址 (如 http://127.0.0.1:7890)
   useLightweightApi?: boolean;  // 使用轻量级API(GetPlanStatus)获取配额信息
-  subscriptionPlan?: number;  // 订阅计划: 1=Teams, 2=Pro
+  subscriptionPlan?: number;
   paymentPeriod?: number;  // 支付周期: 1=月付, 2=年付
   teamName?: string;  // Teams 计划的团队名称
   seatCount?: number;  // Teams 计划的席位数量
+  // 自动换号设置
+  autoSwitchEnabled?: boolean;  // 是否启用自动换号
+  autoSwitchGroup?: string;  // 自动换号使用的分组
+  autoSwitchThreshold?: number;  // 每日配额阈值百分比，低于此值触发换号
+  autoSwitchCheckInterval?: number;  // 自动检测间隔（秒）
+  autoSwitchCurrentAccountId?: string | null;  // 当前正在使用的账号ID（自动跟踪）
 }
 
 /**

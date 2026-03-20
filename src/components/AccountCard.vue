@@ -36,7 +36,70 @@
 
     <div class="card-body">
       <!-- 配额和套餐信息 -->
-      <div class="quota-section" v-if="account.total_quota">
+      <!-- 新配额系统：每日/每周配额 -->
+      <div class="quota-section" v-if="hasNewQuotaSystem">
+        <div class="quota-header">
+          <div class="quota-header-left">
+            <el-tag v-if="account.plan_name" :class="['plan-tag', `plan-${account.plan_name?.toLowerCase()}`]" size="small">
+              <el-icon>
+                <User v-if="account.plan_name?.toLowerCase() === 'free'" />
+                <Trophy v-else />
+              </el-icon>
+              {{ account.plan_name }}
+            </el-tag>
+          </div>
+        </div>
+        <!-- 每日配额 -->
+        <div class="quota-item">
+          <div class="quota-item-header">
+            <span class="quota-item-label">每日配额</span>
+            <span class="quota-item-value" :style="{ color: getDailyQuotaColor }">{{ account.daily_quota_remaining ?? 0 }}%</span>
+          </div>
+          <div class="quota-progress">
+            <el-progress
+              :percentage="account.daily_quota_remaining ?? 0"
+              :stroke-width="6"
+              :color="getDailyQuotaColor"
+              :show-text="false"
+            />
+          </div>
+          <div class="quota-reset-time" v-if="dailyResetText">
+            <el-icon class="reset-icon"><Clock /></el-icon>
+            <span>{{ dailyResetText }}</span>
+          </div>
+        </div>
+        <!-- 每周配额 -->
+        <div class="quota-item">
+          <div class="quota-item-header">
+            <span class="quota-item-label">每周配额</span>
+            <span class="quota-item-value" :style="{ color: getWeeklyQuotaColor }">{{ account.weekly_quota_remaining ?? 0 }}%</span>
+          </div>
+          <div class="quota-progress">
+            <el-progress
+              :percentage="account.weekly_quota_remaining ?? 0"
+              :stroke-width="6"
+              :color="getWeeklyQuotaColor"
+              :show-text="false"
+            />
+          </div>
+          <div class="quota-reset-time" v-if="weeklyResetText">
+            <el-icon class="reset-icon"><Clock /></el-icon>
+            <span>{{ weeklyResetText }}</span>
+          </div>
+        </div>
+        <!-- 订阅到期时间（与旧配额系统样式一致） -->
+        <div class="quota-expiry" v-if="account.subscription_expires_at">
+          <el-icon class="expiry-icon"><Clock /></el-icon>
+          <span class="expiry-label">到期时间:</span>
+          <span class="expiry-date">{{ formattedExpiryDate }}</span>
+          <span v-if="daysUntilExpiry !== null" :class="['expiry-badge', expiryClass]">
+            {{ expiryText }}
+          </span>
+        </div>
+      </div>
+
+      <!-- 旧配额系统：积分制（兼容未刷新的账号） -->
+      <div class="quota-section" v-else-if="account.total_quota">
         <div class="quota-header">
           <div class="quota-header-left">
             <el-tag v-if="account.plan_name" :class="['plan-tag', `plan-${account.plan_name?.toLowerCase()}`]" size="small">
@@ -403,8 +466,14 @@ const accountsStore = useAccountsStore();
 const uiStore = useUIStore();
 const settingsStore = useSettingsStore();
 
-// 是否为当前激活账号
+// 是否为当前激活账号（通过Windsurf信息或自动换号跟踪ID判断）
 const isCurrent = computed(() => {
+  // 优先通过自动换号跟踪的账号ID判断
+  const trackingId = settingsStore.settings?.autoSwitchCurrentAccountId;
+  if (trackingId && props.account.id === trackingId) {
+    return true;
+  }
+  // 兜底：通过Windsurf当前登录邮箱判断
   return props.currentEmail && props.account.email === props.currentEmail;
 });
 
@@ -600,6 +669,48 @@ const quotaColor = computed(() => {
   return '#ef4444';  // 红色
 });
 
+// 是否使用新配额系统（有每日/每周配额数据）
+const hasNewQuotaSystem = computed(() => {
+  return props.account.daily_quota_remaining !== undefined && props.account.daily_quota_remaining !== null;
+});
+
+// 根据剩余百分比获取颜色（剩余越多越绿）
+function getQuotaColorByRemaining(remaining: number): string {
+  if (remaining > 50) return '#10b981';  // 绿色（充足）
+  if (remaining > 20) return '#f59e0b';  // 橙色（偏低）
+  return '#ef4444';  // 红色（不足）
+}
+
+const getDailyQuotaColor = computed(() => {
+  return getQuotaColorByRemaining(props.account.daily_quota_remaining ?? 0);
+});
+
+const getWeeklyQuotaColor = computed(() => {
+  return getQuotaColorByRemaining(props.account.weekly_quota_remaining ?? 0);
+});
+
+// 格式化重置时间
+function formatResetTime(timestamp: number | undefined): string {
+  if (!timestamp) return '';
+  const resetTime = dayjs.unix(timestamp);
+  const now = dayjs();
+  const diffHours = resetTime.diff(now, 'hour');
+  const diffMinutes = resetTime.diff(now, 'minute');
+  
+  if (diffMinutes < 0) return '已重置';
+  if (diffMinutes < 60) return `${diffMinutes}分钟后重置`;
+  if (diffHours < 24) return `${diffHours}小时后重置`;
+  return `${resetTime.format('M月D日 HH:mm')} 重置`;
+}
+
+const dailyResetText = computed(() => {
+  return formatResetTime(props.account.daily_quota_reset);
+});
+
+const weeklyResetText = computed(() => {
+  return formatResetTime(props.account.weekly_quota_reset);
+});
+
 // 刷新按钮提示文本
 const refreshButtonTooltip = computed(() => {
   if (!props.account.token_expires_at) {
@@ -782,6 +893,19 @@ async function handleRefreshToken() {
           if (result.is_disabled !== undefined) {
             updatedAccount.is_disabled = result.is_disabled;
           }
+          // 更新每日/每周配额信息
+          if (result.daily_quota_remaining !== undefined && result.daily_quota_remaining !== null) {
+            updatedAccount.daily_quota_remaining = result.daily_quota_remaining;
+          }
+          if (result.weekly_quota_remaining !== undefined && result.weekly_quota_remaining !== null) {
+            updatedAccount.weekly_quota_remaining = result.weekly_quota_remaining;
+          }
+          if (result.daily_quota_reset !== undefined && result.daily_quota_reset !== null) {
+            updatedAccount.daily_quota_reset = result.daily_quota_reset;
+          }
+          if (result.weekly_quota_reset !== undefined && result.weekly_quota_reset !== null) {
+            updatedAccount.weekly_quota_reset = result.weekly_quota_reset;
+          }
           
           // 直接更新store中的账号数据，确保立即同步
           await accountsStore.updateAccount(updatedAccount);
@@ -815,44 +939,27 @@ async function handleRefreshToken() {
           showClose: true
         });
         
-        // 更新账号信息
-        const updatedAccount = { ...props.account, status: 'active' as const };
+        // 后端 get_current_user 已将最新信息（含 daily/weekly 配额）保存到 DB
+        // 从 DB 重新加载账号数据，避免用 props 中的旧值覆盖后端刚保存的新数据
+        const updatedAccount = await accountApi.getAccount(props.account.id);
         
-        // 更新用户基本信息（包含api_key和禁用状态）
-        if (result.user_info.user?.api_key) {
-          updatedAccount.windsurf_api_key = result.user_info.user.api_key;
-        }
-        // 更新账户禁用状态
-        if (result.user_info.user?.disable_codeium !== undefined) {
-          updatedAccount.is_disabled = result.user_info.user.disable_codeium;
-        }
-        
-        // 更新套餐信息
-        if (result.user_info.plan?.plan_name) {
-          updatedAccount.plan_name = result.user_info.plan.plan_name;
-        }
-        
-        // 更新配额信息
-        if (result.user_info.subscription) {
-          if (result.user_info.subscription.used_quota !== undefined) {
-            updatedAccount.used_quota = result.user_info.subscription.used_quota;
+        // 补充合并 API 返回中的额外字段（轻量级API返回 plan_status）
+        if (result.plan_status) {
+          if (result.plan_status.daily_quota_remaining !== undefined) {
+            updatedAccount.daily_quota_remaining = result.plan_status.daily_quota_remaining;
           }
-          if (result.user_info.subscription.quota !== undefined) {
-            updatedAccount.total_quota = result.user_info.subscription.quota;
+          if (result.plan_status.weekly_quota_remaining !== undefined) {
+            updatedAccount.weekly_quota_remaining = result.plan_status.weekly_quota_remaining;
           }
-          if (result.user_info.subscription.expires_at) {
-            const expiresTimestamp = result.user_info.subscription.expires_at;
-            const expiresDate = dayjs.unix(expiresTimestamp);
-            updatedAccount.subscription_expires_at = expiresDate.toISOString();
+          if (result.plan_status.daily_quota_reset !== undefined) {
+            updatedAccount.daily_quota_reset = result.plan_status.daily_quota_reset;
           }
-          // 更新订阅激活状态
-          if (result.user_info.subscription.subscription_active !== undefined) {
-            updatedAccount.subscription_active = result.user_info.subscription.subscription_active;
+          if (result.plan_status.weekly_quota_reset !== undefined) {
+            updatedAccount.weekly_quota_reset = result.plan_status.weekly_quota_reset;
           }
         }
         
-        updatedAccount.last_quota_update = dayjs().toISOString();
-        // 保存到后端数据库
+        // 更新 store 并通知父组件
         await accountsStore.updateAccount(updatedAccount);
         emit('update', updatedAccount);
       } else {
@@ -876,6 +983,19 @@ async function handleRefreshToken() {
             }
             if (refreshResult.expires_at) {
               updatedAccount.token_expires_at = refreshResult.expires_at;
+            }
+            // 更新每日/每周配额信息
+            if (refreshResult.daily_quota_remaining !== undefined && refreshResult.daily_quota_remaining !== null) {
+              updatedAccount.daily_quota_remaining = refreshResult.daily_quota_remaining;
+            }
+            if (refreshResult.weekly_quota_remaining !== undefined && refreshResult.weekly_quota_remaining !== null) {
+              updatedAccount.weekly_quota_remaining = refreshResult.weekly_quota_remaining;
+            }
+            if (refreshResult.daily_quota_reset !== undefined && refreshResult.daily_quota_reset !== null) {
+              updatedAccount.daily_quota_reset = refreshResult.daily_quota_reset;
+            }
+            if (refreshResult.weekly_quota_reset !== undefined && refreshResult.weekly_quota_reset !== null) {
+              updatedAccount.weekly_quota_reset = refreshResult.weekly_quota_reset;
             }
             await accountsStore.updateAccount(updatedAccount);
             emit('update', updatedAccount);
@@ -1434,6 +1554,9 @@ async function handleSwitchAccount() {
         });
       }
       
+      // 刷新设置（后端已更新autoSwitchCurrentAccountId），触发卡片高亮
+      await settingsStore.loadSettings();
+      
       // 更新账号状态
       const updatedAccount = { 
         ...props.account, 
@@ -1990,6 +2113,48 @@ async function handleSwitchAccount() {
   color: #475569;
 }
 
+/* 新配额系统 - 每日/每周配额项 */
+.quota-item {
+  margin-top: 6px;
+}
+
+.quota-item:first-of-type {
+  margin-top: 4px;
+}
+
+.quota-item-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 3px;
+}
+
+.quota-item-label {
+  font-size: 11px;
+  font-weight: 500;
+  color: #64748b;
+}
+
+.quota-item-value {
+  font-size: 12px;
+  font-weight: 700;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  letter-spacing: 0.3px;
+}
+
+.quota-reset-time {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  margin-top: 2px;
+  font-size: 10px;
+  color: #94a3b8;
+}
+
+.quota-reset-time .reset-icon {
+  font-size: 10px;
+}
+
 /* 配额区块内的订阅到期时间样式 */
 .quota-expiry {
   display: flex;
@@ -2463,6 +2628,18 @@ async function handleSwitchAccount() {
 
 :root.dark .quota-percentage {
   color: #cbd5e1;
+}
+
+:root.dark .quota-item-label {
+  color: #94a3b8;
+}
+
+:root.dark .quota-item-value {
+  color: #e2e8f0;
+}
+
+:root.dark .quota-reset-time {
+  color: #64748b;
 }
 
 :root.dark .quota-progress :deep(.el-progress-bar__outer) {

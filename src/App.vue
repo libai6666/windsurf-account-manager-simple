@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, computed, ref } from 'vue';
+import { onMounted, onUnmounted, computed, watch, ref } from 'vue';
 import { ElConfigProvider } from 'element-plus';
 import zhCn from 'element-plus/dist/locale/zh-cn.mjs';
 import { useAccountsStore, useSettingsStore, useUIStore } from './store';
 import MainLayout from './views/MainLayout.vue';
 import WelcomeDialog from './components/WelcomeDialog.vue';
 import { invoke } from '@tauri-apps/api/core';
+import { apiService } from './api';
+import { ElNotification } from 'element-plus';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
 const accountsStore = useAccountsStore();
@@ -16,6 +18,59 @@ const showWelcomeDialog = ref(true);
 
 // 事件监听取消函数
 let tokenRefreshedUnlisten: UnlistenFn | null = null;
+
+// 自动换号定时器
+let autoSwitchTimer: ReturnType<typeof setInterval> | null = null;
+const autoSwitchChecking = ref(false);
+
+function startAutoSwitchTimer() {
+  stopAutoSwitchTimer();
+  const s = settingsStore.settings;
+  if (!s.autoSwitchEnabled || !s.seamlessSwitchEnabled) return;
+  const interval = (s.autoSwitchCheckInterval || 300) * 1000;
+  console.log(`[自动换号] 启动定时检测，间隔 ${interval / 1000} 秒`);
+  autoSwitchTimer = setInterval(runAutoSwitchCheck, interval);
+}
+
+function stopAutoSwitchTimer() {
+  if (autoSwitchTimer) {
+    clearInterval(autoSwitchTimer);
+    autoSwitchTimer = null;
+  }
+}
+
+async function runAutoSwitchCheck() {
+  if (autoSwitchChecking.value) return;
+  autoSwitchChecking.value = true;
+  try {
+    const result = await apiService.checkAutoSwitch();
+    console.log('[自动换号] 检测结果:', result.action, result.reason || '');
+    // 每次检测后都刷新账号列表（后端会更新配额数据到数据库）
+    await accountsStore.loadAccounts();
+    
+    if (result.action === 'switched') {
+      ElNotification.success({
+        title: '自动换号成功',
+        message: `${result.reason ? `原因：${result.reason}\n` : ''}已从 ${result.from_account} (日${result.from_daily_remaining}%/周${result.from_weekly_remaining}%) 切换到 ${result.to_account} (日${result.to_daily_remaining}%/周${result.to_weekly_remaining}%)`,
+        duration: 8000,
+      });
+      // 重新加载设置（因为后端更新了currentAccountId）
+      await settingsStore.loadSettings();
+    } else if (result.action === 'no_candidate') {
+      ElNotification.warning({
+        title: '自动换号',
+        message: result.reason || '分组中没有配额充足的账号',
+        duration: 6000,
+      });
+    } else if (result.action === 'error') {
+      console.error('[自动换号] 错误:', result.reason);
+    }
+  } catch (e) {
+    console.error('[自动换号] 异常:', e);
+  } finally {
+    autoSwitchChecking.value = false;
+  }
+}
 
 // 用于Element Plus的命名空间，支持深色模式
 const elNamespace = computed(() => 'el');
@@ -100,6 +155,9 @@ onMounted(async () => {
   // 启动自动刷新Token功能
   accountsStore.startAutoRefreshTimer(settingsStore);
   
+  // 启动自动换号定时器
+  startAutoSwitchTimer();
+  
   // 监听后端 token 刷新事件，自动更新前端账户数据
   tokenRefreshedUnlisten = await listen<{ account_id: string; token: string; token_expires_at: string }>('token-refreshed', (event) => {
     const { account_id, token, token_expires_at } = event.payload;
@@ -120,9 +178,18 @@ onMounted(async () => {
   });
 });
 
+// 监听设置变化，重启自动换号定时器
+watch(
+  () => [settingsStore.settings.autoSwitchEnabled, settingsStore.settings.autoSwitchCheckInterval, settingsStore.settings.seamlessSwitchEnabled],
+  () => {
+    startAutoSwitchTimer();
+  }
+);
+
 // 组件卸载时停止定时器和移除事件监听
 onUnmounted(() => {
   accountsStore.stopAutoRefreshTimer();
+  stopAutoSwitchTimer();
   document.removeEventListener('contextmenu', disableContextMenu);
   document.removeEventListener('keydown', disableDebugKeys);
   // 取消 Tauri 事件监听

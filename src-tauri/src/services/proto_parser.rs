@@ -1221,6 +1221,23 @@ impl ProtobufParser {
                     result["top_up_status"] = json!(status);
                 }
             }
+            
+            // field 14: daily_quota_remaining (每日配额剩余百分比, 0-100)
+            if let Some(v) = plan_status.get("int_14").and_then(|v| v.as_i64()) {
+                result["daily_quota_remaining"] = json!(v);
+            }
+            // field 15: weekly_quota_remaining (每周配额剩余百分比, 0-100)
+            if let Some(v) = plan_status.get("int_15").and_then(|v| v.as_i64()) {
+                result["weekly_quota_remaining"] = json!(v);
+            }
+            // field 17: daily_quota_reset (每日配额重置时间, Unix时间戳)
+            if let Some(v) = plan_status.get("int_17").and_then(|v| v.as_i64()) {
+                result["daily_quota_reset"] = json!(v);
+            }
+            // field 18: weekly_quota_reset (每周配额重置时间, Unix时间戳)
+            if let Some(v) = plan_status.get("int_18").and_then(|v| v.as_i64()) {
+                result["weekly_quota_reset"] = json!(v);
+            }
         }
         
         Ok(result)

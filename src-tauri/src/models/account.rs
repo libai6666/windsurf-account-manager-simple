@@ -31,6 +31,15 @@ pub struct Account {
     pub used_quota: Option<i32>,
     pub total_quota: Option<i32>,
     pub last_quota_update: Option<DateTime<Utc>>,
+    // 每日/每周配额信息（新配额系统）
+    #[serde(default)]
+    pub daily_quota_remaining: Option<i32>,   // 每日配额剩余百分比 (0-100)
+    #[serde(default)]
+    pub weekly_quota_remaining: Option<i32>,  // 每周配额剩余百分比 (0-100)
+    #[serde(default)]
+    pub daily_quota_reset: Option<i64>,       // 每日配额重置时间 (Unix时间戳)
+    #[serde(default)]
+    pub weekly_quota_reset: Option<i64>,      // 每周配额重置时间 (Unix时间戳)
     // 订阅到期时间
     pub subscription_expires_at: Option<DateTime<Utc>>,
     // 订阅是否激活 (从 GetCurrentUser API 的 subscription.subscription_active 获取)
@@ -78,6 +87,10 @@ impl Account {
             used_quota: None,
             total_quota: None,
             last_quota_update: None,
+            daily_quota_remaining: None,
+            weekly_quota_remaining: None,
+            daily_quota_reset: None,
+            weekly_quota_reset: None,
             subscription_expires_at: None,
             subscription_active: None,
             windsurf_api_key: None,
