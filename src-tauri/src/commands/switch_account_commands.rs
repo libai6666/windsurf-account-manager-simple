@@ -36,7 +36,7 @@ async fn refresh_access_token(refresh_token: &str) -> AppResult<GoogleTokenRespo
     
     // Google Token API
     let url = "https://securetoken.googleapis.com/v1/token";
-    let api_key = "AIzaSyBPFmef6bkwMJAYP0sJZAi4k5XP1lXJXuY"; // Firebase API Key
+    let api_key = "AIzaSyDsOl-1XpT5err0Tcnx8FFod1H8gVGIycY"; // Firebase API Key (与auth_service保持一致)
     
     let params = [
         ("grant_type", "refresh_token"),

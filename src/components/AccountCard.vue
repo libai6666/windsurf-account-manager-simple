@@ -470,10 +470,11 @@ const settingsStore = useSettingsStore();
 const isCurrent = computed(() => {
   // 优先通过自动换号跟踪的账号ID判断
   const trackingId = settingsStore.settings?.autoSwitchCurrentAccountId;
-  if (trackingId && props.account.id === trackingId) {
-    return true;
+  if (trackingId) {
+    // 当存在跟踪ID时，仅通过ID判断，避免移动分组后邮箱回退导致旧账号持续高亮
+    return props.account.id === trackingId;
   }
-  // 兜底：通过Windsurf当前登录邮箱判断
+  // 兜底：仅在没有跟踪ID时，通过Windsurf当前登录邮箱判断
   return props.currentEmail && props.account.email === props.currentEmail;
 });
 

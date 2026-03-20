@@ -500,10 +500,20 @@ const uiStore = useUIStore();
 const accountsStore = useAccountsStore();
 
 // 当前分组内的账号列表（用于自动换号的当前账号选择）
+// 同时包含当前跟踪的账号（即使已被移出分组），避免显示UUID
 const groupAccounts = computed(() => {
   const group = settings.autoSwitchGroup;
   if (!group) return [];
-  return accountsStore.accounts.filter(a => a.group === group);
+  const inGroup = accountsStore.accounts.filter(a => a.group === group);
+  // 如果当前跟踪的账号不在分组内，也将其加入列表以正确显示
+  const trackingId = settings.autoSwitchCurrentAccountId;
+  if (trackingId && !inGroup.some(a => a.id === trackingId)) {
+    const trackedAccount = accountsStore.accounts.find(a => a.id === trackingId);
+    if (trackedAccount) {
+      return [...inGroup, trackedAccount];
+    }
+  }
+  return inGroup;
 });
 
 const loading = ref(false);
