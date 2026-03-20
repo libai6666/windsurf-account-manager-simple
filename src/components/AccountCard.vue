@@ -466,8 +466,14 @@ const accountsStore = useAccountsStore();
 const uiStore = useUIStore();
 const settingsStore = useSettingsStore();
 
-// 是否为当前激活账号
+// 是否为当前激活账号（通过Windsurf信息或自动换号跟踪ID判断）
 const isCurrent = computed(() => {
+  // 优先通过自动换号跟踪的账号ID判断
+  const trackingId = settingsStore.settings?.autoSwitchCurrentAccountId;
+  if (trackingId && props.account.id === trackingId) {
+    return true;
+  }
+  // 兜底：通过Windsurf当前登录邮箱判断
   return props.currentEmail && props.account.email === props.currentEmail;
 });
 
@@ -1532,6 +1538,9 @@ async function handleSwitchAccount() {
           showClose: true
         });
       }
+      
+      // 刷新设置（后端已更新autoSwitchCurrentAccountId），触发卡片高亮
+      await settingsStore.loadSettings();
       
       // 更新账号状态
       const updatedAccount = { 

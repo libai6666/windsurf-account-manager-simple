@@ -130,6 +130,17 @@ pub struct Settings {
     pub team_name: String,  // Teams 计划的团队名称
     #[serde(default = "default_seat_count", rename = "seatCount")]
     pub seat_count: i32,  // Teams 计划的席位数量
+    // 自动换号设置
+    #[serde(default, rename = "autoSwitchEnabled")]
+    pub auto_switch_enabled: bool,  // 是否启用自动换号
+    #[serde(default = "default_auto_switch_group", rename = "autoSwitchGroup")]
+    pub auto_switch_group: String,  // 自动换号使用的分组
+    #[serde(default = "default_auto_switch_threshold", rename = "autoSwitchThreshold")]
+    pub auto_switch_threshold: i32,  // 每日配额剩余百分比阈值，低于此值触发换号
+    #[serde(default = "default_auto_switch_interval", rename = "autoSwitchCheckInterval")]
+    pub auto_switch_check_interval: i32,  // 自动检测间隔（秒）
+    #[serde(default, rename = "autoSwitchCurrentAccountId")]
+    pub auto_switch_current_account_id: Option<String>,  // 当前正在使用的账号ID（自动跟踪）
 }
 
 fn default_browser_mode() -> String {
@@ -154,6 +165,18 @@ fn default_payment_period() -> i32 {
 
 fn default_seat_count() -> i32 {
     1  // 默认1个席位
+}
+
+fn default_auto_switch_group() -> String {
+    "默认分组".to_string()
+}
+
+fn default_auto_switch_threshold() -> i32 {
+    10  // 默认10%
+}
+
+fn default_auto_switch_interval() -> i32 {
+    300  // 默认5分钟
 }
 
 impl Default for Settings {
@@ -191,6 +214,11 @@ impl Default for Settings {
             payment_period: 1,  // 默认月付
             team_name: String::new(),  // 默认空团队名称
             seat_count: 1,  // 默认1个席位
+            auto_switch_enabled: false,  // 默认关闭自动换号
+            auto_switch_group: "默认分组".to_string(),
+            auto_switch_threshold: 10,  // 默认10%
+            auto_switch_check_interval: 300,  // 默认5分钟
+            auto_switch_current_account_id: None,
         }
     }
 }

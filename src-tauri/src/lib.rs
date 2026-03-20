@@ -144,6 +144,7 @@ pub fn run() {
             commands::switch_account,
             commands::reset_machine_id,
             commands::check_admin_privileges,
+            commands::check_auto_switch,
             
             // Windsurf信息命令
             commands::get_current_windsurf_info,

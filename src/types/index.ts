@@ -331,6 +331,12 @@ export interface Settings {
   paymentPeriod?: number;  // 支付周期: 1=月付, 2=年付
   teamName?: string;  // Teams 计划的团队名称
   seatCount?: number;  // Teams 计划的席位数量
+  // 自动换号设置
+  autoSwitchEnabled?: boolean;  // 是否启用自动换号
+  autoSwitchGroup?: string;  // 自动换号使用的分组
+  autoSwitchThreshold?: number;  // 每日配额阈值百分比，低于此值触发换号
+  autoSwitchCheckInterval?: number;  // 自动检测间隔（秒）
+  autoSwitchCurrentAccountId?: string | null;  // 当前正在使用的账号ID（自动跟踪）
 }
 
 /**

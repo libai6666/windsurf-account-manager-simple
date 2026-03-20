@@ -320,6 +320,23 @@ export const apiService = {
   }> {
     return await invoke('switch_account', { id });
   },
+
+  /**
+   * 自动换号检测：检查当前账号配额，低于阈值时自动切换
+   */
+  async checkAutoSwitch(): Promise<{
+    action: 'skip' | 'switched' | 'no_candidate' | 'error';
+    reason?: string;
+    from_account?: string;
+    from_daily_remaining?: number;
+    to_account?: string;
+    to_account_id?: string;
+    to_daily_remaining?: number;
+    current_account?: string;
+    daily_remaining?: number;
+  }> {
+    return await invoke('check_auto_switch');
+  },
   
   /**
    * 重置机器ID
