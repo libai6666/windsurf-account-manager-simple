@@ -180,6 +180,15 @@
         <div class="progress-header">
           <span class="progress-text">正在打开链接 ({{ openProgress.current }}/{{ openProgress.total }})</span>
           <span class="progress-percent">{{ Math.round(openProgress.current / openProgress.total * 100) }}%</span>
+          <el-button
+            type="danger"
+            size="small"
+            plain
+            @click="cancelOpening = true"
+            :disabled="cancelOpening"
+          >
+            {{ cancelOpening ? '正在终止...' : '终止' }}
+          </el-button>
         </div>
         <el-progress 
           :percentage="Math.round(openProgress.current / openProgress.total * 100)" 
@@ -210,10 +219,18 @@
       <div class="drawer-footer">
         <el-button @click="handleClose" :disabled="isOpening">关闭</el-button>
         <el-button
+          v-if="isOpening"
+          type="danger"
+          @click="cancelOpening = true"
+          :disabled="cancelOpening"
+        >
+          {{ cancelOpening ? '正在终止...' : '终止打开' }}
+        </el-button>
+        <el-button
+          v-else
           type="primary"
           :icon="ChromeFilled"
-          :disabled="selectedLinks.size === 0 || isOpening"
-          :loading="isOpening"
+          :disabled="selectedLinks.size === 0"
           @click="handleOpenSelected"
         >
           打开选中链接 ({{ selectedLinks.size }})

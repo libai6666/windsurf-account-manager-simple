@@ -94,7 +94,7 @@
     <!-- 主内容区 -->
     <el-container>
       <!-- 顶部操作栏 -->
-      <el-header class="header">
+      <el-header :class="['header', { 'header-compact': accountsStore.selectedAccounts.size > 0 }]">
         <div class="header-left">
           <el-input
             v-model="searchQuery"
@@ -230,15 +230,59 @@
             />
           </el-tooltip>
           
-          <!-- 选择本页账号 -->
-          <el-tooltip content="选择本页账号" placement="bottom">
+          <!-- 选择本页账号（下拉菜单） -->
+          <el-dropdown trigger="click" @command="handleSelectPageCommand">
             <el-button
               :icon="DocumentChecked"
               circle
               type="default"
-              @click="selectCurrentPageAccounts"
+              title="按条件选择本页账号"
             />
-          </el-tooltip>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="all">
+                  <el-icon><DocumentChecked /></el-icon>
+                  选择本页全部
+                </el-dropdown-item>
+                <el-dropdown-item divided command="trial">
+                  <el-icon><Ticket /></el-icon>
+                  试用号 (Trial)
+                </el-dropdown-item>
+                <el-dropdown-item command="free">
+                  <el-icon><User /></el-icon>
+                  免费号 (Free)
+                </el-dropdown-item>
+                <el-dropdown-item command="paid">
+                  <el-icon><Trophy /></el-icon>
+                  付费号 (Pro/Teams等)
+                </el-dropdown-item>
+                <el-dropdown-item command="team_owner">
+                  <el-icon><Avatar /></el-icon>
+                  团队主号
+                </el-dropdown-item>
+                <el-dropdown-item divided command="normal">
+                  <el-icon style="color:#67c23a"><CircleCheck /></el-icon>
+                  正常状态
+                </el-dropdown-item>
+                <el-dropdown-item command="offline">
+                  <el-icon style="color:#909399"><Remove /></el-icon>
+                  离线 (Token失效)
+                </el-dropdown-item>
+                <el-dropdown-item command="disabled">
+                  <el-icon style="color:#e6a23c"><Warning /></el-icon>
+                  已禁用
+                </el-dropdown-item>
+                <el-dropdown-item command="expired">
+                  <el-icon style="color:#f56c6c"><Timer /></el-icon>
+                  已过期
+                </el-dropdown-item>
+                <el-dropdown-item command="error">
+                  <el-icon style="color:#f56c6c"><CircleClose /></el-icon>
+                  错误状态
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
           
           <!-- 全选按钮（带分隔线） -->
           <el-tooltip content="全选" placement="bottom" class="select-all-button">
@@ -659,7 +703,12 @@ import {
   SortUp,
   SortDown,
   Link,
-  CircleClose
+  CircleClose,
+  Ticket,
+  Avatar,
+  CircleCheck,
+  Remove,
+  Warning
 } from '@element-plus/icons-vue';
 import { useAccountsStore, useSettingsStore, useUIStore } from '@/store';
 import { apiService, settingsApi, accountApi } from '@/api';
@@ -1190,30 +1239,80 @@ function toggleSelectAll() {
   }
 }
 
-// 选择本页账号
-function selectCurrentPageAccounts() {
+// 按条件选择本页账号
+function handleSelectPageCommand(command: string) {
   const pageAccounts = accountsStore.paginatedAccounts;
   if (pageAccounts.length === 0) {
     ElMessage.info('当前页没有账号');
     return;
   }
   
-  // 检查本页是否已全部选中
-  const allSelected = pageAccounts.every(acc => accountsStore.selectedAccounts.has(acc.id));
+  let matched: typeof pageAccounts = [];
+  let label = '';
   
-  if (allSelected) {
-    // 如果本页已全选，则取消本页选择
-    pageAccounts.forEach(account => {
-      accountsStore.selectedAccounts.delete(account.id);
-    });
-    ElMessage.info(`已取消选择本页 ${pageAccounts.length} 个账号`);
-  } else {
-    // 选择本页所有账号
-    pageAccounts.forEach(account => {
-      accountsStore.selectedAccounts.add(account.id);
-    });
-    ElMessage.success(`已选择本页 ${pageAccounts.length} 个账号`);
+  switch (command) {
+    case 'all':
+      matched = pageAccounts;
+      label = '全部';
+      break;
+    case 'trial':
+      matched = pageAccounts.filter(acc => acc.plan_name?.toLowerCase() === 'trial');
+      label = '试用号';
+      break;
+    case 'free':
+      matched = pageAccounts.filter(acc => !acc.plan_name || acc.plan_name.toLowerCase() === 'free');
+      label = '免费号';
+      break;
+    case 'paid':
+      matched = pageAccounts.filter(acc => {
+        const plan = acc.plan_name?.toLowerCase();
+        return !!plan && plan !== 'free' && plan !== 'trial';
+      });
+      label = '付费号';
+      break;
+    case 'team_owner':
+      matched = pageAccounts.filter(acc => acc.is_team_owner === true);
+      label = '团队主号';
+      break;
+    case 'normal':
+      matched = pageAccounts.filter(acc => {
+        const hasToken = acc.token_expires_at && dayjs(acc.token_expires_at).isAfter(dayjs());
+        return hasToken && !acc.is_disabled && acc.status !== 'error';
+      });
+      label = '正常状态';
+      break;
+    case 'offline':
+      matched = pageAccounts.filter(acc => !acc.token_expires_at || dayjs(acc.token_expires_at).isBefore(dayjs()));
+      label = '离线号';
+      break;
+    case 'disabled':
+      matched = pageAccounts.filter(acc => acc.is_disabled === true);
+      label = '已禁用';
+      break;
+    case 'expired':
+      matched = pageAccounts.filter(acc => {
+        if (!acc.subscription_expires_at) return false;
+        return dayjs(acc.subscription_expires_at).isBefore(dayjs());
+      });
+      label = '已过期';
+      break;
+    case 'error':
+      matched = pageAccounts.filter(acc => acc.status === 'error');
+      label = '错误状态';
+      break;
+    default:
+      return;
   }
+  
+  if (matched.length === 0) {
+    ElMessage.info(`本页没有符合「${label}」条件的账号`);
+    return;
+  }
+  
+  matched.forEach(account => {
+    accountsStore.selectedAccounts.add(account.id);
+  });
+  ElMessage.success(`已选择本页 ${matched.length} 个${label}账号`);
 }
 
 // 打开批量导入对话框
@@ -2215,22 +2314,26 @@ async function handleBatchUpdateGroup() {
   isBatchUpdatingGroup.value = true;
   
   try {
+    // 收集所有需要更新的账号
+    const accountsToUpdate = selectedIds
+      .map(id => accountsStore.accounts.find(a => a.id === id))
+      .filter((acc): acc is Account => !!acc)
+      .map(acc => ({ ...acc, group: batchGroupTarget.value }));
+    
+    // 分批并发更新（每批10个，避免IPC拥堵）
+    const BATCH_SIZE = 10;
     let successCount = 0;
     let failedCount = 0;
     
-    // 逐个更新账号的分组
-    for (const id of selectedIds) {
-      const account = accountsStore.accounts.find(a => a.id === id);
-      if (account) {
-        try {
-          const updatedAccount = { ...account, group: batchGroupTarget.value };
-          await accountsStore.updateAccount(updatedAccount);
-          successCount++;
-        } catch (error) {
-          console.error(`更新账号 ${account.email} 分组失败:`, error);
-          failedCount++;
-        }
-      }
+    for (let i = 0; i < accountsToUpdate.length; i += BATCH_SIZE) {
+      const batch = accountsToUpdate.slice(i, i + BATCH_SIZE);
+      const results = await Promise.allSettled(
+        batch.map(acc => accountsStore.updateAccount(acc))
+      );
+      results.forEach(r => {
+        if (r.status === 'fulfilled') successCount++;
+        else failedCount++;
+      });
     }
     
     // 显示结果
@@ -2401,10 +2504,21 @@ onUnmounted(() => {
 
 .search-input {
   width: 220px;
+  transition: width 0.3s ease;
 }
 
 .sort-select {
   width: 105px;
+  transition: width 0.3s ease;
+}
+
+/* 选中账号时缩小搜索框和排序选择器，为批量操作按钮腾出空间 */
+.header-compact .search-input {
+  width: 140px;
+}
+
+.header-compact .sort-select {
+  width: 85px;
 }
 
 .sort-select :deep(.el-input__wrapper) {
