@@ -434,9 +434,9 @@
           <el-form-item label="切号阈值" v-if="settings.autoSwitchEnabled">
             <el-input-number
               v-model="settings.autoSwitchThreshold"
-              :min="1"
-              :max="50"
-              :step="5"
+              :min="0"
+              :max="99"
+              :step="1"
               style="width: 160px;"
             />
             <span style="margin-left: 8px; color: #606266;">%</span>
