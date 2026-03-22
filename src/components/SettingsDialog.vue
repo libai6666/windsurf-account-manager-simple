@@ -723,9 +723,26 @@ const resettingWindsurf = ref(false);
 watch(() => uiStore.showSettingsDialog, async (show) => {
   if (show && settingsStore.settings) {
     Object.assign(settings, settingsStore.settings);
-    // 记录打开对话框时的当前账号ID，用于保存时判断是否需要切号
     originalAutoSwitchAccountId.value = settings.autoSwitchCurrentAccountId || null;
     windsurfPath.value = settings.windsurfPath || '';
+    // 加载编辑器当前登录状态，并自动匹配选中对应账号
+    try {
+      const info = await invoke<{ email?: string; is_active: boolean }>('get_current_windsurf_info');
+      if (info.email) {
+        const matched = accountsStore.accounts.find(
+          a => a.email.toLowerCase() === info.email!.toLowerCase()
+        );
+        if (matched) {
+          if (matched.group) {
+            settings.autoSwitchGroup = matched.group;
+          }
+          settings.autoSwitchCurrentAccountId = matched.id;
+          originalAutoSwitchAccountId.value = matched.id;
+        }
+      }
+    } catch {
+      // 忽略获取失败
+    }
     // 同步座位数选项到输入框
     if (settings.seat_count_options && settings.seat_count_options.length > 0) {
       seatCountOptionsInput.value = settings.seat_count_options.join(', ');
@@ -757,20 +774,31 @@ async function handleSave() {
     if (windsurfPath.value) {
       settings.windsurfPath = windsurfPath.value;
     }
+    
+    // 记录用户选择的新账号ID
+    const newAccountId = settings.autoSwitchCurrentAccountId;
+    const needSwitch = settings.autoSwitchEnabled && settings.seamlessSwitchEnabled
+        && newAccountId && originalAutoSwitchAccountId.value !== newAccountId;
+    
+    // 保存设置时先用原始账号ID，避免还没切号就触发高亮更新
+    if (needSwitch) {
+      settings.autoSwitchCurrentAccountId = originalAutoSwitchAccountId.value;
+    }
     await settingsStore.updateSettings(settings);
     uiStore.setTheme(settings.theme as 'light' | 'dark');
     ElMessage.success('设置保存成功');
     
-    // 自动换号：仅当用户实际更换了当前账号选择时才执行切号
-    if (settings.autoSwitchEnabled && settings.seamlessSwitchEnabled && settings.autoSwitchCurrentAccountId
-        && originalAutoSwitchAccountId.value !== settings.autoSwitchCurrentAccountId) {
+    // 实际切号：成功后才更新当前账号ID
+    if (needSwitch) {
       try {
-        const selectedAccount = groupAccounts.value.find(a => a.id === settings.autoSwitchCurrentAccountId);
+        const selectedAccount = groupAccounts.value.find(a => a.id === newAccountId);
         if (selectedAccount) {
           ElMessage.info('正在切换到选中的当前账号...');
           const result = await apiService.switchAccount(selectedAccount.id);
           if (result.success) {
             ElMessage.success(`已切换到账号: ${selectedAccount.email}`);
+            // 切号成功，现在才更新store中的当前账号ID（触发高亮更新）
+            await settingsStore.loadSettings();
           } else {
             ElMessage.warning(`切号失败: ${result.error || '未知错误'}`);
           }

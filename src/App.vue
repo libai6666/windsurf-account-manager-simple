@@ -14,7 +14,7 @@ const accountsStore = useAccountsStore();
 const settingsStore = useSettingsStore();
 const uiStore = useUIStore();
 
-const showWelcomeDialog = ref(true);
+const showWelcomeDialog = ref(false);
 
 // 事件监听取消函数
 let tokenRefreshedUnlisten: UnlistenFn | null = null;

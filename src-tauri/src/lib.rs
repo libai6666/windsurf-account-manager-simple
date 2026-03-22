@@ -9,9 +9,64 @@ use commands::{AutoResetStore, ResetRecordStore};
 use std::sync::Arc;
 use tauri::Manager;
 
+/// Debug构建时初始化日志：同时输出到控制台和exe同级的logs文件夹
+/// Release构建时仅使用env_logger输出到控制台
+fn init_logging() {
+    #[cfg(debug_assertions)]
+    {
+        use std::fs::{self, OpenOptions};
+        use std::io::Write;
+        use std::sync::Mutex;
+
+        let log_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join("logs")));
+
+        let log_file: Option<Arc<Mutex<std::fs::File>>> = log_dir.and_then(|dir| {
+            fs::create_dir_all(&dir).ok()?;
+            let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+            let path = dir.join(format!("main_b_{}.log", today));
+            let file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .ok()?;
+            eprintln!("[init_logging] Backend log file: {}", path.display());
+            Some(Arc::new(Mutex::new(file)))
+        });
+
+        let file_for_logger = log_file.clone();
+        env_logger::Builder::from_default_env()
+            .filter_level(log::LevelFilter::Info)
+            .format(move |buf, record| {
+                use std::io::Write as _;
+                let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
+                let line = format!(
+                    "[{}] [{}] [{}] {}\n",
+                    ts,
+                    record.level(),
+                    record.target(),
+                    record.args()
+                );
+                if let Some(ref f) = file_for_logger {
+                    if let Ok(mut file) = f.lock() {
+                        let _ = file.write_all(line.as_bytes());
+                    }
+                }
+                buf.write_all(line.as_bytes())
+            })
+            .init();
+    }
+
+    #[cfg(not(debug_assertions))]
+    {
+        env_logger::init();
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    env_logger::init();
+    init_logging();
     
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())

@@ -744,6 +744,7 @@ const searchQuery = ref('');
 const currentBillingData = ref<any>(null);
 const billingLoading = ref(false);
 const currentWindsurfEmail = ref<string>('');
+const highlightReady = ref(false); // 初始化完成后才允许watch更新高亮
 const windsurfVersion = ref<string>('');
 const showBatchUpdatePlanDialog = ref(false);
 const showBatchCancelSubscriptionDialog = ref(false);
@@ -2283,12 +2284,15 @@ async function fetchCurrentWindsurfInfo() {
     const info = await settingsApi.getCurrentWindsurfInfo();
     if (info.is_active && info.email) {
       currentWindsurfEmail.value = info.email;
+    } else {
+      currentWindsurfEmail.value = '';
     }
     if (info.version) {
       windsurfVersion.value = info.version;
     }
   } catch (error) {
     console.error('获取当前Windsurf信息失败:', error);
+    currentWindsurfEmail.value = '';
   }
 }
 
@@ -2359,9 +2363,26 @@ function showAboutDialog() {
   showAbout.value = true;
 }
 
+// 切号后自动刷新高亮（跳过初始化阶段，只响应用户实际切号）
+watch(
+  () => settingsStore.settings?.autoSwitchCurrentAccountId,
+  (newId) => {
+    if (!highlightReady.value) return; // 初始化阶段跳过，避免覆盖编辑器检测结果
+    if (newId) {
+      const matched = accountsStore.accounts.find(a => a.id === newId);
+      if (matched) {
+        currentWindsurfEmail.value = matched.email;
+      }
+    } else {
+      currentWindsurfEmail.value = '';
+    }
+  }
+);
+
 // 初始化时获取当前账号信息和应用版本
 onMounted(async () => {
-  fetchCurrentWindsurfInfo();
+  await fetchCurrentWindsurfInfo();
+  highlightReady.value = true; // 编辑器检测完成后才允许watch更新高亮
   
   // 获取应用版本号
   try {

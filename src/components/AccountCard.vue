@@ -466,15 +466,10 @@ const accountsStore = useAccountsStore();
 const uiStore = useUIStore();
 const settingsStore = useSettingsStore();
 
-// 是否为当前激活账号（通过Windsurf信息或自动换号跟踪ID判断）
+// 是否为当前激活账号（基于编辑器实际登录邮箱判断）
 const isCurrent = computed(() => {
-  // 优先通过自动换号跟踪的账号ID判断
-  const trackingId = settingsStore.settings?.autoSwitchCurrentAccountId;
-  if (trackingId && props.account.id === trackingId) {
-    return true;
-  }
-  // 兜底：通过Windsurf当前登录邮箱判断
-  return props.currentEmail && props.account.email === props.currentEmail;
+  if (!props.currentEmail) return false;
+  return props.account.email.toLowerCase() === props.currentEmail.toLowerCase();
 });
 
 // 显示的邮箱（根据隐私模式）
