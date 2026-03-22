@@ -427,7 +427,8 @@
               />
             </el-select>
             <div style="margin-top: 5px; color: #909399; font-size: 12px;">
-              当前在 Windsurf 中使用的账号，手动切号时会自动更新
+              <span v-if="editorCurrentEmail">编辑器当前登录: <b>{{ editorCurrentEmail }}</b>（自动检测）</span>
+              <span v-else>手动切号时会自动更新，自动换号时基于编辑器实际登录状态判断</span>
             </div>
           </el-form-item>
           
@@ -499,13 +500,14 @@ const settingsStore = useSettingsStore();
 const uiStore = useUIStore();
 const accountsStore = useAccountsStore();
 
-// 当前分组内的账号列表（用于自动换号的当前账号选择）
-// 同时包含当前跟踪的账号（即使已被移出分组），避免显示UUID
+// 编辑器当前登录的邮箱
+const editorCurrentEmail = ref<string | null>(null);
+
+// 当前分组内的账号列表（用于手动切号选择）
 const groupAccounts = computed(() => {
   const group = settings.autoSwitchGroup;
   if (!group) return [];
   const inGroup = accountsStore.accounts.filter(a => a.group === group);
-  // 如果当前跟踪的账号不在分组内，也将其加入列表以正确显示
   const trackingId = settings.autoSwitchCurrentAccountId;
   if (trackingId && !inGroup.some(a => a.id === trackingId)) {
     const trackedAccount = accountsStore.accounts.find(a => a.id === trackingId);
@@ -518,7 +520,7 @@ const groupAccounts = computed(() => {
 
 const loading = ref(false);
 const activeTab = ref('basic');  // 当前激活的标签页
-const originalAutoSwitchAccountId = ref<string | null>(null);  // 对话框打开时记录的原始当前账号ID
+const originalAutoSwitchAccountId = ref<string | null>(null);
 const seatCountOptionsInput = ref('18, 19, 20');  // 座位数选项输入框
 const resettingHttp = ref(false);  // HTTP客户端重置中
 
@@ -691,9 +693,29 @@ const patchStatus = reactive({
 watch(() => uiStore.showSettingsDialog, async (show) => {
   if (show && settingsStore.settings) {
     Object.assign(settings, settingsStore.settings);
-    // 记录打开对话框时的当前账号ID，用于保存时判断是否需要切号
     originalAutoSwitchAccountId.value = settings.autoSwitchCurrentAccountId || null;
     windsurfPath.value = settings.windsurfPath || '';
+    // 加载编辑器当前登录状态，并自动匹配选中对应账号
+    try {
+      const info = await invoke<{ email?: string; is_active: boolean }>('get_current_windsurf_info');
+      editorCurrentEmail.value = info.email || null;
+      // 根据编辑器登录邮箱自动匹配账号，同步分组和选中
+      if (info.email) {
+        const matched = accountsStore.accounts.find(
+          a => a.email.toLowerCase() === info.email!.toLowerCase()
+        );
+        if (matched) {
+          // 同步换号分组为该账号所在的分组
+          if (matched.group) {
+            settings.autoSwitchGroup = matched.group;
+          }
+          settings.autoSwitchCurrentAccountId = matched.id;
+          originalAutoSwitchAccountId.value = matched.id;
+        }
+      }
+    } catch {
+      editorCurrentEmail.value = null;
+    }
     // 同步座位数选项到输入框
     if (settings.seat_count_options && settings.seat_count_options.length > 0) {
       seatCountOptionsInput.value = settings.seat_count_options.join(', ');
@@ -729,13 +751,13 @@ async function handleSave() {
     uiStore.setTheme(settings.theme as 'light' | 'dark');
     ElMessage.success('设置保存成功');
     
-    // 自动换号：仅当用户实际更换了当前账号选择时才执行切号
+    // 手动切号：仅当用户实际更换了当前账号选择时才执行切号
     if (settings.autoSwitchEnabled && settings.seamlessSwitchEnabled && settings.autoSwitchCurrentAccountId
         && originalAutoSwitchAccountId.value !== settings.autoSwitchCurrentAccountId) {
       try {
         const selectedAccount = groupAccounts.value.find(a => a.id === settings.autoSwitchCurrentAccountId);
         if (selectedAccount) {
-          ElMessage.info('正在切换到选中的当前账号...');
+          ElMessage.info('正在切换到选中的账号...');
           const result = await apiService.switchAccount(selectedAccount.id);
           if (result.success) {
             ElMessage.success(`已切换到账号: ${selectedAccount.email}`);
@@ -744,7 +766,7 @@ async function handleSave() {
           }
         }
       } catch (switchError) {
-        console.error('自动切号检查失败:', switchError);
+        console.error('手动切号失败:', switchError);
       }
     }
     

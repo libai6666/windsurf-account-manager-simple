@@ -141,6 +141,8 @@ pub struct Settings {
     pub auto_switch_check_interval: i32,  // 自动检测间隔（秒）
     #[serde(default, rename = "autoSwitchCurrentAccountId")]
     pub auto_switch_current_account_id: Option<String>,  // 当前正在使用的账号ID（自动跟踪）
+    #[serde(default = "default_true", rename = "resetMachineIdOnSwitch")]
+    pub reset_machine_id_on_switch: bool,  // 切号时是否重置机器设备码（默认开启）
 }
 
 fn default_browser_mode() -> String {
@@ -219,6 +221,7 @@ impl Default for Settings {
             auto_switch_threshold: 10,  // 默认10%
             auto_switch_check_interval: 300,  // 默认5分钟
             auto_switch_current_account_id: None,
+            reset_machine_id_on_switch: true,  // 默认开启切号时重置设备码
         }
     }
 }

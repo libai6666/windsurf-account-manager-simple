@@ -9,9 +9,67 @@ use commands::{AutoResetStore, ResetRecordStore};
 use std::sync::Arc;
 use tauri::Manager;
 
+/// Debug构建时初始化日志：同时输出到控制台和exe同级的logs文件夹
+/// Release构建时仅使用env_logger输出到控制台
+fn init_logging() {
+    #[cfg(debug_assertions)]
+    {
+        use std::fs::{self, OpenOptions};
+        use std::io::Write;
+        use std::sync::Mutex;
+
+        // 获取exe同级的logs目录
+        let log_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join("logs")));
+
+        let log_file: Option<Arc<Mutex<std::fs::File>>> = log_dir.and_then(|dir| {
+            fs::create_dir_all(&dir).ok()?;
+            let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+            let path = dir.join(format!("backend_{}.log", today));
+            let file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .ok()?;
+            eprintln!("[init_logging] Backend log file: {}", path.display());
+            Some(Arc::new(Mutex::new(file)))
+        });
+
+        let file_for_logger = log_file.clone();
+        env_logger::Builder::from_default_env()
+            .filter_level(log::LevelFilter::Info)
+            .format(move |buf, record| {
+                use std::io::Write as _;
+                let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
+                let line = format!(
+                    "[{}] [{}] [{}] {}\n",
+                    ts,
+                    record.level(),
+                    record.target(),
+                    record.args()
+                );
+                // 写入文件
+                if let Some(ref f) = file_for_logger {
+                    if let Ok(mut file) = f.lock() {
+                        let _ = file.write_all(line.as_bytes());
+                    }
+                }
+                // 同时写入控制台
+                buf.write_all(line.as_bytes())
+            })
+            .init();
+    }
+
+    #[cfg(not(debug_assertions))]
+    {
+        env_logger::init();
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    env_logger::init();
+    init_logging();
     
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -24,6 +82,11 @@ pub fn run() {
             
             // 将数据存储注入到应用状态
             app.manage(store.clone());
+            
+            // 初始化机器设备码存储
+            let machine_id_store = commands::MachineIdStore::new(app.handle())
+                .expect("Failed to initialize machine ID store");
+            app.manage(Arc::new(machine_id_store));
             
             // 初始化自动重置配置存储
             let auto_reset_store = AutoResetStore::new(app.handle())
@@ -145,6 +208,16 @@ pub fn run() {
             commands::reset_machine_id,
             commands::check_admin_privileges,
             commands::check_auto_switch,
+            
+            // 机器设备码管理命令
+            commands::get_current_machine_ids,
+            commands::get_machine_id_records,
+            commands::save_current_machine_id,
+            commands::apply_machine_id,
+            commands::update_machine_id_label,
+            commands::delete_machine_id_record,
+            commands::clear_all_machine_id_records,
+            commands::toggle_machine_id_bookmark,
             
             // Windsurf信息命令
             commands::get_current_windsurf_info,

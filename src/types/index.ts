@@ -337,6 +337,7 @@ export interface Settings {
   autoSwitchThreshold?: number;  // 每日配额阈值百分比，低于此值触发换号
   autoSwitchCheckInterval?: number;  // 自动检测间隔（秒）
   autoSwitchCurrentAccountId?: string | null;  // 当前正在使用的账号ID（自动跟踪）
+  resetMachineIdOnSwitch?: boolean;  // 切号时是否重置机器设备码（默认开启）
 }
 
 /**
@@ -383,6 +384,41 @@ export interface AttemptResult {
   raw_response?: string;
   error?: string;
   timestamp: string;
+}
+
+// ============================================================
+// 机器设备码管理类型
+// ============================================================
+
+/**
+ * 机器设备码历史记录
+ */
+export interface MachineIdRecord {
+  id: string;
+  label: string;
+  note: string;
+  machine_id: string;
+  mac_machine_id: string;
+  sqm_id: string;
+  dev_device_id: string;
+  registry_machine_guid?: string;
+  last_associated_email?: string;
+  last_associated_account_id?: string;
+  created_at: string;
+  last_used_at?: string;
+  is_current: boolean;
+  is_bookmarked: boolean;
+}
+
+/**
+ * 当前系统的机器设备码
+ */
+export interface CurrentMachineIds {
+  machine_id?: string;
+  mac_machine_id?: string;
+  sqm_id?: string;
+  dev_device_id?: string;
+  registry_machine_guid?: string;
 }
 
 export interface BillingInfo {

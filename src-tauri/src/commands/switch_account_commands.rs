@@ -244,6 +244,7 @@ async fn trigger_windsurf_callback(auth_token: &str) -> AppResult<()> {
 pub async fn switch_account(
     id: String,
     data_store: State<'_, Arc<DataStore>>,
+    machine_id_store: State<'_, Arc<crate::commands::machine_id_commands::MachineIdStore>>,
 ) -> Result<Value, String> {
     info!("Switching account: {}", id);
     
@@ -317,19 +318,34 @@ pub async fn switch_account(
         }
     };
     
-    // Step 3: 尝试重置机器ID（可能需要管理员权限）
-    info!("Attempting to reset machine ID...");
-    let reset_result = reset_machine_id_internal().await;
-    let machine_id_reset = match reset_result {
-        Ok(_) => {
-            info!("Machine ID reset successful");
-            true
-        },
-        Err(e) => {
-            warn!("Failed to reset machine ID: {:?}", e);
-            warn!("重置机器ID失败，可能需要管理员权限。但切换账号仍可继续。");
-            false
+    // Step 3: 根据设置决定是否重置机器ID
+    let settings = data_store.get_settings().await.map_err(|e| e.to_string())?;
+    let should_reset = settings.reset_machine_id_on_switch;
+    
+    let machine_id_reset = if should_reset {
+        info!("Attempting to reset machine ID (setting enabled)...");
+        // 重置前自动保存当前设备码
+        crate::commands::machine_id_commands::auto_save_before_reset(
+            &machine_id_store,
+            Some(account.email.clone()),
+            Some(id.clone()),
+        ).await;
+        
+        let reset_result = reset_machine_id_internal().await;
+        match reset_result {
+            Ok(_) => {
+                info!("Machine ID reset successful");
+                true
+            },
+            Err(e) => {
+                warn!("Failed to reset machine ID: {:?}", e);
+                warn!("重置机器ID失败，可能需要管理员权限。但切换账号仍可继续。");
+                false
+            }
         }
+    } else {
+        info!("Skipping machine ID reset (setting disabled)");
+        false
     };
     
     // Step 4: 触发Windsurf回调URL以自动登录
@@ -364,8 +380,10 @@ pub async fn switch_account(
         "success": true,
         "message": if machine_id_reset {
             "已成功触发Windsurf登录并重置机器ID"
+        } else if should_reset {
+            "已成功触发Windsurf登录（重置机器ID失败，可能需要管理员权限）"
         } else {
-            "已成功触发Windsurf登录（未重置机器ID，可能需要管理员权限）"
+            "已成功触发Windsurf登录（未重置机器ID）"
         },
         "auth_token": auth_token,
         "machine_id_reset": machine_id_reset
@@ -636,6 +654,7 @@ pub fn is_root() -> bool {
 #[tauri::command]
 pub async fn check_auto_switch(
     data_store: State<'_, Arc<DataStore>>,
+    machine_id_store: State<'_, Arc<crate::commands::machine_id_commands::MachineIdStore>>,
 ) -> Result<Value, String> {
     let settings = data_store.get_settings().await.map_err(|e| e.to_string())?;
     
@@ -650,29 +669,176 @@ pub async fn check_auto_switch(
     let group = &settings.auto_switch_group;
     let threshold = settings.auto_switch_threshold;
     
-    // 获取当前正在使用的账号ID
-    let current_id_str = match &settings.auto_switch_current_account_id {
-        Some(id) if !id.is_empty() => id.clone(),
-        _ => {
+    // 通过编辑器实际登录状态识别当前账号
+    let windsurf_info = crate::commands::windsurf_info::get_current_windsurf_info()
+        .map_err(|e| format!("读取编辑器状态失败: {}", e))?;
+    
+    let editor_email = windsurf_info.email.clone();
+    
+    // 获取分组内所有账号
+    let all_accounts = data_store.get_all_accounts().await.map_err(|e| e.to_string())?;
+    
+    // 在分组内匹配编辑器当前登录的账号
+    let current_account = if let Some(ref email) = editor_email {
+        all_accounts.iter()
+            .find(|a| a.email.eq_ignore_ascii_case(email) && a.group.as_deref() == Some(group))
+            .or_else(|| all_accounts.iter().find(|a| a.email.eq_ignore_ascii_case(email)))
+            .cloned()
+    } else {
+        None
+    };
+    
+    // null → A 情况：编辑器未登录或未匹配到账号，直接进入候选选择流程
+    let (current_account, current_id_str) = match current_account {
+        Some(acc) => {
+            let id_str = acc.id.to_string();
+            (acc, id_str)
+        }
+        None => {
+            // 编辑器无登录账号或账号不在管理列表中，直接找候选号切换
+            println!("[自动换号] 编辑器当前无已识别账号(email={:?})，将直接选择候选号切换", editor_email);
+            
+            // 跳到候选号选择逻辑（设置 dummy 值以继续后续流程）
+            // 构造一个"需要切换"的场景
+            let group_candidates: Vec<_> = all_accounts.iter()
+                .filter(|a| {
+                    a.group.as_deref() == Some(group)
+                    && !matches!(a.status, crate::models::AccountStatus::Error(_))
+                    && a.refresh_token.is_some()
+                })
+                .collect();
+            
+            if group_candidates.is_empty() {
+                return Ok(json!({
+                    "action": "no_candidate",
+                    "reason": format!("分组 '{}' 中没有可用账号", group),
+                    "editor_email": editor_email
+                }));
+            }
+            
+            // 直接找配额最充足的候选号
+            let windsurf_service = crate::services::windsurf_service::WindsurfService::new();
+            let is_free_plan = |acc: &crate::models::Account| -> bool {
+                acc.plan_name.as_ref().map(|p| p.to_lowercase().contains("free")).unwrap_or(true)
+            };
+            let is_better_candidate = |new_daily: i32, new_is_free: bool, cur: &Option<(Uuid, String, i32, i32, bool)>| -> bool {
+                match cur {
+                    None => true,
+                    Some((_, _, cur_daily, _, cur_is_free)) => {
+                        if !new_is_free && *cur_is_free { return true; }
+                        if new_is_free && !*cur_is_free { return false; }
+                        new_daily > *cur_daily
+                    }
+                }
+            };
+            
+            let mut best_candidate: Option<(Uuid, String, i32, i32, bool)> = None;
+            for acc in &group_candidates {
+                let daily = acc.daily_quota_remaining.unwrap_or(0);
+                let weekly = acc.weekly_quota_remaining.unwrap_or(0);
+                let acc_is_free = is_free_plan(acc);
+                if daily > threshold && weekly > 0 {
+                    if is_better_candidate(daily, acc_is_free, &best_candidate) {
+                        best_candidate = Some((acc.id, acc.email.clone(), daily, weekly, acc_is_free));
+                    }
+                }
+            }
+            
+            // 没有缓存合适的，刷新后再找
+            if best_candidate.is_none() {
+                let cache_ttl = chrono::Duration::minutes(3);
+                let now = chrono::Utc::now();
+                for acc in &group_candidates {
+                    if let Some(last_update) = acc.last_quota_update {
+                        if now - last_update < cache_ttl { continue; }
+                    }
+                    if let Some(ref token) = acc.token {
+                        if let Ok(result) = windsurf_service.get_plan_status(token).await {
+                            if let Some(plan_status) = result.get("plan_status") {
+                                let daily = plan_status.get("daily_quota_remaining").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+                                let weekly = plan_status.get("weekly_quota_remaining").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+                                let mut updated = (*acc).clone();
+                                updated.daily_quota_remaining = Some(daily);
+                                updated.weekly_quota_remaining = Some(weekly);
+                                updated.last_quota_update = Some(now);
+                                let _ = data_store.update_account(updated).await;
+                                let acc_is_free = is_free_plan(acc);
+                                if daily > threshold && weekly > 0 {
+                                    if is_better_candidate(daily, acc_is_free, &best_candidate) {
+                                        best_candidate = Some((acc.id, acc.email.clone(), daily, weekly, acc_is_free));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            let (target_id, target_email, target_daily, target_weekly, _) = match best_candidate {
+                Some(c) => c,
+                None => {
+                    return Ok(json!({
+                        "action": "no_candidate",
+                        "reason": format!("分组 '{}' 中没有配额充足的账号", group),
+                        "editor_email": editor_email
+                    }));
+                }
+            };
+            
+            println!("[自动换号] 首次切号: 编辑器无已知账号 → {} (日{}%, 周{}%)", target_email, target_daily, target_weekly);
+            
+            // 执行切换
+            let target_account = data_store.get_account(target_id).await.map_err(|e| e.to_string())?;
+            let refresh_token = match &target_account.refresh_token {
+                Some(rt) if !rt.is_empty() => rt.clone(),
+                _ => return Ok(json!({ "action": "error", "reason": format!("目标账号 {} 没有refresh_token", target_email) })),
+            };
+            let (access_token, expires_in) = if let (Some(token), Some(expires_at)) = (&target_account.token, &target_account.token_expires_at) {
+                let now = Utc::now();
+                if *expires_at > now + chrono::Duration::minutes(5) {
+                    (token.clone(), (*expires_at - now).num_seconds().to_string())
+                } else {
+                    match refresh_access_token(&refresh_token).await {
+                        Ok(resp) => (resp.access_token, resp.expires_in),
+                        Err(e) => return Ok(json!({ "action": "error", "reason": format!("刷新目标账号token失败: {}", e) })),
+                    }
+                }
+            } else {
+                match refresh_access_token(&refresh_token).await {
+                    Ok(resp) => (resp.access_token, resp.expires_in),
+                    Err(e) => return Ok(json!({ "action": "error", "reason": format!("获取目标账号token失败: {}", e) })),
+                }
+            };
+            let auth_token = match get_auth_token(&access_token).await {
+                Ok(t) => t,
+                Err(e) => return Ok(json!({ "action": "error", "reason": format!("获取auth_token失败: {}", e) })),
+            };
+            if settings.reset_machine_id_on_switch {
+                crate::commands::machine_id_commands::auto_save_before_reset(&machine_id_store, editor_email.clone(), None).await;
+                let _ = reset_machine_id_internal().await;
+            }
+            if let Err(e) = trigger_windsurf_callback(&auth_token).await {
+                return Ok(json!({ "action": "error", "reason": format!("触发Windsurf登录失败: {}", e) }));
+            }
+            let expires_at = Utc::now() + chrono::Duration::seconds(expires_in.parse::<i64>().unwrap_or(3600));
+            let _ = data_store.update_account_token(target_id, access_token, expires_at).await;
+            let mut new_settings = settings.clone();
+            new_settings.auto_switch_current_account_id = Some(target_id.to_string());
+            let _ = data_store.update_settings(new_settings).await;
+            
             return Ok(json!({
-                "action": "skip",
-                "reason": "未设置当前使用的账号，请先手动切换一次账号"
+                "action": "switched",
+                "reason": "编辑器无已识别账号，首次自动切号",
+                "from_account": editor_email,
+                "to_account": target_email,
+                "to_account_id": target_id.to_string(),
+                "to_daily_remaining": target_daily,
+                "to_weekly_remaining": target_weekly
             }));
         }
     };
     
-    let current_uuid = Uuid::parse_str(&current_id_str).map_err(|e| e.to_string())?;
-    
-    // 获取当前账号信息
-    let current_account = match data_store.get_account(current_uuid).await {
-        Ok(acc) => acc,
-        Err(_) => {
-            return Ok(json!({
-                "action": "skip",
-                "reason": "当前账号不存在，请重新设置"
-            }));
-        }
-    };
+    let current_uuid = current_account.id;
     
     // 先刷新当前账号的配额信息（日配额+周配额）
     let windsurf_service = crate::services::windsurf_service::WindsurfService::new();
@@ -927,8 +1093,16 @@ pub async fn check_auto_switch(
         }
     };
     
-    // 重置机器ID
-    let _ = reset_machine_id_internal().await;
+    // 根据设置决定是否重置机器ID
+    if settings.reset_machine_id_on_switch {
+        // 重置前自动保存当前设备码
+        crate::commands::machine_id_commands::auto_save_before_reset(
+            &machine_id_store,
+            Some(current_account.email.clone()),
+            Some(current_id_str.clone()),
+        ).await;
+        let _ = reset_machine_id_internal().await;
+    }
     
     // 触发 Windsurf 回调
     if let Err(e) = trigger_windsurf_callback(&auth_token).await {

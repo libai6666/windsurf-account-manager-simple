@@ -17,6 +17,11 @@
         class="sidebar-menu"
         :collapse-transition="false"
       >
+        <el-menu-item index="overview" @click="setActiveMenu('overview')">
+          <el-icon><Monitor /></el-icon>
+          <template #title>概览</template>
+        </el-menu-item>
+        
         <el-menu-item index="accounts" @click="setActiveMenu('accounts')">
           <el-icon><User /></el-icon>
           <template #title>账号管理</template>
@@ -32,9 +37,10 @@
             :key="group"
             :index="`group-${group}`"
             class="group-item"
+            @click="filterByGroup(group)"
           >
             <div class="group-item-content">
-              <span @click="filterByGroup(group)" class="group-name">{{ group }}</span>
+              <span class="group-name">{{ group }}</span>
               <div class="group-actions" v-if="group !== '默认分组'">
                 <el-icon @click.stop="showRenameGroupDialog(group)" class="group-action-icon">
                   <Edit />
@@ -78,8 +84,8 @@
 
     <!-- 主内容区 -->
     <el-container>
-      <!-- 顶部操作栏 -->
-      <el-header class="header">
+      <!-- 顶部操作栏（非概览时显示） -->
+      <el-header v-show="activeMenu !== 'overview'" class="header">
         <div class="header-left">
           <el-input
             v-model="searchQuery"
@@ -278,8 +284,13 @@
         </div>
       </el-header>
 
-      <!-- 账号卡片区域 -->
+      <!-- 主内容区域 -->
       <el-main class="main-content">
+        <!-- 概览面板 -->
+        <DeviceManagerPanel v-if="activeMenu === 'overview'" @switch-to-group="handleSwitchToGroup" />
+
+        <!-- 账号管理内容 -->
+        <template v-else>
         <!-- 筛选面板 -->
         <transition name="filter-slide">
           <div v-if="showFilterPanel" class="filter-panel">
@@ -389,6 +400,7 @@
             />
           </div>
         </div>
+        </template>
       </el-main>
     </el-container>
 
@@ -586,7 +598,8 @@ import {
   Switch,
   SortUp,
   SortDown,
-  Link
+  Link,
+  Monitor
 } from '@element-plus/icons-vue';
 import { useAccountsStore, useSettingsStore, useUIStore } from '@/store';
 import { apiService, settingsApi, accountApi } from '@/api';
@@ -605,6 +618,7 @@ import BatchUpdatePlanDialog from '@/components/BatchUpdatePlanDialog.vue';
 import TagManageDialog from '@/components/TagManageDialog.vue';
 import TurnstileDialog from '@/components/TurnstileDialog.vue';
 import BatchTrialLinksDialog from '@/components/BatchTrialLinksDialog.vue';
+import DeviceManagerPanel from '@/components/DeviceManagerPanel.vue';
 import type { TrialLinkItem } from '@/components/BatchTrialLinksDialog.vue';
 import logger from '@/utils/logger';
 
@@ -612,7 +626,7 @@ const accountsStore = useAccountsStore();
 const settingsStore = useSettingsStore();
 const uiStore = useUIStore();
 
-const activeMenu = ref('accounts');
+const activeMenu = ref('overview');
 const searchQuery = ref('');
 const currentBillingData = ref<any>(null);
 const billingLoading = ref(false);
@@ -728,6 +742,12 @@ function setActiveMenu(menu: string) {
 }
 
 function filterByGroup(group: string) {
+  activeMenu.value = 'accounts';
+  accountsStore.setFilter({ group });
+}
+
+function handleSwitchToGroup(group: string) {
+  activeMenu.value = 'accounts';
   accountsStore.setFilter({ group });
 }
 

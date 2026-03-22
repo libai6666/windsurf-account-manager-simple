@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { Account, Settings, OperationLog, UpdateSeatsResult, BillingInfo, BatchResult, GlobalTag, SortField, SortDirection, SortConfig } from '@/types';
+import type { Account, Settings, OperationLog, UpdateSeatsResult, BillingInfo, BatchResult, GlobalTag, SortField, SortDirection, SortConfig, MachineIdRecord } from '@/types';
 import type { AnalyticsData } from '@/types/analytics';
 
 // 账号管理API
@@ -352,6 +352,83 @@ export const apiService = {
     requires_admin?: boolean;
   }> {
     return await invoke('reset_machine_id');
+  },
+};
+
+// 机器设备码管理API
+export const machineIdApi = {
+  /**
+   * 获取当前系统的机器设备码
+   */
+  async getCurrentMachineIds(): Promise<{
+    machine_id?: string;
+    mac_machine_id?: string;
+    sqm_id?: string;
+    dev_device_id?: string;
+    registry_machine_guid?: string;
+  }> {
+    return await invoke('get_current_machine_ids');
+  },
+
+  /**
+   * 获取所有设备码历史记录
+   */
+  async getMachineIdRecords(): Promise<MachineIdRecord[]> {
+    return await invoke('get_machine_id_records');
+  },
+
+  /**
+   * 保存当前系统设备码到历史记录
+   */
+  async saveCurrentMachineId(
+    label: string,
+    note?: string,
+    associatedEmail?: string,
+    associatedAccountId?: string,
+    bookmarked?: boolean,
+  ): Promise<{ success: boolean; id?: string; message?: string; error?: string }> {
+    return await invoke('save_current_machine_id', {
+      label,
+      note: note || null,
+      associatedEmail: associatedEmail || null,
+      associatedAccountId: associatedAccountId || null,
+      bookmarked: bookmarked ?? false,
+    });
+  },
+
+  /**
+   * 应用指定设备码到系统
+   */
+  async applyMachineId(id: string): Promise<{ success: boolean; message?: string; error?: string }> {
+    return await invoke('apply_machine_id', { id });
+  },
+
+  /**
+   * 更新设备码标签和备注
+   */
+  async updateMachineIdLabel(id: string, label: string, note?: string): Promise<{ success: boolean; message?: string }> {
+    return await invoke('update_machine_id_label', { id, label, note: note || null });
+  },
+
+  /**
+   * 删除设备码记录
+   */
+  async deleteMachineIdRecord(id: string): Promise<{ success: boolean; message?: string }> {
+    return await invoke('delete_machine_id_record', { id });
+  },
+
+  /**
+   * 清空所有设备码历史记录
+   */
+  async clearAllMachineIdRecords(keepBookmarked?: boolean): Promise<{ success: boolean; message?: string }> {
+    return await invoke('clear_all_machine_id_records', { keepBookmarked: keepBookmarked ?? false });
+  },
+
+  /**
+   * 切换设备码收藏状态
+   */
+  async toggleMachineIdBookmark(id: string, bookmarked: boolean): Promise<{ success: boolean; message?: string }> {
+    return await invoke('toggle_machine_id_bookmark', { id, bookmarked });
   },
 };
 
