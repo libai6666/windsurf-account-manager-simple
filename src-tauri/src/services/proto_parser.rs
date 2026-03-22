@@ -1223,13 +1223,14 @@ impl ProtobufParser {
             }
             
             // field 14: daily_quota_remaining (每日配额剩余百分比, 0-100)
-            if let Some(v) = plan_status.get("int_14").and_then(|v| v.as_i64()) {
-                result["daily_quota_remaining"] = json!(v);
-            }
+            // protobuf编码中值为0时字段不出现，因此缺失时默认为0
+            result["daily_quota_remaining"] = json!(
+                plan_status.get("int_14").and_then(|v| v.as_i64()).unwrap_or(0)
+            );
             // field 15: weekly_quota_remaining (每周配额剩余百分比, 0-100)
-            if let Some(v) = plan_status.get("int_15").and_then(|v| v.as_i64()) {
-                result["weekly_quota_remaining"] = json!(v);
-            }
+            result["weekly_quota_remaining"] = json!(
+                plan_status.get("int_15").and_then(|v| v.as_i64()).unwrap_or(0)
+            );
             // field 17: daily_quota_reset (每日配额重置时间, Unix时间戳)
             if let Some(v) = plan_status.get("int_17").and_then(|v| v.as_i64()) {
                 result["daily_quota_reset"] = json!(v);
@@ -1238,6 +1239,14 @@ impl ProtobufParser {
             if let Some(v) = plan_status.get("int_18").and_then(|v| v.as_i64()) {
                 result["weekly_quota_reset"] = json!(v);
             }
+            
+            // 调试：打印 PlanStatus 所有原始字段，用于排查配额字段映射
+            log::info!("[GetPlanStatus] PlanStatus raw fields: {}", plan_status);
+            log::info!("[GetPlanStatus] Extracted: daily_remaining={:?}, weekly_remaining={:?}, daily_reset={:?}, weekly_reset={:?}",
+                result.get("daily_quota_remaining"),
+                result.get("weekly_quota_remaining"),
+                result.get("daily_quota_reset"),
+                result.get("weekly_quota_reset"));
         }
         
         Ok(result)
