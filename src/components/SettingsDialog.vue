@@ -493,7 +493,7 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 import { Connection } from '@element-plus/icons-vue';
 import { useSettingsStore, useUIStore, useAccountsStore } from '@/store';
 import { invoke } from '@tauri-apps/api/core';
-import { systemApi } from '@/api';
+import { systemApi, apiService } from '@/api';
 
 const settingsStore = useSettingsStore();
 const uiStore = useUIStore();
@@ -518,6 +518,7 @@ const groupAccounts = computed(() => {
 
 const loading = ref(false);
 const activeTab = ref('basic');  // 当前激活的标签页
+const originalAutoSwitchAccountId = ref<string | null>(null);  // 对话框打开时记录的原始当前账号ID
 const seatCountOptionsInput = ref('18, 19, 20');  // 座位数选项输入框
 const resettingHttp = ref(false);  // HTTP客户端重置中
 
@@ -690,6 +691,8 @@ const patchStatus = reactive({
 watch(() => uiStore.showSettingsDialog, async (show) => {
   if (show && settingsStore.settings) {
     Object.assign(settings, settingsStore.settings);
+    // 记录打开对话框时的当前账号ID，用于保存时判断是否需要切号
+    originalAutoSwitchAccountId.value = settings.autoSwitchCurrentAccountId || null;
     windsurfPath.value = settings.windsurfPath || '';
     // 同步座位数选项到输入框
     if (settings.seat_count_options && settings.seat_count_options.length > 0) {
@@ -725,6 +728,26 @@ async function handleSave() {
     await settingsStore.updateSettings(settings);
     uiStore.setTheme(settings.theme as 'light' | 'dark');
     ElMessage.success('设置保存成功');
+    
+    // 自动换号：仅当用户实际更换了当前账号选择时才执行切号
+    if (settings.autoSwitchEnabled && settings.seamlessSwitchEnabled && settings.autoSwitchCurrentAccountId
+        && originalAutoSwitchAccountId.value !== settings.autoSwitchCurrentAccountId) {
+      try {
+        const selectedAccount = groupAccounts.value.find(a => a.id === settings.autoSwitchCurrentAccountId);
+        if (selectedAccount) {
+          ElMessage.info('正在切换到选中的当前账号...');
+          const result = await apiService.switchAccount(selectedAccount.id);
+          if (result.success) {
+            ElMessage.success(`已切换到账号: ${selectedAccount.email}`);
+          } else {
+            ElMessage.warning(`切号失败: ${result.error || '未知错误'}`);
+          }
+        }
+      } catch (switchError) {
+        console.error('自动切号检查失败:', switchError);
+      }
+    }
+    
     handleClose();
   } catch (error) {
     ElMessage.error(`保存失败: ${error}`);
