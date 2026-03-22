@@ -744,7 +744,6 @@ const searchQuery = ref('');
 const currentBillingData = ref<any>(null);
 const billingLoading = ref(false);
 const currentWindsurfEmail = ref<string>('');
-const highlightReady = ref(false); // 初始化完成后才允许watch更新高亮
 const windsurfVersion = ref<string>('');
 const showBatchUpdatePlanDialog = ref(false);
 const showBatchCancelSubscriptionDialog = ref(false);
@@ -2363,11 +2362,10 @@ function showAboutDialog() {
   showAbout.value = true;
 }
 
-// 切号后自动刷新高亮（跳过初始化阶段，只响应用户实际切号）
+// 切号后自动刷新高亮（用账号列表匹配）
 watch(
   () => settingsStore.settings?.autoSwitchCurrentAccountId,
   (newId) => {
-    if (!highlightReady.value) return; // 初始化阶段跳过，避免覆盖编辑器检测结果
     if (newId) {
       const matched = accountsStore.accounts.find(a => a.id === newId);
       if (matched) {
@@ -2381,8 +2379,9 @@ watch(
 
 // 初始化时获取当前账号信息和应用版本
 onMounted(async () => {
-  await fetchCurrentWindsurfInfo();
-  highlightReady.value = true; // 编辑器检测完成后才允许watch更新高亮
+  fetchCurrentWindsurfInfo();
+  // settings初始加载可能触发watch用旧ID覆盖编辑器邮箱，延迟再读一次编辑器确保正确
+  setTimeout(() => fetchCurrentWindsurfInfo(), 1500);
   
   // 获取应用版本号
   try {
