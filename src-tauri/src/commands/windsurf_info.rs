@@ -49,9 +49,12 @@ pub fn get_current_windsurf_info() -> Result<WindsurfCurrentInfo, AppError> {
         });
     }
     
-    // 连接数据库
-    let connection = rusqlite::Connection::open(&db_path)
-        .map_err(|e| AppError::Database(format!("Failed to open state.vscdb: {}", e)))?;
+    // 以只读模式连接数据库，避免与运行中的Windsurf进程产生锁冲突
+    let connection = rusqlite::Connection::open_with_flags(
+        &db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|e| AppError::Database(format!("Failed to open state.vscdb: {}", e)))?;
     
     // 读取账号信息
     let auth_status = connection
