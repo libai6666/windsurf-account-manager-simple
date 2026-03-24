@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import { ref, computed } from 'vue';
+import { ref, computed, nextTick } from 'vue';
 import type { Account, AccountFilter, PaginationConfig, AccountStatusType, SortConfig, SortField, SortDirection } from '@/types';
 import { accountApi, apiService, settingsApi } from '@/api';
 import dayjs from 'dayjs';
@@ -210,6 +210,11 @@ export const useAccountsStore = defineStore('accounts', () => {
   async function loadAccounts() {
     loading.value = true;
     error.value = null;
+    
+    // 保存滚动位置
+    const scrollEl = document.querySelector('.accounts-grid');
+    const scrollTop = scrollEl ? scrollEl.scrollTop : 0;
+    
     try {
       accounts.value = await accountApi.getAllAccounts();
     } catch (e) {
@@ -217,6 +222,14 @@ export const useAccountsStore = defineStore('accounts', () => {
       throw e;
     } finally {
       loading.value = false;
+      
+      // 恢复滚动位置
+      nextTick(() => {
+        const el = document.querySelector('.accounts-grid');
+        if (el) {
+          el.scrollTop = scrollTop;
+        }
+      });
     }
   }
 
