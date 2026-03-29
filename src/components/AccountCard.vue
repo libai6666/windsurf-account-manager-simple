@@ -699,11 +699,15 @@ function formatResetTime(timestamp: number | undefined): string {
 }
 
 const dailyResetText = computed(() => {
-  return formatResetTime(props.account.daily_quota_reset);
+  const text = formatResetTime(props.account.daily_quota_reset);
+  if (!text && props.account.daily_quota_remaining === 0) return '等待重置';
+  return text;
 });
 
 const weeklyResetText = computed(() => {
-  return formatResetTime(props.account.weekly_quota_reset);
+  const text = formatResetTime(props.account.weekly_quota_reset);
+  if (!text && props.account.weekly_quota_remaining === 0) return '等待重置';
+  return text;
 });
 
 // 刷新按钮提示文本

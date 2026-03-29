@@ -24,7 +24,7 @@
         style="margin-bottom: 16px;"
       >
         <template #title>
-          <span v-if="importMode === 'password'">每行一个账号，格式：<code>邮箱 密码 备注(可选)</code></span>
+          <span v-if="importMode === 'password'">每行一个账号，格式：<code>邮箱 密码 备注(可选)</code>，支持 <code>----</code> 分隔</span>
           <span v-else>每行一个 Token，格式：<code>refresh_token 备注(可选)</code></span>
         </template>
       </el-alert>
@@ -43,7 +43,7 @@
           type="textarea"
           :rows="12"
           :placeholder="importMode === 'password' 
-            ? 'user1@example.com password123 测试账号1\nuser2@example.com password456\nuser3@example.com password789 备注信息'
+            ? 'user1@example.com password123 测试账号1\nuser2@example.com----password456\nuser3@example.com password789 备注信息'
             : 'AMf-vBx...长token... 测试账号1\nAMf-vBy...长token...\nAMf-vBz...长token... 备注信息'"
           @input="parseAccounts"
         />
@@ -235,7 +235,7 @@ function parseAccounts() {
   if (importMode.value === 'password') {
     // 邮箱密码模式
     lines.forEach((line, index) => {
-      const parts = line.trim().split(/\s+/);
+      const parts = line.trim().replace(/----/g, ' ').split(/\s+/);
       if (parts.length >= 2) {
         const [email, password, ...remarkParts] = parts;
         if (email.includes('@')) {

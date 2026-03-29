@@ -444,7 +444,7 @@
           </div>
           
           <!-- 分页组件 -->
-          <div class="pagination-container" v-if="accountsStore.totalCount > accountsStore.pagination.pageSizes[0]">
+          <div class="pagination-container" v-if="accountsStore.totalCount > 0">
             <el-pagination
               v-model:current-page="accountsStore.pagination.currentPage"
               v-model:page-size="accountsStore.pagination.pageSize"
