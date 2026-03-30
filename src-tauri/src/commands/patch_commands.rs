@@ -166,7 +166,63 @@ pub async fn apply_seamless_patch(
         return Err(format!("extension.js 文件不存在: {:?}", extension_file));
     }
     
-    // 1. 管理备份文件（最多保留3份）
+    // 1. 先读取文件内容，检查是否已打补丁
+    let content = fs::read_to_string(&extension_file)
+        .map_err(|e| format!("读取文件失败: {}", e))?;
+    
+    let mut modified_content = content.clone();
+    let mut modifications = vec![];
+    
+    // 2. 应用修改1: 添加全局 OAuth 回调处理器
+    let pattern1_str = r#"this\._uriHandler\.event\((\w+)=>\{"/refresh-authentication-session"===(\w+)\.path&&\(0,(\w+)\.refreshAuthenticationSession\)\(\)\}\)"#;
+    let pattern1 = Regex::new(pattern1_str)
+        .map_err(|e| format!("正则表达式错误: {}", e))?;
+    
+    if let Some(captures) = pattern1.captures(&modified_content) {
+        let var_name1 = &captures[1];
+        let var_name2 = &captures[2];
+        let module_name = &captures[3];
+        
+        // 检查两个变量名是否相同
+        if var_name1 == var_name2 {
+            let replacement = format!(
+                r#"this._uriHandler.event(async {}=>{{if("/refresh-authentication-session"==={}.path){{(0,{}.refreshAuthenticationSession)()}}else{{try{{const t=u.handleUri({});await this.handleAuthToken(t)}}catch(e){{console.error("[Windsurf] Failed to handle OAuth callback:",e)}}}}}})"#,
+                var_name1, var_name1, module_name, var_name1
+            );
+            
+            let full_match = captures.get(0).unwrap().as_str();
+            modified_content = modified_content.replace(full_match, &replacement);
+            modifications.push("OAuth回调处理器");
+        }
+    }
+    
+    // 3. 应用修改2: 移除180秒超时限制
+    let pattern2_str = r#",new Promise\(\((\w+),(\w+)\)=>setTimeout\(\(\)=>\{(\w+)\(new (\w+)\)\},18e4\)\)"#;
+    let pattern2 = Regex::new(pattern2_str)
+        .map_err(|e| format!("正则表达式错误2: {}", e))?;
+    
+    if let Some(captures) = pattern2.captures(&modified_content) {
+        let reject_var1 = &captures[2];  // 第二个参数
+        let reject_var2 = &captures[3];  // setTimeout中的变量
+        
+        // 检查是否是同一个reject变量
+        if reject_var1 == reject_var2 {
+            let full_match = captures.get(0).unwrap().as_str();
+            modified_content = modified_content.replace(full_match, "");
+            modifications.push("移除超时限制");
+        }
+    }
+    
+    // 4. 验证是否需要修改（如果内容没变化，说明已打过补丁，直接返回，不创建备份）
+    if modified_content == content {
+        return Ok(serde_json::json!({
+            "success": true,
+            "already_patched": true,
+            "message": "补丁已经应用过了"
+        }));
+    }
+    
+    // 5. 确认需要打补丁后，才管理和创建备份文件
     let parent_dir = extension_file.parent()
         .ok_or("无法获取父目录")?;
     
@@ -202,7 +258,7 @@ pub async fn apply_seamless_patch(
         }
     }
     
-    // 创建新的备份文件
+    // 创建新的备份文件（此时 extension_file 是原始未打补丁的文件）
     let backup_file = extension_file.with_extension(&format!(
         "js.backup.{}",
         Local::now().format("%Y%m%d_%H%M%S")
@@ -210,63 +266,6 @@ pub async fn apply_seamless_patch(
     
     fs::copy(&extension_file, &backup_file)
         .map_err(|e| format!("备份失败: {}", e))?;
-    
-    // 2. 读取文件内容
-    let content = fs::read_to_string(&extension_file)
-        .map_err(|e| format!("读取文件失败: {}", e))?;
-    
-    let mut modified_content = content.clone();
-    let mut modifications = vec![];
-    
-    // 3. 应用修改1: 添加全局 OAuth 回调处理器
-    let pattern1_str = r#"this\._uriHandler\.event\((\w+)=>\{"/refresh-authentication-session"===(\w+)\.path&&\(0,(\w+)\.refreshAuthenticationSession\)\(\)\}\)"#;
-    let pattern1 = Regex::new(pattern1_str)
-        .map_err(|e| format!("正则表达式错误: {}", e))?;
-    
-    if let Some(captures) = pattern1.captures(&modified_content) {
-        let var_name1 = &captures[1];
-        let var_name2 = &captures[2];
-        let module_name = &captures[3];
-        
-        // 检查两个变量名是否相同
-        if var_name1 == var_name2 {
-            let replacement = format!(
-                r#"this._uriHandler.event(async {}=>{{if("/refresh-authentication-session"==={}.path){{(0,{}.refreshAuthenticationSession)()}}else{{try{{const t=u.handleUri({});await this.handleAuthToken(t)}}catch(e){{console.error("[Windsurf] Failed to handle OAuth callback:",e)}}}}}})"#,
-                var_name1, var_name1, module_name, var_name1
-            );
-            
-            let full_match = captures.get(0).unwrap().as_str();
-            modified_content = modified_content.replace(full_match, &replacement);
-            modifications.push("OAuth回调处理器");
-        }
-    }
-    
-    // 4. 应用修改2: 移除180秒超时限制
-    let pattern2_str = r#",new Promise\(\((\w+),(\w+)\)=>setTimeout\(\(\)=>\{(\w+)\(new (\w+)\)\},18e4\)\)"#;
-    let pattern2 = Regex::new(pattern2_str)
-        .map_err(|e| format!("正则表达式错误2: {}", e))?;
-    
-    if let Some(captures) = pattern2.captures(&modified_content) {
-        let reject_var1 = &captures[2];  // 第二个参数
-        let reject_var2 = &captures[3];  // setTimeout中的变量
-        
-        // 检查是否是同一个reject变量
-        if reject_var1 == reject_var2 {
-            let full_match = captures.get(0).unwrap().as_str();
-            modified_content = modified_content.replace(full_match, "");
-            modifications.push("移除超时限制");
-        }
-    }
-    
-    // 5. 验证修改
-    if modified_content == content {
-        // 如果内容没有变化，说明已经打过补丁
-        return Ok(serde_json::json!({
-            "success": true,
-            "already_patched": true,
-            "message": "补丁已经应用过了"
-        }));
-    }
     
     // 6. 写入修改后的文件
     fs::write(&extension_file, &modified_content)
@@ -280,7 +279,7 @@ pub async fn apply_seamless_patch(
     data_store.update_settings(settings).await.map_err(|e| e.to_string())?;
     
     // 8. 重启Windsurf
-    restart_windsurf().await?;
+    restart_windsurf(Some(&windsurf_path)).await?;
     
     Ok(serde_json::json!({
         "success": true,
@@ -320,7 +319,7 @@ pub async fn restore_seamless_patch(
     data_store.update_settings(settings).await.map_err(|e| e.to_string())?;
     
     // 重启Windsurf
-    restart_windsurf().await?;
+    restart_windsurf(Some(&windsurf_path)).await?;
     
     Ok(serde_json::json!({
         "success": true,
@@ -329,18 +328,32 @@ pub async fn restore_seamless_patch(
     }))
 }
 
-/// 查找最新的可用备份文件
+/// 检查文件是否包含补丁特征（是否已打过补丁）
+fn is_file_patched(file_path: &Path) -> bool {
+    if let Ok(content) = fs::read_to_string(file_path) {
+        content.contains("Failed to handle OAuth callback")
+    } else {
+        false
+    }
+}
+
+/// 查找最新的可用且干净的备份文件
 fn find_latest_backup(extension_dir: &Path, saved_backup_path: &Option<String>) -> Result<PathBuf, String> {
     // 1. 首先尝试使用设置中保存的备份路径
     if let Some(ref saved_path) = saved_backup_path {
         let saved = PathBuf::from(saved_path);
         if saved.exists() {
-            return Ok(saved);
+            // 验证备份文件是否是干净的
+            if !is_file_patched(&saved) {
+                return Ok(saved);
+            }
+            println!("设置中保存的备份文件已被污染（包含补丁特征）: {:?}", saved);
+        } else {
+            println!("设置中保存的备份文件不存在: {:?}", saved);
         }
-        println!("设置中保存的备份文件不存在: {:?}", saved);
     }
     
-    // 2. 查找目录中所有备份文件，按时间排序使用最新的
+    // 2. 查找目录中所有备份文件
     let mut backup_files: Vec<PathBuf> = fs::read_dir(extension_dir)
         .map_err(|e| format!("读取目录失败: {}", e))?
         .filter_map(|entry| entry.ok())
@@ -357,15 +370,23 @@ fn find_latest_backup(extension_dir: &Path, saved_backup_path: &Option<String>) 
         return Err("未找到任何备份文件，无法还原。请手动重新安装 Windsurf 或从官方下载 extension.js 文件".to_string());
     }
     
-    // 按修改时间排序（最新的在前）
+    // 按修改时间排序（最旧的在前，因为最早的备份最可能是干净的）
     backup_files.sort_by(|a, b| {
         let time_a = fs::metadata(a).and_then(|m| m.modified()).ok();
         let time_b = fs::metadata(b).and_then(|m| m.modified()).ok();
-        time_b.cmp(&time_a)
+        time_a.cmp(&time_b)
     });
     
-    // 返回最新的备份文件
-    Ok(backup_files.remove(0))
+    // 3. 查找第一个干净的备份文件（从最旧的开始）
+    for backup in &backup_files {
+        if !is_file_patched(backup) {
+            return Ok(backup.clone());
+        }
+        println!("备份文件已被污染，跳过: {:?}", backup);
+    }
+    
+    // 所有备份都被污染了
+    Err("所有备份文件都已被污染（包含补丁特征）。请手动重新安装 Windsurf 获取原始 extension.js 文件".to_string())
 }
 
 /// 检查补丁状态
@@ -397,7 +418,8 @@ pub async fn check_patch_status(
 }
 
 /// 重启Windsurf
-async fn restart_windsurf() -> Result<(), String> {
+/// windsurf_path: 可选的Windsurf安装路径，优先使用此路径直接启动
+async fn restart_windsurf(windsurf_path: Option<&str>) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
@@ -413,29 +435,41 @@ async fn restart_windsurf() -> Result<(), String> {
         // 等待进程完全结束
         std::thread::sleep(std::time::Duration::from_secs(2));
         
-        // 2. 尝试从开始菜单启动Windsurf
-        let start_menu = std::env::var("APPDATA")
-            .map(|p| PathBuf::from(p).join("Microsoft\\Windows\\Start Menu\\Programs\\Windsurf"))
-            .map_err(|e| format!("获取开始菜单路径失败: {}", e))?;
-        
-        if let Ok(entries) = fs::read_dir(&start_menu) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.file_name().and_then(|n| n.to_str()).map(|n| n.contains("Windsurf")).unwrap_or(false) 
-                   && path.extension().and_then(|s| s.to_str()) == Some("lnk") {
-                    
-                    Command::new("cmd")
-                        .creation_flags(CREATE_NO_WINDOW)
-                        .args(&["/C", "start", "", &path.to_string_lossy()])
-                        .spawn()
-                        .map_err(|e| format!("启动Windsurf失败: {}", e))?;
-                    
-                    return Ok(());
+        // 2. 优先尝试使用已知路径直接启动 Windsurf.exe
+        if let Some(path) = windsurf_path {
+            let exe_path = PathBuf::from(path).join("Windsurf.exe");
+            if exe_path.exists() {
+                match Command::new(&exe_path)
+                    .creation_flags(CREATE_NO_WINDOW)
+                    .spawn() {
+                    Ok(_) => {
+                        println!("通过已知路径启动Windsurf: {:?}", exe_path);
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        println!("直接启动失败，尝试快捷方式: {}", e);
+                    }
                 }
             }
         }
         
-        return Err("未找到Windsurf快捷方式".to_string());
+        // 3. 回退：搜索快捷方式启动
+        let shortcut_dirs = get_shortcut_search_dirs();
+        
+        for dir in shortcut_dirs {
+            if let Ok(shortcut) = find_windsurf_shortcut(&dir) {
+                Command::new("cmd")
+                    .creation_flags(CREATE_NO_WINDOW)
+                    .args(&["/C", "start", "", &shortcut.to_string_lossy()])
+                    .spawn()
+                    .map_err(|e| format!("启动Windsurf失败: {}", e))?;
+                
+                println!("通过快捷方式启动Windsurf: {:?}", shortcut);
+                return Ok(());
+            }
+        }
+        
+        return Err("未找到Windsurf可执行文件或快捷方式".to_string());
     }
     
     #[cfg(target_os = "macos")]
@@ -448,7 +482,25 @@ async fn restart_windsurf() -> Result<(), String> {
         
         std::thread::sleep(std::time::Duration::from_secs(2));
         
-        // 2. 启动Windsurf
+        // 2. 优先使用已知路径启动
+        if let Some(path) = windsurf_path {
+            let app_path = PathBuf::from(path);
+            if app_path.exists() {
+                match Command::new("open")
+                    .args(&["-a", &app_path.to_string_lossy()])
+                    .spawn() {
+                    Ok(_) => {
+                        println!("通过已知路径启动Windsurf: {:?}", app_path);
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        println!("直接启动失败，尝试默认方式: {}", e);
+                    }
+                }
+            }
+        }
+        
+        // 3. 回退：使用默认方式启动
         Command::new("open")
             .args(&["-a", "Windsurf"])
             .spawn()
@@ -467,7 +519,23 @@ async fn restart_windsurf() -> Result<(), String> {
         
         std::thread::sleep(std::time::Duration::from_secs(2));
         
-        // 2. 启动Windsurf
+        // 2. 优先使用已知路径启动
+        if let Some(path) = windsurf_path {
+            let exe_path = PathBuf::from(path).join("windsurf");
+            if exe_path.exists() {
+                match Command::new(&exe_path).spawn() {
+                    Ok(_) => {
+                        println!("通过已知路径启动Windsurf: {:?}", exe_path);
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        println!("直接启动失败，尝试默认方式: {}", e);
+                    }
+                }
+            }
+        }
+        
+        // 3. 回退：使用默认方式启动
         Command::new("windsurf")
             .spawn()
             .map_err(|e| format!("启动Windsurf失败: {}", e))?;
@@ -477,4 +545,62 @@ async fn restart_windsurf() -> Result<(), String> {
     
     #[allow(unreachable_code)]
     Err("不支持的操作系统".to_string())
+}
+
+/// 获取快捷方式搜索目录列表 (Windows)
+#[cfg(target_os = "windows")]
+fn get_shortcut_search_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    
+    // 用户桌面
+    if let Ok(userprofile) = std::env::var("USERPROFILE") {
+        dirs.push(PathBuf::from(&userprofile).join("Desktop"));
+    }
+    
+    // 公共桌面
+    if let Ok(public) = std::env::var("PUBLIC") {
+        dirs.push(PathBuf::from(&public).join("Desktop"));
+    }
+    
+    // 用户开始菜单
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        dirs.push(PathBuf::from(&appdata).join("Microsoft\\Windows\\Start Menu\\Programs"));
+        dirs.push(PathBuf::from(&appdata).join("Microsoft\\Windows\\Start Menu\\Programs\\Windsurf"));
+    }
+    
+    // 公共开始菜单
+    if let Ok(programdata) = std::env::var("PROGRAMDATA") {
+        dirs.push(PathBuf::from(&programdata).join("Microsoft\\Windows\\Start Menu\\Programs"));
+        dirs.push(PathBuf::from(&programdata).join("Microsoft\\Windows\\Start Menu\\Programs\\Windsurf"));
+    }
+    
+    dirs
+}
+
+/// 在指定目录中查找 Windsurf 快捷方式 (Windows)
+#[cfg(target_os = "windows")]
+fn find_windsurf_shortcut(dir: &Path) -> Result<PathBuf, String> {
+    if !dir.exists() {
+        return Err(format!("目录不存在: {:?}", dir));
+    }
+    
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let is_windsurf = path.file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n.to_lowercase().contains("windsurf"))
+                .unwrap_or(false);
+            let is_lnk = path.extension()
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_lowercase() == "lnk")
+                .unwrap_or(false);
+            
+            if is_windsurf && is_lnk {
+                return Ok(path);
+            }
+        }
+    }
+    
+    Err(format!("在 {:?} 中未找到 Windsurf 快捷方式", dir))
 }

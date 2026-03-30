@@ -144,16 +144,49 @@ fn find_latest_auth_user(connection: &rusqlite::Connection) -> Option<String> {
     })
 }
 
+/// 获取 Windsurf 数据库路径（跨平台）
+fn get_windsurf_db_path() -> Result<PathBuf, AppError> {
+    #[cfg(target_os = "windows")]
+    {
+        let appdata = std::env::var("APPDATA")
+            .map_err(|e| AppError::Config(format!("Failed to get APPDATA: {}", e)))?;
+        Ok(PathBuf::from(appdata)
+            .join("Windsurf")
+            .join("User")
+            .join("globalStorage")
+            .join("state.vscdb"))
+    }
+    
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var("HOME")
+            .map_err(|e| AppError::Config(format!("Failed to get HOME: {}", e)))?;
+        Ok(PathBuf::from(home)
+            .join("Library")
+            .join("Application Support")
+            .join("Windsurf")
+            .join("User")
+            .join("globalStorage")
+            .join("state.vscdb"))
+    }
+    
+    #[cfg(target_os = "linux")]
+    {
+        let home = std::env::var("HOME")
+            .map_err(|e| AppError::Config(format!("Failed to get HOME: {}", e)))?;
+        Ok(PathBuf::from(home)
+            .join(".config")
+            .join("Windsurf")
+            .join("User")
+            .join("globalStorage")
+            .join("state.vscdb"))
+    }
+}
+
 /// 获取当前Windsurf账号信息
 #[tauri::command]
 pub fn get_current_windsurf_info() -> Result<WindsurfCurrentInfo, AppError> {
-    let appdata = std::env::var("APPDATA")
-        .map_err(|e| AppError::Config(format!("Failed to get APPDATA: {}", e)))?;
-    let db_path = PathBuf::from(appdata)
-        .join("Windsurf")
-        .join("User")
-        .join("globalStorage")
-        .join("state.vscdb");
+    let db_path = get_windsurf_db_path()?;
     
     if !db_path.exists() {
         return Ok(WindsurfCurrentInfo {
