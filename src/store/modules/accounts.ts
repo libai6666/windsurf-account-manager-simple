@@ -206,6 +206,51 @@ export const useAccountsStore = defineStore('accounts', () => {
     return accounts.value.filter(acc => acc.status === 'active').length;
   });
 
+  // 客户端排序辅助函数（避免额外 API 调用）
+  function applySortingLocally(arr: Account[]): Account[] {
+    const { field, direction } = sortConfig.value;
+    const multiplier = direction === 'asc' ? 1 : -1;
+    return [...arr].sort((a, b) => {
+      let aVal: any;
+      let bVal: any;
+      switch (field) {
+        case 'email':
+          aVal = a.email.toLowerCase();
+          bVal = b.email.toLowerCase();
+          break;
+        case 'created_at':
+          aVal = a.created_at ? new Date(a.created_at).getTime() : 0;
+          bVal = b.created_at ? new Date(b.created_at).getTime() : 0;
+          break;
+        case 'used_quota':
+          aVal = a.used_quota ?? 0;
+          bVal = b.used_quota ?? 0;
+          break;
+        case 'remaining_quota':
+          aVal = getRemainingQuota(a);
+          bVal = getRemainingQuota(b);
+          break;
+        case 'token_expires_at':
+          aVal = a.token_expires_at ? new Date(a.token_expires_at).getTime() : 0;
+          bVal = b.token_expires_at ? new Date(b.token_expires_at).getTime() : 0;
+          break;
+        case 'subscription_expires_at':
+          aVal = a.subscription_expires_at ? new Date(a.subscription_expires_at).getTime() : 0;
+          bVal = b.subscription_expires_at ? new Date(b.subscription_expires_at).getTime() : 0;
+          break;
+        case 'plan_name':
+          aVal = (a.plan_name || '').toLowerCase();
+          bVal = (b.plan_name || '').toLowerCase();
+          break;
+        default:
+          return 0;
+      }
+      if (aVal < bVal) return -1 * multiplier;
+      if (aVal > bVal) return 1 * multiplier;
+      return 0;
+    });
+  }
+
   // Actions
   async function loadAccounts() {
     loading.value = true;
@@ -216,7 +261,9 @@ export const useAccountsStore = defineStore('accounts', () => {
     const scrollTop = scrollEl ? scrollEl.scrollTop : 0;
     
     try {
-      accounts.value = await accountApi.getAllAccounts();
+      const raw = await accountApi.getAllAccounts();
+      // 加载后立即应用当前排序配置，避免刷新时重置排序
+      accounts.value = applySortingLocally(raw);
     } catch (e) {
       error.value = (e as Error).message;
       throw e;
