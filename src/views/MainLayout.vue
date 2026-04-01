@@ -252,6 +252,10 @@
                   <el-icon><User /></el-icon>
                   免费号 (Free)
                 </el-dropdown-item>
+                <el-dropdown-item command="free_no_trial">
+                  <el-icon><User /></el-icon>
+                  无试用资格的 Free
+                </el-dropdown-item>
                 <el-dropdown-item command="paid">
                   <el-icon><Trophy /></el-icon>
                   付费号 (Pro/Teams等)
@@ -412,6 +416,12 @@
                   <el-select v-model="filterForm.selectedStatuses" multiple collapse-tags collapse-tags-tooltip placeholder="全部" size="small">
                     <el-option v-for="status in statusOptions" :key="status.value" :label="status.label" :value="status.value" />
                   </el-select>
+                </div>
+              </div>
+              <!-- 第三行：开关筛选 -->
+              <div class="filter-row filter-row-switch">
+                <div class="filter-item filter-item-switch">
+                  <el-checkbox v-model="filterForm.freeNoTrial" size="small">仅显示无免费试用资格的 Free 账号</el-checkbox>
                 </div>
               </div>
             </div>
@@ -903,6 +913,7 @@ const filterForm = ref({
   selectedPlans: [] as string[],
   selectedDomains: [] as string[],
   selectedStatuses: [] as string[],
+  freeNoTrial: false,
 });
 
 // 是否有激活的筛选条件
@@ -918,7 +929,8 @@ const hasActiveFilter = computed(() => {
     (f.tags && f.tags.length > 0) ||
     (f.planNames && f.planNames.length > 0) ||
     (f.domains && f.domains.length > 0) ||
-    (f.statuses && f.statuses.length > 0)
+    (f.statuses && f.statuses.length > 0) ||
+    !!f.freeNoTrial
   );
 });
 
@@ -951,6 +963,7 @@ function applyFilters() {
     planNames: filterForm.value.selectedPlans.length > 0 ? filterForm.value.selectedPlans : undefined,
     domains: filterForm.value.selectedDomains.length > 0 ? filterForm.value.selectedDomains : undefined,
     statuses: filterForm.value.selectedStatuses.length > 0 ? filterForm.value.selectedStatuses as any : undefined,
+    freeNoTrial: filterForm.value.freeNoTrial || undefined,
   });
 }
 
@@ -967,6 +980,7 @@ function clearAllFilters() {
     selectedPlans: [],
     selectedDomains: [],
     selectedStatuses: [],
+    freeNoTrial: false,
   };
   accountsStore.clearFilter();
   searchQuery.value = '';
@@ -1262,6 +1276,14 @@ function handleSelectPageCommand(command: string) {
     case 'free':
       matched = pageAccounts.filter(acc => !acc.plan_name || acc.plan_name.toLowerCase() === 'free');
       label = '免费号';
+      break;
+    case 'free_no_trial':
+      matched = pageAccounts.filter(acc => {
+        const plan = acc.plan_name?.toLowerCase();
+        const isFree = !plan || plan === 'free';
+        return isFree && acc.trial_eligible === false;
+      });
+      label = '无试用资格的 Free';
       break;
     case 'paid':
       matched = pageAccounts.filter(acc => {

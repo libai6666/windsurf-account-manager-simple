@@ -32,6 +32,7 @@ export interface AccountFilter {
   planNames?: string[];        // 套餐名称筛选
   domains?: string[];          // 域名筛选
   statuses?: AccountStatusType[];  // 状态筛选
+  freeNoTrial?: boolean;       // 仅显示无免费试用资格的Free账号
 }
 
 /**
@@ -103,6 +104,10 @@ export interface Account {
   is_disabled?: boolean;
   // 是否为团队所有者（Admin角色，有团队成员的主账号）
   is_team_owner?: boolean;
+  // 是否已使用过免费试用 (从 GetCurrentUser API 的 user.used_trial 获取)
+  used_trial?: boolean;
+  // 是否有免费Pro试用资格 (从 CheckProTrialEligibility API 获取，false=无资格)
+  trial_eligible?: boolean;
   // 自定义排序顺序（用于拖拽排序）
   sortOrder?: number;
 }

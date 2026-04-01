@@ -77,6 +77,8 @@ export const apiService = {
     weekly_quota_remaining?: number;
     daily_quota_reset?: number;
     weekly_quota_reset?: number;
+    used_trial?: boolean;
+    trial_eligible?: boolean;
   }> {
     return await invoke('refresh_token', { id });
   },

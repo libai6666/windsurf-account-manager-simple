@@ -53,6 +53,12 @@ pub struct Account {
     // 是否为团队所有者（Admin角色，有团队成员的主账号）
     #[serde(default)]
     pub is_team_owner: Option<bool>,
+    // 是否已使用过免费试用 (从 GetCurrentUser API 的 user.used_trial 获取)
+    #[serde(default)]
+    pub used_trial: Option<bool>,
+    // 是否有免费Pro试用资格 (从 CheckProTrialEligibility API 获取)
+    #[serde(default)]
+    pub trial_eligible: Option<bool>,
     // 自定义排序顺序（用于拖拽排序）
     #[serde(default, rename = "sortOrder")]
     pub sort_order: i32,
@@ -96,6 +102,8 @@ impl Account {
             windsurf_api_key: None,
             is_disabled: None,
             is_team_owner: None,
+            used_trial: None,
+            trial_eligible: None,
             sort_order: 0,
         }
     }

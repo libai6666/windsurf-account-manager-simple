@@ -195,6 +195,10 @@ pub async fn login_account(
                     if let Some(disable_codeium) = user.get("disable_codeium").and_then(|v| v.as_bool()) {
                         updated_account.is_disabled = Some(disable_codeium);
                     }
+                    // 提取免费试用使用状态
+                    if let Some(used_trial) = user.get("used_trial").and_then(|v| v.as_bool()) {
+                        updated_account.used_trial = Some(used_trial);
+                    }
                 }
 
                 // 提取套餐信息
@@ -408,6 +412,11 @@ pub async fn refresh_token(
                     if let Some(disable_codeium) = user.get("disable_codeium").and_then(|v| v.as_bool()) {
                         updated_account.is_disabled = Some(disable_codeium);
                     }
+                    // 提取免费试用使用状态
+                    if let Some(used_trial) = user.get("used_trial").and_then(|v| v.as_bool()) {
+                        updated_account.used_trial = Some(used_trial);
+                    }
+                    log::info!("[refresh_token] email={}, used_trial={:?}", updated_account.email, updated_account.used_trial);
                 }
 
                 // 提取套餐信息
@@ -459,6 +468,11 @@ pub async fn refresh_token(
                 }
 
                 updated_account.last_quota_update = Some(chrono::Utc::now());
+                // 检查免费试用资格
+                if let Ok(eligible) = windsurf_service.check_pro_trial_eligibility(&token).await {
+                    updated_account.trial_eligible = Some(eligible);
+                    log::info!("[refresh_token] email={}, trial_eligible={}", updated_account.email, eligible);
+                }
                 store.update_account(updated_account.clone()).await
                     .map_err(|e| format!("保存账户信息失败: {}", e))?;
             }
@@ -500,7 +514,9 @@ pub async fn refresh_token(
         "daily_quota_remaining": updated_account.daily_quota_remaining,
         "weekly_quota_remaining": updated_account.weekly_quota_remaining,
         "daily_quota_reset": updated_account.daily_quota_reset,
-        "weekly_quota_reset": updated_account.weekly_quota_reset
+        "weekly_quota_reset": updated_account.weekly_quota_reset,
+        "used_trial": updated_account.used_trial,
+        "trial_eligible": updated_account.trial_eligible
     }))
 }
 
@@ -1596,6 +1612,10 @@ async fn refresh_token_internal(
                     if let Some(disable_codeium) = user.get("disable_codeium").and_then(|v| v.as_bool()) {
                         updated_account.is_disabled = Some(disable_codeium);
                     }
+                    // 提取免费试用使用状态
+                    if let Some(used_trial) = user.get("used_trial").and_then(|v| v.as_bool()) {
+                        updated_account.used_trial = Some(used_trial);
+                    }
                 }
 
                 // 提取套餐信息
@@ -1647,11 +1667,16 @@ async fn refresh_token_internal(
                 }
 
                 updated_account.last_quota_update = Some(chrono::Utc::now());
+                // 检查免费试用资格
+                if let Ok(eligible) = windsurf_service.check_pro_trial_eligibility(&token).await {
+                    updated_account.trial_eligible = Some(eligible);
+                    log::info!("[refresh_token_internal] email={}, trial_eligible={}", updated_account.email, eligible);
+                }
             }
         }
     }
     
-    // 如果使用轻量级 API，需要单独获取 is_team_owner
+    // 如果使用轻量级 API，需要单独获取 is_team_owner 和 used_trial
     if updated_account.is_team_owner.is_none() {
         if let Ok(user_result) = windsurf_service.get_current_user(&token).await {
             if let Some(user_info) = user_result.get("user_info") {
@@ -1659,6 +1684,12 @@ async fn refresh_token_internal(
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
                 updated_account.is_team_owner = Some(is_root_admin);
+                // 同时提取 used_trial
+                if let Some(user) = user_info.get("user") {
+                    if let Some(used_trial) = user.get("used_trial").and_then(|v| v.as_bool()) {
+                        updated_account.used_trial = Some(used_trial);
+                    }
+                }
             }
         }
     }
@@ -1677,13 +1708,15 @@ async fn refresh_token_internal(
         "windsurf_api_key": updated_account.windsurf_api_key,
         "is_disabled": updated_account.is_disabled,
         "is_team_owner": updated_account.is_team_owner,
+        "used_trial": updated_account.used_trial,
         "subscription_expires_at": updated_account.subscription_expires_at.map(|t| t.to_rfc3339()),
         "subscription_active": updated_account.subscription_active,
         "last_quota_update": updated_account.last_quota_update.map(|t| t.to_rfc3339()),
         "daily_quota_remaining": updated_account.daily_quota_remaining,
         "weekly_quota_remaining": updated_account.weekly_quota_remaining,
         "daily_quota_reset": updated_account.daily_quota_reset,
-        "weekly_quota_reset": updated_account.weekly_quota_reset
+        "weekly_quota_reset": updated_account.weekly_quota_reset,
+        "trial_eligible": updated_account.trial_eligible
     }))
 }
 

@@ -179,6 +179,15 @@ export const useAccountsStore = defineStore('accounts', () => {
         currentFilter.value.statuses!.includes(getAccountStatusType(acc))
       );
     }
+
+    // 高级筛选：无免费试用资格的Free账号
+    if (currentFilter.value.freeNoTrial) {
+      result = result.filter(acc => {
+        const plan = acc.plan_name?.toLowerCase();
+        const isFree = !plan || plan === 'free';
+        return isFree && acc.trial_eligible === false;
+      });
+    }
     
     return result;
   });
@@ -533,6 +542,13 @@ export const useAccountsStore = defineStore('accounts', () => {
         if (result.is_team_owner !== undefined) {
           updatedAccount.is_team_owner = result.is_team_owner;
         }
+        // 更新免费试用使用状态
+        if (result.used_trial !== undefined) {
+          updatedAccount.used_trial = result.used_trial;
+        }
+        if (result.trial_eligible !== undefined) {
+          updatedAccount.trial_eligible = result.trial_eligible;
+        }
         // 更新每日/每周配额信息
         if (result.daily_quota_remaining !== undefined && result.daily_quota_remaining !== null) {
           updatedAccount.daily_quota_remaining = result.daily_quota_remaining;
@@ -635,6 +651,8 @@ export const useAccountsStore = defineStore('accounts', () => {
             if (item.data.windsurf_api_key) updatedAcc.windsurf_api_key = item.data.windsurf_api_key;
             if (item.data.is_disabled !== undefined) updatedAcc.is_disabled = item.data.is_disabled;
             if (item.data.is_team_owner !== undefined) updatedAcc.is_team_owner = item.data.is_team_owner;
+            if (item.data.used_trial !== undefined) updatedAcc.used_trial = item.data.used_trial;
+            if (item.data.trial_eligible !== undefined) updatedAcc.trial_eligible = item.data.trial_eligible;
             if (item.data.subscription_active !== undefined) updatedAcc.subscription_active = item.data.subscription_active;
             if (item.data.subscription_expires_at) updatedAcc.subscription_expires_at = dayjs.unix(item.data.subscription_expires_at).toISOString();
             if (item.data.last_quota_update) updatedAcc.last_quota_update = item.data.last_quota_update;

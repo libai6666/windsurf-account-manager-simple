@@ -1006,6 +1006,49 @@ impl WindsurfService {
         }
     }
 
+    /// 检查用户是否有免费Pro试用资格
+    /// CheckProTrialEligibilityRequest: auth_token=1
+    /// CheckProTrialEligibilityResponse: is_eligible=1 (bool)
+    pub async fn check_pro_trial_eligibility(&self, token: &str) -> AppResult<bool> {
+        let url = format!("{}/exa.seat_management_pb.SeatManagementService/CheckProTrialEligibility", WINDSURF_BASE_URL);
+
+        let token_bytes = token.as_bytes();
+        let token_length = token_bytes.len();
+        let mut body = vec![0x0a];
+        if token_length < 128 {
+            body.push(token_length as u8);
+        } else {
+            body.push(((token_length & 0x7F) | 0x80) as u8);
+            body.push((token_length >> 7) as u8);
+        }
+        body.extend_from_slice(token_bytes);
+
+        let response = self.client
+            .post(&url)
+            .body(body)
+            .header("accept", "*/*")
+            .header("connect-protocol-version", "1")
+            .header("content-type", "application/proto")
+            .header("x-auth-token", token)
+            .header("Referer", "https://windsurf.com/")
+            .send()
+            .await?;
+
+        let status_code = response.status().as_u16();
+        let response_body = response.bytes().await?;
+
+        if status_code == 200 && !response_body.is_empty() {
+            // Response: field 1 (varint bool) → 0x08 0x01 = true, 0x08 0x00 or empty = false
+            if response_body.len() >= 2 && response_body[0] == 0x08 {
+                return Ok(response_body[1] == 0x01);
+            }
+            // Empty or unexpected body → not eligible
+            Ok(false)
+        } else {
+            Ok(false)
+        }
+    }
+
     pub async fn reset_credits(&self, token: &str, seat_count: Option<i32>, last_seat_count: Option<i32>, seat_count_options: &[i32]) -> AppResult<serde_json::Value> {
         // 确定使用的座位数
         let seat_count = if let Some(sc) = seat_count {
