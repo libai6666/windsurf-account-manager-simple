@@ -189,6 +189,9 @@ export const useAccountsStore = defineStore('accounts', () => {
       });
     }
     
+    // 始终在筛选后应用当前排序配置，确保刷新后排序不丢失
+    result = applySortingLocally(result);
+    
     return result;
   });
 
