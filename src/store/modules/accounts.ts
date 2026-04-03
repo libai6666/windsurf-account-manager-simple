@@ -659,7 +659,13 @@ export const useAccountsStore = defineStore('accounts', () => {
             if (item.data.used_trial !== undefined) updatedAcc.used_trial = item.data.used_trial;
             if (item.data.trial_eligible !== undefined) updatedAcc.trial_eligible = item.data.trial_eligible;
             if (item.data.subscription_active !== undefined) updatedAcc.subscription_active = item.data.subscription_active;
-            if (item.data.subscription_expires_at) updatedAcc.subscription_expires_at = dayjs.unix(item.data.subscription_expires_at).toISOString();
+            if (item.data.subscription_expires_at) {
+              const raw = item.data.subscription_expires_at;
+              const parsed = typeof raw === 'number' ? dayjs.unix(raw) : dayjs(raw);
+              if (parsed.isValid()) {
+                updatedAcc.subscription_expires_at = parsed.toISOString();
+              }
+            }
             if (item.data.last_quota_update) updatedAcc.last_quota_update = item.data.last_quota_update;
             updatedAcc.status = 'active';
             accounts.value.splice(idx, 1, updatedAcc);

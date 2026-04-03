@@ -789,7 +789,7 @@ async fn confirm_payment(
         ("expected_payment_method_type".into(), "card".into()),
         ("consent[terms_of_service]".into(), "accepted".into()),
         ("key".into(), KNOWN_PK.into()),
-        ("_stripe_version".into(), STRIPE_VERSION_FULL.into()),
+        ("_stripe_version".into(), STRIPE_VERSION_BASE.into()),
         ("init_checksum".into(), init_checksum.to_string()),
         ("version".into(), "5412f474d5".into()),
         ("return_url".into(), return_url),
