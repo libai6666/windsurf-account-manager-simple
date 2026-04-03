@@ -331,10 +331,11 @@ async fn init_checkout(
 
     for version in [STRIPE_VERSION_BASE, STRIPE_VERSION_FULL] {
         let mut params = HashMap::new();
+        params.insert("key", KNOWN_PK);
+        params.insert("eid", "NA");
         params.insert("browser_locale", "en-US");
         params.insert("browser_timezone", "America/Chicago");
-        params.insert("key", KNOWN_PK);
-        params.insert("_stripe_version", version);
+        params.insert("redirect_type", "url");
 
         emit_log(app, task_id, "info", &format!("  初始化结账会话 version={}...", &version[..version.len().min(30)]));
 
@@ -481,9 +482,9 @@ async fn update_address(
     client: &reqwest::Client,
     session_id: &str,
     addr: &AddressInfo,
-    stripe_js_id: &str,
-    elements_session_id: &str,
-    stripe_ver: &str,
+    _stripe_js_id: &str,
+    _elements_session_id: &str,
+    _stripe_ver: &str,
     app: &AppHandle,
     task_id: &str,
 ) -> Result<(), String> {
@@ -507,18 +508,10 @@ async fn update_address(
         }
 
         let mut form_data: Vec<(String, String)> = vec![
-            ("elements_session_client[elements_init_source]".to_string(), "checkout".to_string()),
-            ("elements_session_client[referrer_host]".to_string(), WINDSURF_HOST.to_string()),
-            ("elements_session_client[session_id]".to_string(), elements_session_id.to_string()),
-            ("elements_session_client[stripe_js_id]".to_string(), stripe_js_id.to_string()),
-            ("elements_session_client[locale]".to_string(), "en-US".to_string()),
-            ("elements_session_client[is_aggregation_expected]".to_string(), "false".to_string()),
-            ("client_attribution_metadata[merchant_integration_additional_elements][0]".to_string(), "payment".to_string()),
-            ("client_attribution_metadata[merchant_integration_additional_elements][1]".to_string(), "address".to_string()),
-            ("key".to_string(), KNOWN_PK.to_string()),
-            ("_stripe_version".to_string(), stripe_ver.to_string()),
+            ("eid".to_string(), "NA".to_string()),
         ];
         form_data.extend(accumulated.clone());
+        form_data.push(("key".to_string(), KNOWN_PK.to_string()));
 
         let step_name = if step_fields.is_empty() { "(焦点变更)" } else { step_fields[0].0 };
         emit_log(app, task_id, "debug", &format!("  [address] step {}/6: {}", i + 1, step_name));
@@ -666,15 +659,20 @@ async fn create_payment_method(
     email: &str,
     captcha_token: &str,
     session_id: &str,
+    config_id: &str,
+    stripe_js_id: &str,
     guid: &str,
     muid: &str,
     sid: &str,
     app: &AppHandle,
     task_id: &str,
 ) -> Result<String, String> {
-    let time_on_page: i32 = { rand::thread_rng().gen_range(25000..55000) };
-    let client_session_id = Uuid::new_v4().to_string();
     let mut data: Vec<(String, String)> = vec![
+        ("type".into(), "card".into()),
+        ("card[number]".into(), card.number.clone()),
+        ("card[cvc]".into(), card.cvc.clone()),
+        ("card[exp_month]".into(), card.exp_month.clone()),
+        ("card[exp_year]".into(), card.exp_year.clone()),
         ("billing_details[name]".into(), name.to_string()),
         ("billing_details[email]".into(), email.to_string()),
         ("billing_details[address][country]".into(), addr.country.clone()),
@@ -682,27 +680,17 @@ async fn create_payment_method(
         ("billing_details[address][city]".into(), addr.city.clone()),
         ("billing_details[address][postal_code]".into(), addr.postal_code.clone()),
         ("billing_details[address][state]".into(), addr.state.clone()),
-        ("type".into(), "card".into()),
-        ("card[number]".into(), card.number.clone()),
-        ("card[cvc]".into(), card.cvc.clone()),
-        ("card[exp_year]".into(), card.exp_year.clone()),
-        ("card[exp_month]".into(), card.exp_month.clone()),
-        ("allow_redisplay".into(), "unspecified".into()),
-        ("payment_user_agent".into(), "stripe.js/5412f474d5; stripe-js-v3/5412f474d5; payment-element; deferred-intent".into()),
-        ("referrer".into(), WINDSURF_ORIGIN.into()),
-        ("time_on_page".into(), time_on_page.to_string()),
-        ("client_attribution_metadata[client_session_id]".into(), client_session_id),
-        ("client_attribution_metadata[checkout_session_id]".into(), session_id.to_string()),
-        ("client_attribution_metadata[merchant_integration_source]".into(), "elements".into()),
-        ("client_attribution_metadata[merchant_integration_subtype]".into(), "payment-element".into()),
-        ("client_attribution_metadata[merchant_integration_version]".into(), "2021".into()),
-        ("client_attribution_metadata[payment_intent_creation_flow]".into(), "deferred".into()),
-        ("client_attribution_metadata[payment_method_selection_flow]".into(), "automatic".into()),
         ("guid".into(), guid.to_string()),
         ("muid".into(), muid.to_string()),
         ("sid".into(), sid.to_string()),
         ("key".into(), KNOWN_PK.into()),
-        ("_stripe_version".into(), STRIPE_VERSION_BASE.into()),
+        ("payment_user_agent".into(), "stripe.js/67ff36ff76; stripe-js-v3/67ff36ff76; checkout".into()),
+        ("client_attribution_metadata[client_session_id]".into(), stripe_js_id.to_string()),
+        ("client_attribution_metadata[checkout_session_id]".into(), session_id.to_string()),
+        ("client_attribution_metadata[merchant_integration_source]".into(), "checkout".into()),
+        ("client_attribution_metadata[merchant_integration_version]".into(), "hosted_checkout".into()),
+        ("client_attribution_metadata[payment_method_selection_flow]".into(), "merchant_specified".into()),
+        ("client_attribution_metadata[checkout_config_id]".into(), config_id.to_string()),
     ];
 
     if !captcha_token.is_empty() {
@@ -778,39 +766,23 @@ async fn confirm_payment(
         expected_amount,
     ));
 
-    let es_config_id = Uuid::new_v4().to_string();
-
     let mut data: Vec<(String, String)> = vec![
-        ("guid".into(), guid.to_string()),
-        ("muid".into(), muid.to_string()),
-        ("sid".into(), sid.to_string()),
+        ("eid".into(), "NA".into()),
         ("payment_method".into(), pm_id.to_string()),
         ("expected_amount".into(), expected_amount),
         ("expected_payment_method_type".into(), "card".into()),
-        ("consent[terms_of_service]".into(), "accepted".into()),
+        ("guid".into(), guid.to_string()),
+        ("muid".into(), muid.to_string()),
+        ("sid".into(), sid.to_string()),
         ("key".into(), KNOWN_PK.into()),
-        ("_stripe_version".into(), STRIPE_VERSION_BASE.into()),
+        ("version".into(), "6f8494a281".into()),
         ("init_checksum".into(), init_checksum.to_string()),
-        ("version".into(), "5412f474d5".into()),
-        ("return_url".into(), return_url),
-        ("elements_session_client[elements_init_source]".into(), "checkout".into()),
-        ("elements_session_client[referrer_host]".into(), WINDSURF_HOST.into()),
-        ("elements_session_client[stripe_js_id]".into(), stripe_js_id.to_string()),
-        ("elements_session_client[locale]".into(), "en-US".into()),
-        ("elements_session_client[is_aggregation_expected]".into(), "false".into()),
-        ("elements_session_client[session_id]".into(), elements_session_id.to_string()),
         ("client_attribution_metadata[client_session_id]".into(), stripe_js_id.to_string()),
         ("client_attribution_metadata[checkout_session_id]".into(), session_id.to_string()),
-        ("client_attribution_metadata[checkout_config_id]".into(), config_id.to_string()),
-        ("client_attribution_metadata[elements_session_id]".into(), elements_session_id.to_string()),
-        ("client_attribution_metadata[elements_session_config_id]".into(), es_config_id),
         ("client_attribution_metadata[merchant_integration_source]".into(), "checkout".into()),
-        ("client_attribution_metadata[merchant_integration_subtype]".into(), "payment-element".into()),
-        ("client_attribution_metadata[merchant_integration_version]".into(), "custom".into()),
-        ("client_attribution_metadata[payment_intent_creation_flow]".into(), "deferred".into()),
-        ("client_attribution_metadata[payment_method_selection_flow]".into(), "automatic".into()),
-        ("client_attribution_metadata[merchant_integration_additional_elements][0]".into(), "payment".into()),
-        ("client_attribution_metadata[merchant_integration_additional_elements][1]".into(), "address".into()),
+        ("client_attribution_metadata[merchant_integration_version]".into(), "hosted_checkout".into()),
+        ("client_attribution_metadata[payment_method_selection_flow]".into(), "merchant_specified".into()),
+        ("client_attribution_metadata[checkout_config_id]".into(), config_id.to_string()),
     ];
 
     if !captcha_token.is_empty() {
@@ -1250,10 +1222,11 @@ async fn bind_single_account(
     let (hcaptcha_site_key, _rqdata) = extract_hcaptcha_config(&init_resp);
 
     // 先尝试不带 captcha
+    let config_id = init_resp.get("config_id").and_then(|v| v.as_str()).unwrap_or("");
     emit_log(app, task_id, "info", "[3.5/6] 尝试不带 hCaptcha 直接提交 ...");
     let (captcha_token, pm_id) = match create_payment_method(
-        &client, card, &addr, &name, &random_email, "", &session_id,
-        &guid, &muid, &sid, app, task_id,
+        &client, card, &addr, &name, email, "", &session_id,
+        config_id, &stripe_js_id, &guid, &muid, &sid, app, task_id,
     ).await {
         Ok(pm) => ("".to_string(), pm),
         Err(e) => {
@@ -1263,8 +1236,8 @@ async fn bind_single_account(
                 emit_log(app, task_id, "info", "  需要 hCaptcha，开始解题 ...");
                 let (token, _ekey) = solve_hcaptcha(captcha_cfg, &hcaptcha_site_key, app, task_id).await?;
                 let pm = create_payment_method(
-                    &client, card, &addr, &name, &random_email, &token, &session_id,
-                    &guid, &muid, &sid, app, task_id,
+                    &client, card, &addr, &name, email, &token, &session_id,
+                    config_id, &stripe_js_id, &guid, &muid, &sid, app, task_id,
                 ).await?;
                 (token, pm)
             } else {
