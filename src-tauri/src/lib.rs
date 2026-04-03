@@ -269,6 +269,12 @@ pub fn run() {
             commands::append_log_file,
             commands::get_log_directory,
             commands::write_export_file,
+            
+            // 协议绑卡命令
+            commands::stripe_bind_start,
+            commands::stripe_bind_get_status,
+            commands::stripe_bind_cancel,
+            commands::stripe_bind_generate_address,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

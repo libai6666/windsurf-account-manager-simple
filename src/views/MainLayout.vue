@@ -71,6 +71,11 @@
           <template #title>虚拟卡生成</template>
         </el-menu-item>
         
+        <el-menu-item index="stripe-bind" @click="showStripeBindDialog = true">
+          <el-icon><Stamp /></el-icon>
+          <template #title>协议绑卡</template>
+        </el-menu-item>
+        
         <el-menu-item index="about" @click="showAboutDialog">
           <el-icon><InfoFilled /></el-icon>
           <template #title>关于</template>
@@ -495,6 +500,9 @@
     <!-- 虚拟卡生成对话框 -->
     <CardGeneratorDialog v-model="showCardGeneratorDialog" />
     
+    <!-- 协议绑卡对话框 -->
+    <StripeBindDialog v-model="showStripeBindDialog" />
+    
     <!-- 批量试用链接人机验证对话框 -->
     <TurnstileDialog
       v-model:visible="showBatchTurnstileDialog"
@@ -718,7 +726,8 @@ import {
   Avatar,
   CircleCheck,
   Remove,
-  Warning
+  Warning,
+  Stamp
 } from '@element-plus/icons-vue';
 import { useAccountsStore, useSettingsStore, useUIStore } from '@/store';
 import { apiService, settingsApi, accountApi } from '@/api';
@@ -739,6 +748,7 @@ import BatchCancelSubscriptionDialog from '@/components/BatchCancelSubscriptionD
 import TagManageDialog from '@/components/TagManageDialog.vue';
 import AutoResetDialog from '@/components/AutoResetDialog.vue';
 import CardGeneratorDialog from '@/components/CardGeneratorDialog.vue';
+import StripeBindDialog from '@/components/StripeBindDialog.vue';
 import TurnstileDialog from '@/components/TurnstileDialog.vue';
 import BatchTrialLinksDialog from '@/components/BatchTrialLinksDialog.vue';
 import ConcurrentTurnstileDialog from '@/components/ConcurrentTurnstileDialog.vue';
@@ -767,6 +777,7 @@ const batchGroupTarget = ref('');
 const isBatchUpdatingGroup = ref(false);
 const showAutoResetDialog = ref(false);
 const showCardGeneratorDialog = ref(false);
+const showStripeBindDialog = ref(false);
 const isBatchGettingTrialLinks = ref(false);
 const showBatchTurnstileDialog = ref(false);
 const pendingBatchTurnstileResolve = ref<((token: string) => void) | null>(null);
