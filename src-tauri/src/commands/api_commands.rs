@@ -394,6 +394,11 @@ pub async fn refresh_token(
                     }
 
                     updated_account.last_quota_update = Some(chrono::Utc::now());
+                    // 轻量级API路径也检查免费试用资格
+                    if let Ok(eligible) = windsurf_service.check_pro_trial_eligibility(&token).await {
+                        updated_account.trial_eligible = Some(eligible);
+                        log::info!("[refresh_token][lightweight] email={}, trial_eligible={}", updated_account.email, eligible);
+                    }
                     store.update_account(updated_account.clone()).await
                         .map_err(|e| format!("保存账户信息失败: {}", e))?;
                 }
@@ -1596,6 +1601,11 @@ async fn refresh_token_internal(
                         updated_account.weekly_quota_reset = Some(v);
                     }
                     updated_account.last_quota_update = Some(chrono::Utc::now());
+                    // 轻量级API路径也检查免费试用资格
+                    if let Ok(eligible) = windsurf_service.check_pro_trial_eligibility(&token).await {
+                        updated_account.trial_eligible = Some(eligible);
+                        log::info!("[refresh_token_internal][lightweight] email={}, trial_eligible={}", updated_account.email, eligible);
+                    }
                 }
             }
         }

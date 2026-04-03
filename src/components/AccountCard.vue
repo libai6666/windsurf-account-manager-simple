@@ -1394,11 +1394,12 @@ async function handleTurnstileSuccess(turnstileToken: string) {
           const isIncognito = browserMode === 'incognito';
           const modeText = isIncognito ? '无痕模式' : '普通模式';
           const openCommand = isIncognito ? 'open_external_link_incognito' : 'open_external_link';
+          const browserPath = settingsStore.settings?.customBrowserPath || undefined;
 
           if (autoOpen) {
             // 自动打开浏览器
             try {
-              await invoke(openCommand, { url: result.stripe_url });
+              await invoke(openCommand, { url: result.stripe_url, browserPath });
               ElMessage.success(`已在浏览器${modeText}中打开`);
             } catch (err) {
               ElMessage.error('打开浏览器失败，请手动打开链接');
@@ -1416,7 +1417,7 @@ async function handleTurnstileSuccess(turnstileToken: string) {
               }
             ).then(async () => {
               try {
-                await invoke(openCommand, { url: result.stripe_url });
+                await invoke(openCommand, { url: result.stripe_url, browserPath });
                 ElMessage.success(`已在浏览器${modeText}中打开`);
               } catch (err) {
                 ElMessage.error('打开浏览器失败，请手动打开链接');
@@ -1432,6 +1433,7 @@ async function handleTurnstileSuccess(turnstileToken: string) {
           const isIncognito = browserMode === 'incognito';
           const modeText = isIncognito ? '无痕模式' : '普通模式';
           const openCommand = isIncognito ? 'open_external_link_incognito' : 'open_external_link';
+          const browserPath2 = settingsStore.settings?.customBrowserPath || undefined;
           
           ElMessageBox.alert(
             `<div style="word-break: break-all;">${result.stripe_url}</div>`,
@@ -1442,7 +1444,7 @@ async function handleTurnstileSuccess(turnstileToken: string) {
             }
           ).then(async () => {
             try {
-              await invoke(openCommand, { url: result.stripe_url });
+              await invoke(openCommand, { url: result.stripe_url, browserPath: browserPath2 });
               ElMessage.success(`已在浏览器${modeText}中打开`);
             } catch (err) {
               ElMessage.error('打开浏览器失败，请手动打开链接');

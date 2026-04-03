@@ -182,6 +182,49 @@
             </div>
           </el-form-item>
           
+          <el-form-item label="自定义浏览器">
+            <div style="display: flex; align-items: center; gap: 8px; width: 100%;">
+              <el-select
+                v-model="selectedBrowserKey"
+                placeholder="默认浏览器（Chrome）"
+                style="flex: 1;"
+                clearable
+                @change="handleBrowserSelect"
+                @clear="handleBrowserClear"
+              >
+                <el-option
+                  v-for="browser in detectedBrowsers"
+                  :key="browser.path"
+                  :label="browser.name"
+                  :value="browser.path"
+                >
+                  <span>{{ browser.name }}</span>
+                  <span style="color: #909399; font-size: 11px; margin-left: 6px;">{{ browser.path }}</span>
+                </el-option>
+                <el-option key="__custom__" label="手动指定路径..." value="__custom__">
+                  <span style="color: #409EFF;">手动指定路径...</span>
+                </el-option>
+              </el-select>
+              <el-button @click="loadInstalledBrowsers" :loading="detectingBrowsers" :icon="RefreshRight" title="重新检测" />
+            </div>
+            <el-input
+              v-if="showCustomBrowserInput"
+              v-model="settings.customBrowserPath"
+              placeholder="请输入浏览器可执行文件完整路径"
+              clearable
+              style="margin-top: 8px;"
+            >
+              <template #append>
+                <el-button @click="browseBrowserPath">
+                  浏览
+                </el-button>
+              </template>
+            </el-input>
+            <div style="margin-top: 5px; color: #909399; font-size: 12px;">
+              选择系统已安装的浏览器，或手动指定路径。留空则默认使用 Chrome
+            </div>
+          </el-form-item>
+          
           <el-divider content-position="left">自动填写设置</el-divider>
           
           <el-form-item label="自动填写支付表单">
@@ -521,7 +564,7 @@
 <script setup lang="ts">
 import { ref, reactive, watch, onMounted, computed } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { Connection } from '@element-plus/icons-vue';
+import { Connection, RefreshRight } from '@element-plus/icons-vue';
 import { useSettingsStore, useUIStore, useAccountsStore } from '@/store';
 import { invoke } from '@tauri-apps/api/core';
 import { systemApi, apiService } from '@/api';
@@ -607,6 +650,7 @@ const settings = reactive<{
   autoSwitchThreshold: number;
   autoSwitchCheckInterval: number;
   autoSwitchCurrentAccountId: string | null;
+  customBrowserPath: string | null;
 }>({
   auto_refresh_token: true,
   seat_count_options: [18, 19, 20],
@@ -639,6 +683,7 @@ const settings = reactive<{
   autoSwitchThreshold: 10,  // 默认10%
   autoSwitchCheckInterval: 300,  // 默认5分钟
   autoSwitchCurrentAccountId: null,
+  customBrowserPath: null,  // 默认不设置自定义浏览器路径
 });
 
 // 成功BIN池相关
@@ -750,6 +795,22 @@ watch(() => uiStore.showSettingsDialog, async (show) => {
     // 检查补丁状态
     if (windsurfPath.value) {
       await checkPatchStatus();
+    }
+    // 加载已安装浏览器列表并同步选中状态
+    await loadInstalledBrowsers();
+    const currentBrowserPath = settings.customBrowserPath;
+    if (currentBrowserPath) {
+      const matched = detectedBrowsers.value.find(b => b.path === currentBrowserPath);
+      if (matched) {
+        selectedBrowserKey.value = matched.path;
+        showCustomBrowserInput.value = false;
+      } else {
+        selectedBrowserKey.value = '__custom__';
+        showCustomBrowserInput.value = true;
+      }
+    } else {
+      selectedBrowserKey.value = '';
+      showCustomBrowserInput.value = false;
     }
     // 加载成功BIN池数量和测试模式进度
     await loadSuccessBinCount();
@@ -918,6 +979,70 @@ function handlePathChange() {
     settings.windsurfPath = windsurfPath.value;
     // 检查新路径的补丁状态
     checkPatchStatus();
+  }
+}
+
+// 浏览器检测相关
+interface DetectedBrowser {
+  name: string;
+  path: string;
+}
+const detectedBrowsers = ref<DetectedBrowser[]>([]);
+const detectingBrowsers = ref(false);
+const selectedBrowserKey = ref<string>('');
+const showCustomBrowserInput = ref(false);
+
+async function loadInstalledBrowsers() {
+  detectingBrowsers.value = true;
+  try {
+    const browsers = await invoke<DetectedBrowser[]>('detect_installed_browsers');
+    detectedBrowsers.value = browsers;
+    if (browsers.length === 0) {
+      ElMessage.info('未检测到已安装的浏览器');
+    }
+  } catch (e) {
+    console.error('检测浏览器失败:', e);
+    detectedBrowsers.value = [];
+  } finally {
+    detectingBrowsers.value = false;
+  }
+}
+
+function handleBrowserSelect(val: string) {
+  if (val === '__custom__') {
+    showCustomBrowserInput.value = true;
+    // 不修改 customBrowserPath，让用户手动输入
+  } else {
+    showCustomBrowserInput.value = false;
+    settings.customBrowserPath = val || null;
+  }
+}
+
+function handleBrowserClear() {
+  showCustomBrowserInput.value = false;
+  settings.customBrowserPath = null;
+  selectedBrowserKey.value = '';
+}
+
+// 浏览选择浏览器可执行文件
+async function browseBrowserPath() {
+  try {
+    const { open } = await import('@tauri-apps/plugin-dialog');
+    const selected = await open({
+      multiple: false,
+      title: '选择浏览器可执行文件',
+      filters: [
+        { name: '可执行文件', extensions: ['exe'] },
+        { name: '所有文件', extensions: ['*'] }
+      ]
+    });
+    
+    if (selected && typeof selected === 'string') {
+      settings.customBrowserPath = selected;
+      ElMessage.success('已选择浏览器路径');
+    }
+  } catch (error) {
+    ElMessage.error(`选择文件失败: ${error}`);
   }
 }
 

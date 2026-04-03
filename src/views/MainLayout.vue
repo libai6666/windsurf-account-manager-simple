@@ -1281,7 +1281,8 @@ function handleSelectPageCommand(command: string) {
       matched = pageAccounts.filter(acc => {
         const plan = acc.plan_name?.toLowerCase();
         const isFree = !plan || plan === 'free';
-        return isFree && acc.trial_eligible === false;
+        const noTrial = acc.trial_eligible === false;
+        return isFree && noTrial;
       });
       label = '无试用资格的 Free';
       break;

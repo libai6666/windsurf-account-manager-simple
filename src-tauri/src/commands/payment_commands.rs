@@ -1004,7 +1004,18 @@ pub async fn get_trial_payment_link_enhanced(
 
 /// 在系统默认浏览器中打开链接
 #[command]
-pub async fn open_external_link(url: String) -> Result<(), String> {
+pub async fn open_external_link(url: String, browser_path: Option<String>) -> Result<(), String> {
+    // 如果指定了自定义浏览器路径，直接使用该路径打开
+    if let Some(ref path) = browser_path {
+        if !path.trim().is_empty() {
+            Command::new(path)
+                .arg(&url)
+                .spawn()
+                .map_err(|e| format!("打开自定义浏览器失败: {}", e))?;
+            return Ok(());
+        }
+    }
+    
     #[cfg(target_os = "windows")]
     {
         Command::new("cmd")
@@ -1034,18 +1045,40 @@ pub async fn open_external_link(url: String) -> Result<(), String> {
 
 /// 在浏览器无痕模式中打开链接
 #[command]
-pub async fn open_external_link_incognito(url: String) -> Result<(), String> {
-    open_in_incognito_new_window(&url)
+pub async fn open_external_link_incognito(url: String, browser_path: Option<String>) -> Result<(), String> {
+    open_in_incognito_new_window(&url, browser_path.as_deref())
 }
 
 /// 在浏览器无痕模式的新窗口中打开链接（每个链接独立窗口）
 #[command]
-pub async fn open_external_link_incognito_new_window(url: String) -> Result<(), String> {
-    open_in_incognito_new_window(&url)
+pub async fn open_external_link_incognito_new_window(url: String, browser_path: Option<String>) -> Result<(), String> {
+    open_in_incognito_new_window(&url, browser_path.as_deref())
 }
 
 /// 内部函数：在无痕模式的新窗口中打开链接
-fn open_in_incognito_new_window(url: &str) -> Result<(), String> {
+fn open_in_incognito_new_window(url: &str, browser_path: Option<&str>) -> Result<(), String> {
+    // 如果指定了自定义浏览器路径，使用该路径以无痕模式打开
+    if let Some(path) = browser_path {
+        if !path.trim().is_empty() {
+            // 根据浏览器可执行文件名判断无痕参数
+            let path_lower = path.to_lowercase();
+            let incognito_flag = if path_lower.contains("firefox") || path_lower.contains("librewolf") {
+                "-private-window"
+            } else if path_lower.contains("edge") || path_lower.contains("msedge") {
+                "-inprivate"
+            } else {
+                // Chrome、Brave、Vivaldi 等 Chromium 系浏览器
+                "--incognito"
+            };
+            
+            Command::new(path)
+                .args(&[incognito_flag, "--new-window", url])
+                .spawn()
+                .map_err(|e| format!("打开自定义浏览器失败: {}", e))?;
+            return Ok(());
+        }
+    }
+    
     #[cfg(target_os = "windows")]
     {
         // 尝试使用 Chrome 无痕模式 + 新窗口
@@ -1119,6 +1152,145 @@ fn open_in_incognito_new_window(url: &str) -> Result<(), String> {
     }
     
     Ok(())
+}
+
+/// 检测系统已安装的浏览器
+#[command]
+pub async fn detect_installed_browsers() -> Result<Vec<serde_json::Value>, String> {
+    let mut browsers: Vec<serde_json::Value> = Vec::new();
+    
+    #[cfg(target_os = "windows")]
+    {
+        use winreg::enums::*;
+        use winreg::RegKey;
+        
+        // 方法1: 从注册表 StartMenuInternet 读取已注册的浏览器
+        let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        
+        let registry_paths = vec![
+            (&hklm, r"SOFTWARE\Clients\StartMenuInternet"),
+            (&hklm, r"SOFTWARE\WOW6432Node\Clients\StartMenuInternet"),
+            (&hkcu, r"SOFTWARE\Clients\StartMenuInternet"),
+        ];
+        
+        let mut found_paths: std::collections::HashSet<String> = std::collections::HashSet::new();
+        
+        for (root_key, reg_path) in &registry_paths {
+            if let Ok(key) = root_key.open_subkey(reg_path) {
+                for browser_name in key.enum_keys().filter_map(|k| k.ok()) {
+                    // 读取浏览器的可执行文件路径
+                    let command_path = format!(r"{}\shell\open\command", browser_name);
+                    if let Ok(cmd_key) = key.open_subkey(&command_path) {
+                        if let Ok(exe_path) = cmd_key.get_value::<String, _>("") {
+                            // 清理路径（可能包含引号和参数）
+                            let clean_path = exe_path.trim_matches('"').to_string();
+                            let clean_path = if let Some(idx) = clean_path.find(".exe") {
+                                clean_path[..idx + 4].to_string()
+                            } else {
+                                clean_path
+                            };
+                            
+                            // 检查文件是否存在且未重复
+                            let path_lower = clean_path.to_lowercase();
+                            if std::path::Path::new(&clean_path).exists() && !found_paths.contains(&path_lower) {
+                                found_paths.insert(path_lower.clone());
+                                
+                                // 根据路径推断浏览器名称
+                                let display_name = if path_lower.contains("chrome") && !path_lower.contains("chromium") {
+                                    "Google Chrome"
+                                } else if path_lower.contains("msedge") || path_lower.contains("edge") {
+                                    "Microsoft Edge"
+                                } else if path_lower.contains("firefox") {
+                                    "Mozilla Firefox"
+                                } else if path_lower.contains("brave") {
+                                    "Brave"
+                                } else if path_lower.contains("vivaldi") {
+                                    "Vivaldi"
+                                } else if path_lower.contains("opera") {
+                                    "Opera"
+                                } else if path_lower.contains("chromium") {
+                                    "Chromium"
+                                } else if path_lower.contains("librewolf") {
+                                    "LibreWolf"
+                                } else {
+                                    &browser_name
+                                };
+                                
+                                browsers.push(json!({
+                                    "name": display_name,
+                                    "path": clean_path
+                                }));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        // 方法2: 补充扫描常见安装路径（注册表可能漏掉的）
+        let common_browsers = vec![
+            ("Google Chrome", vec![
+                r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            ]),
+            ("Microsoft Edge", vec![
+                r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+                r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+            ]),
+            ("Mozilla Firefox", vec![
+                r"C:\Program Files\Mozilla Firefox\firefox.exe",
+                r"C:\Program Files (x86)\Mozilla Firefox\firefox.exe",
+            ]),
+            ("Brave", vec![
+                r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
+                r"C:\Program Files (x86)\BraveSoftware\Brave-Browser\Application\brave.exe",
+            ]),
+            ("Vivaldi", vec![
+                r"C:\Program Files\Vivaldi\Application\vivaldi.exe",
+                r"C:\Users\*\AppData\Local\Vivaldi\Application\vivaldi.exe",
+            ]),
+            ("Opera", vec![
+                r"C:\Program Files\Opera\launcher.exe",
+                r"C:\Program Files (x86)\Opera\launcher.exe",
+            ]),
+        ];
+        
+        for (name, paths) in common_browsers {
+            for path in paths {
+                if path.contains('*') {
+                    // 通配符路径，跳过（注册表方法已覆盖）
+                    continue;
+                }
+                let path_lower = path.to_lowercase();
+                if !found_paths.contains(&path_lower) && std::path::Path::new(path).exists() {
+                    found_paths.insert(path_lower);
+                    browsers.push(json!({
+                        "name": name,
+                        "path": path
+                    }));
+                }
+            }
+        }
+    }
+    
+    // 按名称排序，Chrome 和 Edge 优先
+    browsers.sort_by(|a, b| {
+        let name_a = a["name"].as_str().unwrap_or("");
+        let name_b = b["name"].as_str().unwrap_or("");
+        let priority = |name: &str| -> i32 {
+            match name {
+                "Google Chrome" => 0,
+                "Microsoft Edge" => 1,
+                "Mozilla Firefox" => 2,
+                "Brave" => 3,
+                _ => 10,
+            }
+        };
+        priority(name_a).cmp(&priority(name_b))
+    });
+    
+    Ok(browsers)
 }
 
 /// 自动填写支付表单

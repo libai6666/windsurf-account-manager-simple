@@ -408,6 +408,7 @@ async function handleOpenSelected() {
   cancelOpening.value = false;
   const browserMode = settingsStore.settings?.browserMode ?? 'incognito';
   const openCommand = browserMode === 'incognito' ? 'open_external_link_incognito' : 'open_external_link';
+  const browserPath = settingsStore.settings?.customBrowserPath || undefined;
 
   // 过滤掉已完成的链接（如果开启了跳过已完成）
   const selectedIndices = Array.from(selectedLinks.value).filter(idx => {
@@ -437,7 +438,7 @@ async function handleOpenSelected() {
       openProgress.value = { current: i + 1, total: selectedIndices.length, currentEmail: item.email };
 
       try {
-        await invoke(openCommand, { url: item.url });
+        await invoke(openCommand, { url: item.url, browserPath });
         openedCount++;
         // 标记为已打开
         const newOpened = new Set(openedLinks.value);
@@ -487,9 +488,10 @@ function handleUnmarkAllCompleted() {
 async function handleOpenSingle(url: string, index: number) {
   const browserMode = settingsStore.settings?.browserMode ?? 'incognito';
   const openCommand = browserMode === 'incognito' ? 'open_external_link_incognito' : 'open_external_link';
+  const browserPath = settingsStore.settings?.customBrowserPath || undefined;
 
   try {
-    await invoke(openCommand, { url });
+    await invoke(openCommand, { url, browserPath });
     // 标记为已打开
     const newOpened = new Set(openedLinks.value);
     newOpened.add(index);
