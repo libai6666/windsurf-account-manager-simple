@@ -87,7 +87,7 @@
             <el-checkbox-group v-model="selectedCardIndices">
               <div v-for="(card, idx) in savedCards" :key="idx" class="card-item">
                 <el-checkbox :label="idx" :value="idx">
-                  <span class="card-number">****{{ card.number.slice(-4) }}</span>
+                  <span class="card-number">{{ card.number }}</span>
                   <span class="card-meta">{{ card.exp_month }}/{{ card.exp_year }} | CVC: {{ card.cvc }}</span>
                   <el-tag v-if="card.label" size="small" type="info" style="margin-left: 4px">{{ card.label }}</el-tag>
                 </el-checkbox>
@@ -102,6 +102,70 @@
           <div v-if="savedCards.length > 1 && selectedCardIndices.length > 1" style="margin-top: 4px; font-size: 12px; color: #909399">
             已选 {{ selectedCardIndices.length }} 张卡，将按顺序轮询分配给账号。例如: 账号1→卡1, 账号2→卡2, 账号3→卡1 ...
           </div>
+
+          <el-divider content-position="left">
+            <el-icon><SetUp /></el-icon> 调试卡片 (逐卡尝试，成功自动移入卡片管理)
+          </el-divider>
+
+          <!-- 调试卡片添加 -->
+          <el-row :gutter="8" style="margin-bottom: 8px">
+            <el-col :span="14">
+              <el-input v-model="debugCardRaw" placeholder="卡号|MM/YY|CVC  例如: 5253636962627026|08/30|571" size="small" @keyup.enter="addDebugCard" />
+            </el-col>
+            <el-col :span="6">
+              <el-input v-model="debugCardLabel" placeholder="备注(可选)" size="small" />
+            </el-col>
+            <el-col :span="4">
+              <el-button type="warning" size="small" :disabled="!canAddDebugCard" @click="addDebugCard" style="width: 100%">添加调试卡</el-button>
+            </el-col>
+          </el-row>
+
+          <!-- 批量粘贴 -->
+          <el-row :gutter="8" style="margin-bottom: 8px">
+            <el-col :span="20">
+              <el-input v-model="debugCardBatchRaw" type="textarea" :rows="2" placeholder="批量粘贴: 每行一张卡  卡号|MM/YY|CVC" size="small" />
+            </el-col>
+            <el-col :span="4">
+              <el-button type="warning" plain size="small" :disabled="!debugCardBatchRaw.trim()" @click="batchAddDebugCards" style="width: 100%">批量添加</el-button>
+            </el-col>
+          </el-row>
+
+          <!-- 调试卡片列表 -->
+          <div class="card-list-box debug-card-list">
+            <div v-for="(card, idx) in debugCards" :key="'d' + idx"
+                 class="card-item"
+                 :class="{ 'debug-card-skipped': card.status === 'success', 'debug-card-start': idx === debugStartIndex }">
+              <span style="min-width: 28px; font-size: 11px; color: #909399">#{{ idx + 1 }}</span>
+              <span class="card-number" style="color: #e6a23c">{{ card.number }}</span>
+              <span class="card-meta">{{ card.exp_month }}/{{ card.exp_year }} | CVC: {{ card.cvc }}</span>
+              <el-tag v-if="card.label" size="small" type="warning" style="margin-left: 4px">{{ card.label }}</el-tag>
+              <el-tag v-if="card.status === 'success'" size="small" type="success" style="margin-left: 4px">已成功</el-tag>
+              <el-tag v-else-if="card.status === 'failed'" size="small" type="danger" style="margin-left: 4px">失败</el-tag>
+              <span style="margin-left: auto; display: flex; gap: 4px; align-items: center">
+                <el-button v-if="card.status === 'failed'" type="primary" text size="small" @click="retryDebugCard(idx)">重试</el-button>
+                <el-button v-if="idx !== debugStartIndex" type="warning" text size="small" @click="debugStartIndex = idx">从此开始</el-button>
+                <el-tag v-else size="small" type="warning" effect="dark">起点</el-tag>
+                <el-button type="danger" text size="small" @click="removeDebugCard(idx)">删除</el-button>
+              </span>
+            </div>
+            <el-empty v-if="debugCards.length === 0" description="暂无调试卡片" :image-size="32" />
+          </div>
+
+          <!-- 调试设置 -->
+          <el-row :gutter="12" style="margin-top: 8px" align="middle">
+            <el-col :span="8">
+              <el-form-item label="最大失败次数" label-width="auto" style="margin-bottom: 0">
+                <el-input-number v-model="maxDebugFailures" :min="1" :max="200" :step="5" size="small" style="width: 120px" />
+              </el-form-item>
+            </el-col>
+            <el-col :span="16" style="text-align: right">
+              <span style="font-size: 12px; color: #909399; margin-right: 8px">
+                共 {{ debugCards.length }} 张 | 待调试 {{ debugPendingCount }} 张 | 已失败 {{ debugFailedCount }} 张 | 已成功 {{ debugSuccessCount }} 张
+              </span>
+              <el-button size="small" type="warning" plain @click="resetDebugStatus" :disabled="debugCards.length === 0">重置调试</el-button>
+              <el-button size="small" @click="clearDebugCards" :disabled="debugCards.length === 0">清空</el-button>
+            </el-col>
+          </el-row>
 
           <el-divider content-position="left">账单地址 & 姓名</el-divider>
           <el-row style="margin-bottom: 8px">
@@ -208,7 +272,7 @@
           </el-row>
         </el-form>
 
-        <div style="text-align: center; margin-top: 10px">
+        <div style="text-align: center; margin-top: 10px; display: flex; justify-content: center; gap: 12px">
           <el-button
             type="primary"
             size="large"
@@ -217,6 +281,15 @@
             @click="startBind"
           >
             开始批量绑卡 ({{ selectedAccountIds.length }} 个账号, {{ selectedCardIndices.length }} 张卡)
+          </el-button>
+          <el-button
+            type="warning"
+            size="large"
+            :loading="isRunning"
+            :disabled="!canStartDebug"
+            @click="startDebugBind"
+          >
+            🔧 调试绑卡 ({{ selectedAccountIds.length }} 个账号, {{ debugCards.length }} 张调试卡)
           </el-button>
         </div>
       </el-tab-pane>
@@ -320,7 +393,7 @@ import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { ElMessage } from 'element-plus';
-import { Search as SearchIcon, Refresh as RefreshIcon } from '@element-plus/icons-vue';
+import { Search as SearchIcon, Refresh as RefreshIcon, SetUp } from '@element-plus/icons-vue';
 import { useAccountsStore, useSettingsStore } from '@/store';
 import ConcurrentTurnstileDialog from '@/components/ConcurrentTurnstileDialog.vue';
 
@@ -433,6 +506,135 @@ function cancelEditCard() {
   newCardLabel.value = '';
 }
 
+// ─── 调试卡片管理 ────────────────────────────────
+interface DebugCard extends SavedCard {
+  status?: 'pending' | 'success' | 'failed';
+}
+
+const DEBUG_CARDS_STORAGE_KEY = 'stripe_bind_debug_cards';
+
+const debugCards = ref<DebugCard[]>([]);
+const debugCardRaw = ref('');
+const debugCardLabel = ref('');
+const debugCardBatchRaw = ref('');
+const maxDebugFailures = ref(25);
+const debugStartIndex = ref(0);
+const isDebugMode = ref(false);
+
+const canAddDebugCard = computed(() => parseCardRaw(debugCardRaw.value) !== null);
+
+const debugSuccessCount = computed(() => debugCards.value.filter(c => c.status === 'success').length);
+const debugPendingCount = computed(() => debugCards.value.filter((c, i) => i >= debugStartIndex.value && (c.status === 'pending' || !c.status)).length);
+const debugFailedCount = computed(() => debugCards.value.filter(c => c.status === 'failed').length);
+
+const debugRetryableCount = computed(() => debugCards.value.filter((c, i) => i >= debugStartIndex.value && c.status !== 'success').length);
+
+const canStartDebug = computed(() => {
+  return selectedAccountIds.value.length > 0
+    && debugRetryableCount.value > 0
+    && !isRunning.value;
+});
+
+function loadDebugCards() {
+  try {
+    const raw = localStorage.getItem(DEBUG_CARDS_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      debugCards.value = parsed.cards || [];
+      if (parsed.maxFailures != null) maxDebugFailures.value = parsed.maxFailures;
+      if (parsed.startIndex != null) debugStartIndex.value = parsed.startIndex;
+    }
+  } catch { /* ignore */ }
+}
+
+function persistDebugCards() {
+  localStorage.setItem(DEBUG_CARDS_STORAGE_KEY, JSON.stringify({
+    cards: debugCards.value,
+    maxFailures: maxDebugFailures.value,
+    startIndex: debugStartIndex.value,
+  }));
+}
+
+function resetDebugStatus() {
+  debugCards.value.forEach(c => c.status = 'pending');
+  debugStartIndex.value = 0;
+  persistDebugCards();
+  ElMessage.success('已重置所有调试卡状态');
+}
+
+function retryDebugCard(idx: number) {
+  if (debugCards.value[idx]) {
+    debugCards.value[idx].status = 'pending';
+    persistDebugCards();
+  }
+}
+
+function addDebugCard() {
+  if (!canAddDebugCard.value) return;
+  const card = parseCardRaw(debugCardRaw.value)! as DebugCard;
+  card.label = debugCardLabel.value.trim();
+  card.status = 'pending';
+  debugCards.value.push(card);
+  debugCardRaw.value = '';
+  debugCardLabel.value = '';
+  persistDebugCards();
+}
+
+function batchAddDebugCards() {
+  const lines = debugCardBatchRaw.value.split('\n').filter(l => l.trim());
+  let added = 0;
+  for (const line of lines) {
+    const card = parseCardRaw(line) as DebugCard | null;
+    if (card) {
+      card.status = 'pending';
+      debugCards.value.push(card);
+      added++;
+    }
+  }
+  if (added > 0) {
+    ElMessage.success(`成功添加 ${added} 张调试卡`);
+    debugCardBatchRaw.value = '';
+    persistDebugCards();
+  } else {
+    ElMessage.warning('未识别到有效卡片，请检查格式: 卡号|MM/YY|CVC');
+  }
+}
+
+function removeDebugCard(idx: number) {
+  debugCards.value.splice(idx, 1);
+  if (debugStartIndex.value > 0 && idx < debugStartIndex.value) {
+    debugStartIndex.value--;
+  } else if (debugStartIndex.value >= debugCards.value.length) {
+    debugStartIndex.value = Math.max(0, debugCards.value.length - 1);
+  }
+  persistDebugCards();
+}
+
+function clearDebugCards() {
+  debugCards.value = [];
+  debugStartIndex.value = 0;
+  persistDebugCards();
+}
+
+function moveDebugCardToStable(cardNumber: string, cvc: string, expYear: string, expMonth: string) {
+  // 从调试列表中移除
+  const idx = debugCards.value.findIndex(c => c.number === cardNumber && c.cvc === cvc);
+  let label = '';
+  if (idx >= 0) {
+    label = debugCards.value[idx].label || '';
+    debugCards.value[idx].status = 'success';
+    persistDebugCards();
+  }
+  // 检查是否已在稳定列表
+  const exists = savedCards.value.some(c => c.number === cardNumber && c.cvc === cvc);
+  if (!exists) {
+    const newCard: SavedCard = { number: cardNumber, cvc, exp_year: expYear, exp_month: expMonth, label: label || '调试成功' };
+    savedCards.value.push(newCard);
+    selectedCardIndices.value.push(savedCards.value.length - 1);
+    persistCards();
+  }
+}
+
 function loadConfig() {
   try {
     const raw = localStorage.getItem(CONFIG_STORAGE_KEY);
@@ -443,6 +645,7 @@ function loadConfig() {
       if (cfg.teamsTier != null) teamsTier.value = cfg.teamsTier;
       if (cfg.paymentPeriod != null) paymentPeriod.value = cfg.paymentPeriod;
       if (cfg.concurrency != null) concurrency.value = cfg.concurrency;
+      if (cfg.presolveCaptcha != null) presolveCaptcha.value = cfg.presolveCaptcha;
     }
   } catch { /* ignore */ }
 }
@@ -454,6 +657,7 @@ function persistConfig() {
     teamsTier: teamsTier.value,
     paymentPeriod: paymentPeriod.value,
     concurrency: concurrency.value,
+    presolveCaptcha: presolveCaptcha.value,
   }));
 }
 
@@ -471,6 +675,8 @@ const captchaConfig = ref({
   api_url: 'https://api.yescaptcha.com',
   api_key: '',
 });
+
+const presolveCaptcha = ref(false);
 
 const proxyConfig = ref({
   host: '',
@@ -600,6 +806,28 @@ const collectedTurnstileTokens = ref<Record<string, string>>({});
 
 function startBind() {
   if (!canStart.value) return;
+  isDebugMode.value = false;
+
+  // 构建账号列表用于 Turnstile 验证
+  turnstileAccounts.value = selectedAccountIds.value.map(id => {
+    const acc = accountsStore.accounts.find(a => a.id === id);
+    return { id, email: acc?.email || id };
+  });
+  collectedTurnstileTokens.value = {};
+
+  // 弹出批量人机验证
+  showTurnstile.value = true;
+}
+
+function startDebugBind() {
+  if (!canStartDebug.value) return;
+  isDebugMode.value = true;
+
+  // 将起点之后的 failed 卡重置为 pending，以便重新尝试
+  debugCards.value.forEach((c, i) => {
+    if (i >= debugStartIndex.value && c.status === 'failed') c.status = 'pending';
+  });
+  persistDebugCards();
 
   // 构建账号列表用于 Turnstile 验证
   turnstileAccounts.value = selectedAccountIds.value.map(id => {
@@ -670,7 +898,7 @@ async function doStartBind(verifiedAccountIds: string[]) {
       pass: proxyConfig.value.pass || null,
     } : null;
 
-    const selectedCards = selectedCardIndices.value
+    const selectedCards = isDebugMode.value ? [] : selectedCardIndices.value
       .sort((a, b) => a - b)
       .map(i => ({
         number: savedCards.value[i].number,
@@ -679,7 +907,19 @@ async function doStartBind(verifiedAccountIds: string[]) {
         exp_month: savedCards.value[i].exp_month,
       }));
 
+    const debugCardList = isDebugMode.value
+      ? debugCards.value
+          .filter((c, i) => i >= debugStartIndex.value && (c.status === 'pending' || !c.status))
+          .map(c => ({
+            number: c.number,
+            cvc: c.cvc,
+            exp_year: c.exp_year,
+            exp_month: c.exp_month,
+          }))
+      : undefined;
+
     persistConfig();
+    if (isDebugMode.value) persistDebugCards();
 
     const result = await invoke<{ success: boolean; batch_id: string; total: number }>('stripe_bind_start', {
       request: {
@@ -699,11 +939,18 @@ async function doStartBind(verifiedAccountIds: string[]) {
         } : null,
         custom_name: useCustomAddress.value && customAddress.value.name ? customAddress.value.name : null,
         turnstile_tokens: collectedTurnstileTokens.value,
+        debug_cards: debugCardList || null,
+        max_debug_failures: isDebugMode.value ? maxDebugFailures.value : null,
+        presolve_captcha: presolveCaptcha.value,
       },
     });
 
     currentBatchId.value = result.batch_id;
-    ElMessage.success(`批量绑卡任务已启动，共 ${result.total} 个账号`);
+    if (isDebugMode.value) {
+      ElMessage.success(`调试绑卡任务已启动，共 ${result.total} 个账号, ${debugCards.value.length} 张调试卡`);
+    } else {
+      ElMessage.success(`批量绑卡任务已启动，共 ${result.total} 个账号`);
+    }
   } catch (e: any) {
     ElMessage.error(`启动失败: ${e}`);
     isRunning.value = false;
@@ -767,10 +1014,13 @@ let unlistenLog: UnlistenFn | null = null;
 let unlistenProgress: UnlistenFn | null = null;
 let unlistenTaskDone: UnlistenFn | null = null;
 let unlistenBatchDone: UnlistenFn | null = null;
+let unlistenCardSuccess: UnlistenFn | null = null;
+let unlistenCardFailed: UnlistenFn | null = null;
 
 onMounted(async () => {
-  // 加载保存的卡片和配置
+  // 加载保存的卡片、调试卡和配置
   loadSavedCards();
+  loadDebugCards();
   loadConfig();
 
   unlistenLog = await listen<LogEntry>('stripe-bind-log', (event) => {
@@ -806,7 +1056,35 @@ onMounted(async () => {
 
   unlistenBatchDone = await listen<{ task_id: string }>('stripe-bind-batch-done', (_event) => {
     isRunning.value = false;
+    // 调试模式完成后，自动把起点移到第一张未尝试的卡（跳过 success 和 failed）
+    if (isDebugMode.value) {
+      const nextUntried = debugCards.value.findIndex(c => c.status === 'pending' || !c.status);
+      if (nextUntried >= 0) {
+        debugStartIndex.value = nextUntried;
+      }
+      persistDebugCards();
+    }
     ElMessage.success('所有绑卡任务已完成');
+  });
+
+  unlistenCardSuccess = await listen<{
+    task_id: string; account_id: string; card_index: number;
+    card_number: string; card_cvc: string; card_exp_year: string; card_exp_month: string;
+  }>('stripe-bind-card-success', (event) => {
+    const p = event.payload;
+    moveDebugCardToStable(p.card_number, p.card_cvc, p.card_exp_year, p.card_exp_month);
+  });
+
+  unlistenCardFailed = await listen<{
+    task_id: string; account_id: string; card_index: number;
+    card_number: string; card_cvc: string; error: string;
+  }>('stripe-bind-card-failed', (event) => {
+    const p = event.payload;
+    const card = debugCards.value.find(c => c.number === p.card_number && c.cvc === p.card_cvc);
+    if (card && card.status !== 'success') {
+      card.status = 'failed';
+      persistDebugCards();
+    }
   });
 });
 
@@ -815,6 +1093,8 @@ onUnmounted(() => {
   unlistenProgress?.();
   unlistenTaskDone?.();
   unlistenBatchDone?.();
+  unlistenCardSuccess?.();
+  unlistenCardFailed?.();
 });
 
 function handleClose() {
@@ -978,6 +1258,25 @@ html.dark .card-list-box {
 
 html.dark .card-item {
   border-bottom-color: #4c4d4f;
+}
+
+.debug-card-list {
+  border-color: #e6a23c;
+}
+
+html.dark .debug-card-list {
+  border-color: #a88230;
+  background-color: rgba(230, 162, 60, 0.04);
+}
+
+.debug-card-skipped {
+  opacity: 0.45;
+  text-decoration: line-through;
+}
+
+.debug-card-start {
+  border-left: 3px solid #e6a23c;
+  padding-left: 5px;
 }
 
 html.dark .task-item {

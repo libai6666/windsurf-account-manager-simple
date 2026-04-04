@@ -5,7 +5,7 @@ use crate::utils::AppError;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, atomic::{AtomicU32, Ordering}};
 use tauri::{AppHandle, Emitter, State};
 use uuid::Uuid;
 use tokio::sync::Mutex;
@@ -74,6 +74,9 @@ pub struct StripeBindRequest {
     pub custom_address: Option<AddressInfo>,
     pub custom_name: Option<String>,
     pub turnstile_tokens: Option<std::collections::HashMap<String, String>>,
+    pub debug_cards: Option<Vec<CardInfo>>,
+    pub max_debug_failures: Option<u32>,
+    pub presolve_captcha: Option<bool>,
 }
 
 // ─── 常量 ───────────────────────────────────────────────────
@@ -895,7 +898,7 @@ async fn handle_3ds(
 
     // 处理 challenge captcha
     if let (Some(ref sk), Some(ref seti), Some(ref cs)) = (&challenge_site_key, &seti_id, &client_secret) {
-        let max_attempts = 5;
+        let max_attempts = 2;
         for attempt in 1..=max_attempts {
             emit_log(app, task_id, "info", &format!("  解 challenge captcha (第 {}/{} 次) ...", attempt, max_attempts));
             let (challenge_token, _ekey) = solve_hcaptcha(captcha_cfg, sk, app, task_id).await?;
@@ -926,13 +929,19 @@ async fn handle_3ds(
             let verify_status = result.get("status").and_then(|v| v.as_str()).unwrap_or("unknown");
             emit_log(app, task_id, "info", &format!("  verify_challenge 状态: {}", verify_status));
 
+            // requires_payment_method = 卡被拒绝，不是 captcha 问题，直接退出
+            if verify_status == "requires_payment_method" {
+                emit_log(app, task_id, "warn", "  卡被拒绝 (requires_payment_method)，退出 challenge 重试");
+                break;
+            }
+
             // 检查 captcha 错误
             let setup_error = result.get("last_setup_error");
             if let Some(err) = setup_error {
                 let err_msg = err.get("message").and_then(|v| v.as_str()).unwrap_or("");
                 if err_msg.to_lowercase().contains("captcha") {
                     if attempt < max_attempts {
-                        emit_log(app, task_id, "warn", "  challenge captcha 被拒, 重试...");
+                        emit_log(app, task_id, "warn", "  challenge captcha 被拒，重试...");
                         continue;
                     }
                     return Err(format!("challenge captcha 连续 {} 次被拒", max_attempts));
@@ -1035,7 +1044,7 @@ async fn handle_3ds(
 
                 match trans_status {
                     "Y" => {
-                        emit_log(app, task_id, "info", "  ✅ 3DS 验证通过 (transStatus=Y)");
+                        emit_log(app, task_id, "info", "  3DS 验证通过 (transStatus=Y)");
                     }
                     "C" => {
                         return Err("3DS 需要银行短信验证 (transStatus=C)，此卡无法自动绑定".to_string());
@@ -1044,7 +1053,7 @@ async fn handle_3ds(
                         return Err("3DS 验证被拒绝 (transStatus=R)".to_string());
                     }
                     "N" => {
-                        emit_log(app, task_id, "warn", "  ⚠ 3DS 验证未通过 (transStatus=N)，继续尝试...");
+                        emit_log(app, task_id, "warn", "  3DS 验证未通过 (transStatus=N)，继续尝试...");
                     }
                     "" => {
                         // transStatus 为空，检查 state 是否已成功
@@ -1095,14 +1104,14 @@ async fn handle_3ds(
                     emit_log(app, task_id, "info", &format!("  setup_intent 状态: {}", status));
 
                     if status == "requires_action" {
-                        emit_log(app, task_id, "warn", "  ⚠ setup_intent 仍需操作，此卡可能需要额外验证");
+                        emit_log(app, task_id, "warn", "  setup_intent 仍需操作，此卡可能需要额外验证");
                     }
                 }
             }
         }
     } else if seti_id.is_none() {
         // 开发者建议: seti 为 None 时直接放弃
-        emit_log(app, task_id, "warn", "  ⚠ 未找到 setup_intent (seti=None)，3DS 流程异常");
+        emit_log(app, task_id, "warn", "  setup_intent 为空，3DS 流程异常");
         return Err("3DS: 未获取到 setup_intent，无法完成验证".to_string());
     }
 
@@ -1152,12 +1161,18 @@ async fn poll_result(
         let payment_status = data.get("payment_object_status").and_then(|v| v.as_str()).unwrap_or("unknown");
 
         if state == "succeeded" {
-            emit_log(app, task_id, "info", &format!("  ✅ 绑卡成功! state={}, payment_status={}", state, payment_status));
+            emit_log(app, task_id, "info", &format!("  成功! state={}, payment_status={}", state, payment_status));
             return Ok(data);
         }
 
         if state == "failed" || state == "expired" || state == "canceled" {
-            emit_log(app, task_id, "error", &format!("  ❌ 绑卡失败: state={}", state));
+            emit_log(app, task_id, "error", &format!("  失败: state={}", state));
+            return Ok(data);
+        }
+
+        // requires_payment_method = 卡被拒绝，不用再轮询
+        if payment_status == "requires_payment_method" {
+            emit_log(app, task_id, "warn", &format!("  卡被拒绝 (payment_status=requires_payment_method)，退出轮询"));
             return Ok(data);
         }
 
@@ -1181,6 +1196,7 @@ async fn bind_single_account(
     proxy: &Option<ProxyConfig>,
     custom_address: &Option<AddressInfo>,
     custom_name: &Option<String>,
+    presolve_captcha: bool,
     app: &AppHandle,
     task_id: &str,
 ) -> Result<serde_json::Value, String> {
@@ -1224,33 +1240,55 @@ async fn bind_single_account(
     // Step 4: 解 captcha + 创建 payment_method
     emit_progress(app, task_id, account_id, 4, "创建支付方式", "running");
     let (hcaptcha_site_key, _rqdata) = extract_hcaptcha_config(&init_resp);
-
-    // 先尝试不带 captcha
     let config_id = init_resp.get("config_id").and_then(|v| v.as_str()).unwrap_or("");
-    emit_log(app, task_id, "info", "[3.5/6] 尝试不带 hCaptcha 直接提交 ...");
-    let (captcha_token, pm_id) = match create_payment_method(
-        &client, card, &addr, &name, email, "", &session_id,
-        config_id, &stripe_js_id, &guid, &muid, &sid, app, task_id,
-    ).await {
-        Ok(pm) => ("".to_string(), pm),
-        Err(e) => {
-            let err_lower = e.to_lowercase();
-            if err_lower.contains("captcha") || err_lower.contains("hcaptcha")
-                || err_lower.contains("blocked") || err_lower.contains("radar") {
-                emit_log(app, task_id, "info", "  需要 hCaptcha，开始解题 ...");
-                let (token, _ekey) = solve_hcaptcha(captcha_cfg, &hcaptcha_site_key, app, task_id).await?;
+
+    let (captcha_token, pm_id) = if presolve_captcha {
+        // 预解模式: 先解 hCaptcha，带 token 提交降低风控评级
+        emit_log(app, task_id, "info", "[3.5/6] 解 hCaptcha ...");
+        match solve_hcaptcha(captcha_cfg, &hcaptcha_site_key, app, task_id).await {
+            Ok((token, _ekey)) => {
                 let pm = create_payment_method(
                     &client, card, &addr, &name, email, &token, &session_id,
                     config_id, &stripe_js_id, &guid, &muid, &sid, app, task_id,
                 ).await?;
                 (token, pm)
-            } else {
-                return Err(e);
+            }
+            Err(captcha_err) => {
+                emit_log(app, task_id, "warn", &format!("  hCaptcha 失败: {}, 尝试不带 captcha 提交 ...", &captcha_err[..captcha_err.len().min(80)]));
+                let pm = create_payment_method(
+                    &client, card, &addr, &name, email, "", &session_id,
+                    config_id, &stripe_js_id, &guid, &muid, &sid, app, task_id,
+                ).await?;
+                ("".to_string(), pm)
+            }
+        }
+    } else {
+        // 非预解模式: 先不带 captcha 提交
+        emit_log(app, task_id, "info", "[3.5/6] 尝试不带 hCaptcha 直接提交 ...");
+        match create_payment_method(
+            &client, card, &addr, &name, email, "", &session_id,
+            config_id, &stripe_js_id, &guid, &muid, &sid, app, task_id,
+        ).await {
+            Ok(pm) => ("".to_string(), pm),
+            Err(e) => {
+                let err_lower = e.to_lowercase();
+                if err_lower.contains("captcha") || err_lower.contains("hcaptcha")
+                    || err_lower.contains("blocked") || err_lower.contains("radar") {
+                    emit_log(app, task_id, "info", "  需要 hCaptcha，开始解题 ...");
+                    let (token, _ekey) = solve_hcaptcha(captcha_cfg, &hcaptcha_site_key, app, task_id).await?;
+                    let pm = create_payment_method(
+                        &client, card, &addr, &name, email, &token, &session_id,
+                        config_id, &stripe_js_id, &guid, &muid, &sid, app, task_id,
+                    ).await?;
+                    (token, pm)
+                } else {
+                    return Err(e);
+                }
             }
         }
     };
 
-    // Step 5: confirm (若无 captcha 且失败则解题重试)
+    // Step 5: confirm
     emit_progress(app, task_id, account_id, 5, "确认支付", "running");
     let confirm_result = confirm_payment(
         &client, &session_id, &pm_id, &captcha_token, &init_resp,
@@ -1260,7 +1298,7 @@ async fn bind_single_account(
 
     match confirm_result {
         Ok(_) => {},
-        Err(ref e) if captcha_token.is_empty() && {
+        Err(ref e) if !presolve_captcha && captcha_token.is_empty() && {
             let el = e.to_lowercase();
             el.contains("captcha") || el.contains("blocked") || el.contains("radar")
         } => {
@@ -1321,15 +1359,27 @@ pub async fn stripe_bind_start(
     let concurrency = request.concurrency.unwrap_or(1).max(1).min(5);
     let total = request.account_ids.len();
 
-    if request.cards.is_empty() {
+    let debug_cards = request.debug_cards.clone().unwrap_or_default();
+    let is_debug_mode = !debug_cards.is_empty();
+    let max_debug_failures = request.max_debug_failures.unwrap_or(25);
+
+    if !is_debug_mode && request.cards.is_empty() {
         return Err("请至少添加一张卡".to_string());
     }
-    let card_count = request.cards.len();
+    if is_debug_mode && debug_cards.is_empty() {
+        return Err("调试模式需要至少一张调试卡".to_string());
+    }
+    let card_count = if is_debug_mode { debug_cards.len() } else { request.cards.len() };
 
     emit_log(&app, &batch_id, "info", &format!(
         "═══════════════════════════════════════════════════════════════"));
-    emit_log(&app, &batch_id, "info", &format!(
-        "  批量协议绑卡任务启动 — 共 {} 个账号, {} 张卡, 并发 {}", total, card_count, concurrency));
+    if is_debug_mode {
+        emit_log(&app, &batch_id, "info", &format!(
+            "  🔧 调试绑卡模式 — {} 个账号, {} 张调试卡, 最大失败 {} 次, 并发 {}", total, card_count, max_debug_failures, concurrency));
+    } else {
+        emit_log(&app, &batch_id, "info", &format!(
+            "  批量协议绑卡任务启动 — 共 {} 个账号, {} 张卡, 并发 {}", total, card_count, concurrency));
+    }
     emit_log(&app, &batch_id, "info", &format!(
         "═══════════════════════════════════════════════════════════════"));
 
@@ -1394,7 +1444,7 @@ pub async fn stripe_bind_start(
         tasks.push((account_id_str.clone(), account.email.clone(), stripe_url));
     }
 
-    // 在后台异步执行绑卡 (多卡轮询分配)
+    // 在后台异步执行绑卡
     let cards = request.cards.clone();
     let captcha_cfg = request.captcha.clone();
     let proxy = request.proxy.clone();
@@ -1403,6 +1453,9 @@ pub async fn stripe_bind_start(
     let batch_id_clone = batch_id.clone();
     let app_clone = app.clone();
     let store_inner = store.inner().clone();
+    let presolve_captcha = request.presolve_captcha.unwrap_or(false);
+    let debug_cards_arc = Arc::new(debug_cards);
+    let failure_counter = Arc::new(AtomicU32::new(0));
 
     tokio::spawn(async move {
         let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
@@ -1410,8 +1463,9 @@ pub async fn stripe_bind_start(
 
         for (idx, (account_id, email, stripe_url)) in tasks.into_iter().enumerate() {
             let sem = semaphore.clone();
-            // 轮询分配卡片: 第i个账号使用第 i % card_count 张卡
-            let card = cards[idx % cards.len()].clone();
+            let card = if !is_debug_mode { Some(cards[idx % cards.len()].clone()) } else { None };
+            let debug_cards = debug_cards_arc.clone();
+            let failure_counter = failure_counter.clone();
             let captcha_cfg = captcha_cfg.clone();
             let proxy = proxy.clone();
             let custom_address = custom_address.clone();
@@ -1432,22 +1486,109 @@ pub async fn stripe_bind_start(
                     }
                 }
 
-                let result = bind_single_account(
-                    &account_id, &email, &stripe_url,
-                    &card, &captcha_cfg, &proxy,
-                    &custom_address, &custom_name, &app, &batch_id,
-                ).await;
+                let (status, error) = if is_debug_mode {
+                    // ─── 调试模式: 逐卡尝试 ───
+                    let mut final_status = "failed".to_string();
+                    let mut final_error: Option<String> = Some("所有调试卡均失败".into());
 
-                let (status, error) = match &result {
-                    Ok(data) => {
-                        let state = data.get("state").and_then(|v| v.as_str()).unwrap_or("unknown");
-                        if state == "succeeded" {
-                            ("success".to_string(), None)
-                        } else {
-                            ("failed".to_string(), Some(format!("state={}", state)))
+                    for (card_idx, dcard) in debug_cards.iter().enumerate() {
+                        let current_failures = failure_counter.load(Ordering::Relaxed);
+                        if current_failures >= max_debug_failures {
+                            emit_log(&app, &batch_id, "warn", &format!(
+                                "  ⚠ 已达最大失败次数 ({}/{}), 跳过剩余卡片", current_failures, max_debug_failures));
+                            final_error = Some(format!("已达最大失败次数 {}", max_debug_failures));
+                            break;
+                        }
+
+                        let last4 = &dcard.number[dcard.number.len().saturating_sub(4)..];
+                        emit_log(&app, &batch_id, "info", &format!(
+                            "  🔧 [{}] 尝试调试卡 {}/{}: ****{}", email, card_idx + 1, debug_cards.len(), last4));
+
+                        let result = bind_single_account(
+                            &account_id, &email, &stripe_url,
+                            dcard, &captcha_cfg, &proxy,
+                            &custom_address, &custom_name, presolve_captcha, &app, &batch_id,
+                        ).await;
+
+                        match &result {
+                            Ok(data) => {
+                                let state = data.get("state").and_then(|v| v.as_str()).unwrap_or("unknown");
+                                if state == "succeeded" {
+                                    emit_log(&app, &batch_id, "info", &format!(
+                                        "  ✅ [{}] 调试卡 ****{} 绑卡成功!", email, last4));
+                                    // 通知前端: 这张调试卡成功了
+                                    let _ = app.emit("stripe-bind-card-success", json!({
+                                        "task_id": batch_id,
+                                        "account_id": account_id,
+                                        "card_index": card_idx,
+                                        "card_number": dcard.number,
+                                        "card_cvc": dcard.cvc,
+                                        "card_exp_year": dcard.exp_year,
+                                        "card_exp_month": dcard.exp_month,
+                                    }));
+                                    final_status = "success".to_string();
+                                    final_error = None;
+                                    break;
+                                } else {
+                                    let fail_count = failure_counter.fetch_add(1, Ordering::Relaxed) + 1;
+                                    emit_log(&app, &batch_id, "warn", &format!(
+                                        "  ❌ [{}] 调试卡 ****{} 失败: state={} (累计失败 {}/{})",
+                                        email, last4, state, fail_count, max_debug_failures));
+                                    let _ = app.emit("stripe-bind-card-failed", json!({
+                                        "task_id": batch_id,
+                                        "account_id": account_id,
+                                        "card_index": card_idx,
+                                        "card_number": dcard.number,
+                                        "card_cvc": dcard.cvc,
+                                        "error": format!("state={}", state),
+                                    }));
+                                }
+                            }
+                            Err(e) => {
+                                let fail_count = failure_counter.fetch_add(1, Ordering::Relaxed) + 1;
+                                emit_log(&app, &batch_id, "warn", &format!(
+                                    "  ❌ [{}] 调试卡 ****{} 出错: {} (累计失败 {}/{})",
+                                    email, last4, &e[..e.len().min(100)], fail_count, max_debug_failures));
+                                let _ = app.emit("stripe-bind-card-failed", json!({
+                                    "task_id": batch_id,
+                                    "account_id": account_id,
+                                    "card_index": card_idx,
+                                    "card_number": dcard.number,
+                                    "card_cvc": dcard.cvc,
+                                    "error": &e[..e.len().min(100)],
+                                }));
+                                // 如果是 session 级别的错误(expired/canceled), 停止该账号
+                                let el = e.to_lowercase();
+                                if el.contains("expired") || el.contains("canceled") || el.contains("cancelled") {
+                                    emit_log(&app, &batch_id, "error", &format!(
+                                        "  ⛔ [{}] checkout session 已失效, 停止该账号", email));
+                                    final_error = Some(format!("session 已失效: {}", &e[..e.len().min(80)]));
+                                    break;
+                                }
+                            }
                         }
                     }
-                    Err(e) => ("failed".to_string(), Some(e.clone())),
+                    (final_status, final_error)
+                } else {
+                    // ─── 普通模式: 单卡绑定 ───
+                    let card = card.as_ref().unwrap();
+                    let result = bind_single_account(
+                        &account_id, &email, &stripe_url,
+                        card, &captcha_cfg, &proxy,
+                        &custom_address, &custom_name, presolve_captcha, &app, &batch_id,
+                    ).await;
+
+                    match &result {
+                        Ok(data) => {
+                            let state = data.get("state").and_then(|v| v.as_str()).unwrap_or("unknown");
+                            if state == "succeeded" {
+                                ("success".to_string(), None)
+                            } else {
+                                ("failed".to_string(), Some(format!("state={}", state)))
+                            }
+                        }
+                        Err(e) => ("failed".to_string(), Some(e.clone())),
+                    }
                 };
 
                 // 更新状态
@@ -1489,12 +1630,18 @@ pub async fn stripe_bind_start(
             let _ = handle.await;
         }
 
+        if is_debug_mode {
+            let total_failures = failure_counter.load(Ordering::Relaxed);
+            emit_log(&app_clone, &batch_id_clone, "info", &format!(
+                "═══ 调试绑卡完成 (累计失败: {}/{}) ═══", total_failures, max_debug_failures));
+        } else {
+            emit_log(&app_clone, &batch_id_clone, "info", "═══ 所有绑卡任务已完成 ═══");
+        }
+
         // 通知前端批次完成
         let _ = app_clone.emit("stripe-bind-batch-done", json!({
             "task_id": batch_id_clone,
         }));
-
-        emit_log(&app_clone, &batch_id_clone, "info", "═══ 所有绑卡任务已完成 ═══");
     });
 
     Ok(json!({
