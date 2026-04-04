@@ -565,11 +565,14 @@ async fn solve_hcaptcha(
             "userAgent": USER_AGENT,
         });
 
-        let create_url = format!("{}/createTask", captcha_cfg.api_url);
+        let create_url = format!("{}/createTask", captcha_cfg.api_url.trim_end_matches('/'));
         let create_payload = json!({
             "clientKey": captcha_cfg.api_key,
             "task": task_body,
         });
+
+        emit_log(app, task_id, "debug", &format!("  [captcha] URL: {}", create_url));
+        emit_log(app, task_id, "debug", &format!("  [captcha] key: {}...{}", &captcha_cfg.api_key[..captcha_cfg.api_key.len().min(8)], &captcha_cfg.api_key[captcha_cfg.api_key.len().saturating_sub(6)..]));
 
         let http = reqwest::Client::new();
         let create_resp = http.post(&create_url)
@@ -584,7 +587,8 @@ async fn solve_hcaptcha(
 
         if data.get("errorId").and_then(|v| v.as_i64()).unwrap_or(1) != 0 {
             let desc = data.get("errorDescription").and_then(|v| v.as_str()).unwrap_or("?");
-            emit_log(app, task_id, "error", &format!("  任务创建失败: {}", desc));
+            let err_code = data.get("errorCode").and_then(|v| v.as_str()).unwrap_or("?");
+            emit_log(app, task_id, "error", &format!("  任务创建失败: {} (code: {}, full: {})", desc, err_code, data));
             tokio::time::sleep(std::time::Duration::from_secs(3)).await;
             continue;
         }
@@ -902,7 +906,7 @@ async fn handle_3ds(
                 ("challenge_response_token".into(), challenge_token),
                 ("captcha_vendor_name".into(), "hcaptcha".into()),
                 ("key".into(), KNOWN_PK.into()),
-                ("_stripe_version".into(), STRIPE_VERSION_FULL.into()),
+                ("_stripe_version".into(), STRIPE_VERSION_BASE.into()),
             ];
 
             let resp = client.post(&verify_url)
@@ -951,7 +955,7 @@ async fn handle_3ds(
                 ("challenge_response_token".into(), captcha_token.to_string()),
                 ("captcha_vendor_name".into(), "hcaptcha".into()),
                 ("key".into(), KNOWN_PK.into()),
-                ("_stripe_version".into(), STRIPE_VERSION_FULL.into()),
+                ("_stripe_version".into(), STRIPE_VERSION_BASE.into()),
             ];
 
             let resp = client.post(&verify_url)
@@ -1007,7 +1011,7 @@ async fn handle_3ds(
             ("one_click_authn_device_support[webauthn_eligible]".into(), "true".into()),
             ("one_click_authn_device_support[publickey_credentials_get_allowed]".into(), "true".into()),
             ("key".into(), KNOWN_PK.into()),
-            ("_stripe_version".into(), STRIPE_VERSION_FULL.into()),
+            ("_stripe_version".into(), STRIPE_VERSION_BASE.into()),
         ];
 
         let resp = client.post(&auth_url)
