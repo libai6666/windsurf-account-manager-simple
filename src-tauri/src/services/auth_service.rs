@@ -125,6 +125,7 @@ impl AuthService {
             .json(&request)
             .header("Content-Type", "application/json")
             .header("X-Client-Version", "Chrome/JsCore/11.0.0/FirebaseCore-web")
+            .header("Referer", "https://windsurf.com/")
             .send()
             .await
         {
@@ -252,6 +253,7 @@ impl AuthService {
             .post(&url)
             .json(&body)
             .header("Content-Type", "application/json")
+            .header("Referer", "https://windsurf.com/")
             .send()
             .await
         {
