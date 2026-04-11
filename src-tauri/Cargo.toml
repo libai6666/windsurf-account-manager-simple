@@ -46,6 +46,7 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 regex = "1.10"
 zip = "0.6"
 urlencoding = "2.1"
+headless_chrome = "1.0"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"

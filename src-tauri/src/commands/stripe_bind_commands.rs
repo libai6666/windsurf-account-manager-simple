@@ -13,6 +13,7 @@ use once_cell::sync::Lazy;
 use rand::Rng;
 use base64::{Engine as _, engine::general_purpose};
 use reqwest::header::{HeaderMap, HeaderValue};
+use std::ffi::OsStr;
 
 // ─── 全局任务状态管理 ───────────────────────────────────────────
 static BIND_TASKS: Lazy<Mutex<HashMap<String, BindTaskState>>> =
@@ -77,6 +78,17 @@ pub struct StripeBindRequest {
     pub debug_cards: Option<Vec<CardInfo>>,
     pub max_debug_failures: Option<u32>,
     pub presolve_captcha: Option<bool>,
+}
+
+// ─── PX 令牌结构 ────────────────────────────────────────────
+#[derive(Debug, Clone, Default)]
+struct PxTokens {
+    px3: String,
+    pxvid: String,
+    pxcts: String,
+    js_checksum: String,
+    rv_timestamp: String,
+    stripe_version_hash: String,
 }
 
 // ─── 常量 ───────────────────────────────────────────────────
@@ -153,6 +165,156 @@ fn generate_random_email() -> String {
         })
         .collect();
     format!("{}@{}", user, domains[rng.gen_range(0..domains.len())])
+}
+
+// ─── 获取当前 Stripe.js 版本哈希 ────────────────────────────────
+async fn fetch_stripe_js_version() -> String {
+    let url = "https://js.stripe.com/v3/.deploy_status_henson.json";
+    if let Ok(resp) = reqwest::Client::new()
+        .get(url)
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+    {
+        if let Ok(data) = resp.json::<serde_json::Value>().await {
+            if let Some(v) = data.get("version").and_then(|v| v.as_str()) {
+                return v.to_string();
+            }
+        }
+    }
+    "d0116183d3".to_string() // fallback to known recent version
+}
+
+// ─── 通过无头浏览器获取 PerimeterX 令牌 ─────────────────────────
+async fn fetch_px_tokens(
+    checkout_url: &str,
+    app: &AppHandle,
+    task_id: &str,
+) -> Result<PxTokens, String> {
+    emit_log(app, task_id, "info", "  [PX] 正在启动浏览器获取反机器人令牌 ...");
+
+    let url = checkout_url.to_string();
+
+    let tokens = tokio::task::spawn_blocking(move || -> Result<PxTokens, String> {
+        use headless_chrome::{Browser, LaunchOptions};
+
+        let launch_options = LaunchOptions {
+            headless: true,
+            sandbox: false,
+            window_size: Some((1920, 1080)),
+            args: vec![
+                OsStr::new("--disable-blink-features=AutomationControlled"),
+                OsStr::new("--disable-features=IsolateOrigins,site-per-process"),
+                OsStr::new("--disable-web-security"),
+                OsStr::new("--no-first-run"),
+                OsStr::new("--disable-extensions"),
+            ],
+            ..Default::default()
+        };
+
+        let browser = Browser::new(launch_options)
+            .map_err(|e| format!("启动浏览器失败 (请确保已安装 Chrome/Edge): {}", e))?;
+
+        let tab = browser.new_tab()
+            .map_err(|e| format!("创建标签页失败: {}", e))?;
+
+        // 隐藏 webdriver 特征
+        let _ = tab.evaluate(
+            r#"Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"#,
+            false,
+        );
+
+        tab.set_user_agent(USER_AGENT, None, None)
+            .map_err(|e| format!("设置 UA 失败: {}", e))?;
+
+        tab.navigate_to(&url)
+            .map_err(|e| format!("导航失败: {}", e))?;
+
+        // 等待页面基本加载
+        let _ = tab.wait_for_element_with_custom_timeout("button", std::time::Duration::from_secs(15));
+
+        // 等待 PX 脚本执行生成令牌
+        std::thread::sleep(std::time::Duration::from_secs(8));
+
+        // 提取 cookies
+        let cookies = tab.get_cookies()
+            .map_err(|e| format!("获取 cookies 失败: {}", e))?;
+
+        let px3 = cookies.iter()
+            .find(|c| c.name == "_px3")
+            .map(|c| c.value.clone())
+            .unwrap_or_default();
+
+        let pxvid = cookies.iter()
+            .find(|c| c.name == "_pxvid")
+            .map(|c| c.value.clone())
+            .unwrap_or_default();
+
+        // pxcts 是一个 UUID 时间戳
+        let pxcts = Uuid::new_v4().to_string();
+
+        // 尝试提取 js_checksum (Stripe.js 内部生成)
+        let js_checksum = tab.evaluate(
+            r#"
+            (function() {
+                try {
+                    // 尝试从 Stripe 内部状态获取
+                    var scripts = document.querySelectorAll('script[src*="js.stripe.com"]');
+                    for (var i = 0; i < scripts.length; i++) {
+                        var m = scripts[i].src.match(/\/v3\/([a-f0-9]+)\//);
+                        if (m) return m[1];
+                    }
+                } catch(e) {}
+                return '';
+            })()
+            "#,
+            false,
+        ).ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_str().map(|s| s.to_string()))
+            .unwrap_or_default();
+
+        // 提取 Stripe.js 版本哈希
+        let stripe_version = tab.evaluate(
+            r#"
+            (function() {
+                try {
+                    var scripts = document.querySelectorAll('script[src]');
+                    for (var i = 0; i < scripts.length; i++) {
+                        var m = scripts[i].src.match(/js\.stripe\.com\/v3\/([a-f0-9]{8,})\//);
+                        if (m) return m[1];
+                    }
+                } catch(e) {}
+                return '';
+            })()
+            "#,
+            false,
+        ).ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_str().map(|s| s.to_string()))
+            .unwrap_or_default();
+
+        Ok(PxTokens {
+            px3,
+            pxvid,
+            pxcts,
+            js_checksum,
+            rv_timestamp: String::new(),
+            stripe_version_hash: stripe_version,
+        })
+    }).await.map_err(|e| format!("浏览器任务异常: {}", e))??;
+
+    if tokens.px3.is_empty() {
+        emit_log(app, task_id, "warn", "  [PX] 未获取到 px3 令牌，confirm 可能被拦截");
+    } else {
+        emit_log(app, task_id, "info", &format!(
+            "  [PX] 令牌获取成功: px3={}字符, pxvid={}",
+            tokens.px3.len(),
+            if tokens.pxvid.is_empty() { "(空)" } else { &tokens.pxvid[..tokens.pxvid.len().min(20)] }
+        ));
+    }
+
+    Ok(tokens)
 }
 
 // ─── 日志发送辅助 ─────────────────────────────────────────────
@@ -691,7 +853,7 @@ async fn create_payment_method(
         ("muid".into(), muid.to_string()),
         ("sid".into(), sid.to_string()),
         ("key".into(), KNOWN_PK.into()),
-        ("payment_user_agent".into(), "stripe.js/67ff36ff76; stripe-js-v3/67ff36ff76; checkout".into()),
+        ("payment_user_agent".into(), format!("stripe.js/{}; stripe-js-v3/{}; checkout", "d0116183d3", "d0116183d3")),
         ("client_attribution_metadata[client_session_id]".into(), stripe_js_id.to_string()),
         ("client_attribution_metadata[checkout_session_id]".into(), session_id.to_string()),
         ("client_attribution_metadata[merchant_integration_source]".into(), "checkout".into()),
@@ -743,6 +905,8 @@ async fn confirm_payment(
     stripe_js_id: &str,
     elements_session_id: &str,
     captcha_cfg: &CaptchaConfig,
+    px_tokens: &PxTokens,
+    stripe_ver: &str,
     app: &AppHandle,
     task_id: &str,
 ) -> Result<serde_json::Value, String> {
@@ -782,19 +946,45 @@ async fn confirm_payment(
         ("muid".into(), muid.to_string()),
         ("sid".into(), sid.to_string()),
         ("key".into(), KNOWN_PK.into()),
-        ("version".into(), "6f8494a281".into()),
+        ("version".into(), stripe_ver.to_string()),
         ("init_checksum".into(), init_checksum.to_string()),
-        ("client_attribution_metadata[client_session_id]".into(), stripe_js_id.to_string()),
-        ("client_attribution_metadata[checkout_session_id]".into(), session_id.to_string()),
-        ("client_attribution_metadata[merchant_integration_source]".into(), "checkout".into()),
-        ("client_attribution_metadata[merchant_integration_version]".into(), "hosted_checkout".into()),
-        ("client_attribution_metadata[payment_method_selection_flow]".into(), "merchant_specified".into()),
-        ("client_attribution_metadata[checkout_config_id]".into(), config_id.to_string()),
     ];
 
+    // js_checksum 是 Stripe.js 完整性校验 (浏览器必发)
+    if !px_tokens.js_checksum.is_empty() {
+        data.push(("js_checksum".into(), px_tokens.js_checksum.clone()));
+    }
+
+    // 添加 PerimeterX 反机器人令牌 (浏览器在 confirm 中发送这些字段)
+    if !px_tokens.px3.is_empty() {
+        data.push(("px3".into(), px_tokens.px3.clone()));
+    }
+    if !px_tokens.pxvid.is_empty() {
+        data.push(("pxvid".into(), px_tokens.pxvid.clone()));
+    }
+    if !px_tokens.pxcts.is_empty() {
+        data.push(("pxcts".into(), px_tokens.pxcts.clone()));
+    }
+
+    // passive_captcha_token: 浏览器在 confirm 前自动解 hCaptcha 获取的被动令牌
     if !captcha_token.is_empty() {
         data.push(("passive_captcha_token".into(), captcha_token.to_string()));
     }
+    // passive_captcha_ekey: 浏览器始终发送此字段 (通常为空)
+    data.push(("passive_captcha_ekey".into(), "".into()));
+
+    // rv_timestamp: Stripe.js 会话完整性时间戳
+    if !px_tokens.rv_timestamp.is_empty() {
+        data.push(("rv_timestamp".into(), px_tokens.rv_timestamp.clone()));
+    }
+
+    // client_attribution_metadata: 浏览器在 confirm 中也发送这些字段
+    data.push(("client_attribution_metadata[client_session_id]".into(), stripe_js_id.to_string()));
+    data.push(("client_attribution_metadata[checkout_session_id]".into(), session_id.to_string()));
+    data.push(("client_attribution_metadata[merchant_integration_source]".into(), "checkout".into()));
+    data.push(("client_attribution_metadata[merchant_integration_version]".into(), "hosted_checkout".into()));
+    data.push(("client_attribution_metadata[payment_method_selection_flow]".into(), "merchant_specified".into()));
+    data.push(("client_attribution_metadata[checkout_config_id]".into(), config_id.to_string()));
 
     let url = format!("{}/v1/payment_pages/{}/confirm", STRIPE_API, session_id);
     emit_log(app, task_id, "info", "[5/6] 确认支付 (confirm) ...");
@@ -1288,12 +1478,47 @@ async fn bind_single_account(
         }
     };
 
+    // Step 4.5: 获取 PX 反机器人令牌 (在 confirm 之前)
+    emit_log(app, task_id, "info", "[4.5/6] 获取反机器人令牌 ...");
+    let px_tokens = match fetch_px_tokens(stripe_url, app, task_id).await {
+        Ok(t) => t,
+        Err(e) => {
+            emit_log(app, task_id, "warn", &format!("  PX 令牌获取失败: {}, 将不带令牌继续", &e[..e.len().min(100)]));
+            PxTokens::default()
+        }
+    };
+
+    // 获取当前 stripe.js 版本 (优先用 PX 浏览器提取的，否则动态获取)
+    let dynamic_stripe_ver = if !px_tokens.stripe_version_hash.is_empty() {
+        px_tokens.stripe_version_hash.clone()
+    } else {
+        fetch_stripe_js_version().await
+    };
+    emit_log(app, task_id, "debug", &format!("  stripe.js version: {}", dynamic_stripe_ver));
+
+    // 确保 confirm 前有 passive_captcha_token (浏览器始终发送此字段)
+    let passive_captcha_token = if captcha_token.is_empty() {
+        emit_log(app, task_id, "info", "[4.6/6] 解被动 hCaptcha (用于 confirm) ...");
+        match solve_hcaptcha(captcha_cfg, HCAPTCHA_SITE_KEY_FALLBACK, app, task_id).await {
+            Ok((token, _ekey)) => {
+                emit_log(app, task_id, "info", &format!("  被动 captcha 已解决 ({}字符)", token.len()));
+                token
+            }
+            Err(e) => {
+                emit_log(app, task_id, "warn", &format!("  被动 captcha 失败: {}, 继续...", &e[..e.len().min(80)]));
+                String::new()
+            }
+        }
+    } else {
+        captcha_token.clone()
+    };
+
     // Step 5: confirm
     emit_progress(app, task_id, account_id, 5, "确认支付", "running");
     let confirm_result = confirm_payment(
-        &client, &session_id, &pm_id, &captcha_token, &init_resp,
+        &client, &session_id, &pm_id, &passive_captcha_token, &init_resp,
         &guid, &muid, &sid, &stripe_js_id, &elements_session_id,
-        captcha_cfg, app, task_id,
+        captcha_cfg, &px_tokens, &dynamic_stripe_ver, app, task_id,
     ).await;
 
     match confirm_result {
@@ -1307,7 +1532,7 @@ async fn bind_single_account(
             confirm_payment(
                 &client, &session_id, &pm_id, &solved_token, &init_resp,
                 &guid, &muid, &sid, &stripe_js_id, &elements_session_id,
-                captcha_cfg, app, task_id,
+                captcha_cfg, &px_tokens, &dynamic_stripe_ver, app, task_id,
             ).await?;
         },
         Err(e) => return Err(e),
