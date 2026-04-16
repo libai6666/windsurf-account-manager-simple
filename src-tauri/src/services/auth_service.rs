@@ -328,12 +328,19 @@ impl AuthService {
         Utc::now() + buffer >= *expires_at
     }
 
-    /// Windsurf 2.0 兼容登录：返回与旧 sign_in 相同的 (token, refresh_token, expires_at) 格式
-    /// token = session_token（用于 API 调用），refresh_token = auth1_token（用于后续刷新）
+    /// 兼容登录：先尝试 Windsurf 2.0 (devin-auth)，失败则回退到 Firebase
+    /// 返回与旧 sign_in 相同的 (token, refresh_token, expires_at) 格式
     pub async fn sign_in_compat(&self, email: &str, password: &str) -> AppResult<(String, String, DateTime<Utc>)> {
-        let result = self.sign_in_v2(email, password).await?;
-        let expires_at = Utc::now() + Duration::hours(1);
-        Ok((result.session_token, result.auth1_token, expires_at))
+        match self.sign_in_v2(email, password).await {
+            Ok(result) => {
+                let expires_at = Utc::now() + Duration::hours(1);
+                Ok((result.session_token, result.auth1_token, expires_at))
+            }
+            Err(e) => {
+                info!("[sign_in_compat] sign_in_v2 失败({}), 回退到 Firebase: {}", e, email);
+                self.sign_in(email, password).await
+            }
+        }
     }
 
     // ============= Windsurf 2.0 新认证方法 =============

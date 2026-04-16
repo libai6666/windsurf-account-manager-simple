@@ -2,6 +2,7 @@ use crate::models::{Account, OperationLog, OperationType, OperationStatus};
 use crate::repository::DataStore;
 use crate::services::{AuthService, WindsurfService, UpdateSeatsResult};
 use crate::utils::AppError;
+use log::info;
 use serde_json::json;
 use std::sync::Arc;
 use tauri::State;
@@ -115,18 +116,23 @@ pub async fn login_account(
         .await
         .map_err(|e| e.to_string())?;
     
-    // 登录获取Token (Windsurf 2.0: devin-auth 流程)
+    // 登录获取Token：先尝试 Windsurf 2.0 (devin-auth)，失败则回退到 Firebase
     let auth_service = AuthService::new();
-    let auth_result = auth_service.sign_in_v2(&account.email, &password)
-        .await
-        .map_err(|e| e.to_string())?;
-    
-    // session_token 用于 API 调用，auth1_token 用于后续刷新
-    let token = auth_result.session_token.clone();
-    let expires_at = chrono::Utc::now() + chrono::Duration::hours(1);
+    let (token, refresh_token, expires_at) = match auth_service.sign_in_v2(&account.email, &password).await {
+        Ok(auth_result) => {
+            info!("[login_account] sign_in_v2 成功: {}", account.email);
+            (auth_result.session_token, auth_result.auth1_token, chrono::Utc::now() + chrono::Duration::hours(1))
+        }
+        Err(e) => {
+            info!("[login_account] sign_in_v2 失败({}), 回退到 Firebase: {}", e, account.email);
+            auth_service.sign_in(&account.email, &password)
+                .await
+                .map_err(|e| e.to_string())?
+        }
+    };
     
     // 更新Token和Refresh Token
-    store.update_account_tokens(uuid, token.clone(), auth_result.auth1_token.clone(), expires_at)
+    store.update_account_tokens(uuid, token.clone(), refresh_token, expires_at)
         .await
         .map_err(|e| e.to_string())?;
     
