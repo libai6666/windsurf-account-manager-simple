@@ -42,7 +42,8 @@ export async function getTrialPaymentLink(
   paymentPeriod: number,
   teamName?: string,
   seatCount?: number,
-  turnstileToken?: string
+  turnstileToken?: string,
+  accountId?: string
 ): Promise<any> {
   return await invoke('get_trial_payment_link_enhanced', {
     accountName,
@@ -52,7 +53,8 @@ export async function getTrialPaymentLink(
     paymentPeriod,
     teamName,
     seatCount,
-    turnstileToken
+    turnstileToken,
+    accountId
   });
 }
 

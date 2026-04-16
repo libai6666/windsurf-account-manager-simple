@@ -1303,7 +1303,8 @@ async function handleTurnstileSuccess(turnstileToken: string) {
         paymentPeriod,
         teamName,
         teamsTier === 1 ? seatCount : undefined, // Teams 需要席位
-        turnstileToken || undefined // Pro 需要 Turnstile token
+        turnstileToken || undefined, // Pro 需要 Turnstile token
+        account.id // 传入账号ID，后端会自动刷新token
       );
       
       if (result.success && result.window_opened) {

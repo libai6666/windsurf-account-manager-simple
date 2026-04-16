@@ -517,6 +517,34 @@ impl AuthService {
             email: String::new(),
         })
     }
+
+    /// 用现有的 session_token 获取一个新的 OTT（一次性令牌）
+    pub async fn get_fresh_ott(&self, session_token: &str) -> AppResult<String> {
+        let ott_body = encode_protobuf_string(1, session_token);
+        let ott_resp = self.client
+            .post("https://windsurf.com/_backend/exa.seat_management_pb.SeatManagementService/GetOneTimeAuthToken")
+            .header("Content-Type", "application/proto")
+            .header("Connect-Protocol-Version", "1")
+            .body(ott_body)
+            .send()
+            .await
+            .map_err(|e| AppError::Network(format!("GetOneTimeAuthToken failed: {}", e)))?;
+
+        if !ott_resp.status().is_success() {
+            let error_text = ott_resp.text().await.unwrap_or_default();
+            return Err(AppError::Api(format!("GetOneTimeAuthToken error: {}", error_text)));
+        }
+
+        let ott_bytes = ott_resp.bytes().await
+            .map_err(|e| AppError::Api(format!("Failed to read OTT response: {}", e)))?;
+        let ott_fields = parse_protobuf_fields(&ott_bytes);
+        let ott = ott_fields.get(&1)
+            .ok_or_else(|| AppError::Api("Missing OTT in response".to_string()))?
+            .clone();
+
+        info!("[get_fresh_ott] New OTT={}...", &ott[..std::cmp::min(ott.len(), 20)]);
+        Ok(ott)
+    }
 }
 
 // ============= Protobuf 编解码工具 =============

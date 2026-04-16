@@ -1697,18 +1697,24 @@ pub async fn get_trial_payment_link(
         .map_err(|e| e.to_string())?;
 
     // 确保有有效的Token
-    ensure_valid_token(&store, &mut account, uuid).await?;
+    // 新账号 (auth1_) 强制刷新，SubscribeToPlan 需要新鲜的 session_token
+    let force = account.refresh_token.as_ref().map_or(false, |rt| rt.starts_with("auth1_"));
+    ensure_valid_token_with_force(&store, &mut account, uuid, force).await?;
 
     let token = account.token.ok_or("No token available")?;
+    let refresh_token = account.refresh_token.clone();
 
     // 默认值
     let final_teams_tier = teams_tier.unwrap_or(2); // 默认 Pro
     let final_payment_period = payment_period.unwrap_or(1); // 默认月付
 
     // 调用Windsurf API获取支付链接
+    // 如果 refresh_token 是 auth1_ 开头，传给 subscribe_to_plan 做 Bearer 认证
+    let auth1 = refresh_token.as_deref().filter(|t| t.starts_with("auth1_"));
     let windsurf_service = WindsurfService::new();
     let result = windsurf_service.subscribe_to_plan(
-        &token, 
+        &token,
+        auth1,
         final_teams_tier,
         final_payment_period,
         team_name.as_deref(),

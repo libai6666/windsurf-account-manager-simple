@@ -232,15 +232,17 @@ async fn get_auth_token(refresh_token: &str) -> AppResult<(RegisterUserResult, S
         let auth_service = crate::services::auth_service::AuthService::new();
         let auth_result = auth_service.refresh_ott(refresh_token).await?;
         
-        // 用 OTT 调用 RegisterUser
+        // 用第一个 OTT 调用 RegisterUser（会消耗该 OTT）
         let register_result = call_register_user(&auth_result.ott).await?;
         info!("RegisterUser SUCCESS (via devin-auth): apiKey={}..., name={}, server={}", 
             &register_result.api_key[..std::cmp::min(register_result.api_key.len(), 20)],
             register_result.name,
             register_result.api_server_url);
         
-        // session_token 作为 id_token（用于回调），auth1_token 作为 access_token
-        Ok((register_result, auth_result.ott, auth_result.session_token, "3600".to_string()))
+        // 获取第二个 OTT 用于编辑器回调（OTT 是一次性的，第一个已被 RegisterUser 消耗）
+        let callback_ott = auth_service.get_fresh_ott(&auth_result.session_token).await?;
+        
+        Ok((register_result, callback_ott, auth_result.session_token, "3600".to_string()))
     } else {
         // 传统 Firebase refresh token 流程
         let token_response = refresh_access_token(refresh_token).await?;
