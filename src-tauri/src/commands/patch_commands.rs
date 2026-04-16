@@ -186,7 +186,7 @@ pub async fn apply_seamless_patch(
         // 检查两个变量名是否相同
         if var_name1 == var_name2 {
             let replacement = format!(
-                r#"this._uriHandler.event(async {}=>{{if("/refresh-authentication-session"==={}.path){{(0,{}.refreshAuthenticationSession)()}}else{{try{{const t=u.handleUri({});await this.handleAuthToken(t)}}catch(e){{console.error("[Windsurf] Failed to handle OAuth callback:",e)}}}}}})"#,
+                r#"this._uriHandler.event(async {}=>{{if("/refresh-authentication-session"==={}.path){{(0,{}.refreshAuthenticationSession)()}}else{{try{{const t=new URLSearchParams({}.fragment).get("access_token");if(null===t)throw new Error("No token");await this.handleAuthToken(t)}}catch(e){{console.error("[Windsurf] Failed to handle OAuth callback:",e)}}}}}})"#,
                 var_name1, var_name1, module_name, var_name1
             );
             
@@ -482,7 +482,25 @@ async fn restart_windsurf(windsurf_path: Option<&str>) -> Result<(), String> {
         
         std::thread::sleep(std::time::Duration::from_secs(2));
         
-        // 2. 启动Windsurf
+        // 2. 优先使用已知路径启动
+        if let Some(path) = windsurf_path {
+            let app_path = PathBuf::from(path);
+            if app_path.exists() {
+                match Command::new("open")
+                    .args(&["-a", &app_path.to_string_lossy()])
+                    .spawn() {
+                    Ok(_) => {
+                        println!("通过已知路径启动Windsurf: {:?}", app_path);
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        println!("直接启动失败，尝试默认方式: {}", e);
+                    }
+                }
+            }
+        }
+        
+        // 3. 回退：使用默认方式启动
         Command::new("open")
             .args(&["-a", "Windsurf"])
             .spawn()
@@ -501,7 +519,23 @@ async fn restart_windsurf(windsurf_path: Option<&str>) -> Result<(), String> {
         
         std::thread::sleep(std::time::Duration::from_secs(2));
         
-        // 2. 启动Windsurf
+        // 2. 优先使用已知路径启动
+        if let Some(path) = windsurf_path {
+            let exe_path = PathBuf::from(path).join("windsurf");
+            if exe_path.exists() {
+                match Command::new(&exe_path).spawn() {
+                    Ok(_) => {
+                        println!("通过已知路径启动Windsurf: {:?}", exe_path);
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        println!("直接启动失败，尝试默认方式: {}", e);
+                    }
+                }
+            }
+        }
+        
+        // 3. 回退：使用默认方式启动
         Command::new("windsurf")
             .spawn()
             .map_err(|e| format!("启动Windsurf失败: {}", e))?;

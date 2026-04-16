@@ -14,10 +14,6 @@ pub struct WindsurfCurrentInfo {
     pub team_id: Option<String>,
     pub version: Option<String>,
     pub is_active: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub remaining_usage: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub total_usage: Option<i64>,
 }
 
 /// 旧版 windsurfAuthStatus 格式（含email/name字段）
@@ -47,17 +43,6 @@ struct WindsurfAuthStatusNew {
 struct CachedPlanInfo {
     #[serde(rename = "planName")]
     plan_name: Option<String>,
-    usage: Option<PlanUsage>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct PlanUsage {
-    #[serde(default)]
-    messages: Option<i64>,
-    #[serde(rename = "usedMessages", default)]
-    used_messages: Option<i64>,
-    #[serde(rename = "remainingMessages", default)]
-    remaining_messages: Option<i64>,
 }
 
 /// 从 protobuf binary 中提取可打印字符串（简易解码，不依赖proto schema）
@@ -192,7 +177,6 @@ pub fn get_current_windsurf_info() -> Result<WindsurfCurrentInfo, AppError> {
         return Ok(WindsurfCurrentInfo {
             email: None, name: None, api_key: None, plan_name: None,
             team_id: None, version: None, is_active: false,
-            remaining_usage: None, total_usage: None,
         });
     }
     
@@ -226,7 +210,6 @@ pub fn get_current_windsurf_info() -> Result<WindsurfCurrentInfo, AppError> {
     let mut info = WindsurfCurrentInfo {
         email: None, name: None, api_key: None, plan_name: None,
         team_id: None, version, is_active: false,
-        remaining_usage: None, total_usage: None,
     };
     
     if let Some(ref auth) = auth_json {
@@ -301,10 +284,6 @@ pub fn get_current_windsurf_info() -> Result<WindsurfCurrentInfo, AppError> {
             // 只在还没有 plan_name 时才覆盖
             if info.plan_name.is_none() {
                 info.plan_name = plan.plan_name;
-            }
-            if let Some(usage) = plan.usage {
-                info.remaining_usage = usage.remaining_messages;
-                info.total_usage = usage.messages;
             }
         }
     }
