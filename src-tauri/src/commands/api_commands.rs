@@ -2,6 +2,7 @@ use crate::models::{Account, OperationLog, OperationType, OperationStatus};
 use crate::repository::DataStore;
 use crate::services::{AuthService, WindsurfService, UpdateSeatsResult};
 use crate::utils::AppError;
+use log::info;
 use serde_json::json;
 use std::sync::Arc;
 use tauri::State;
@@ -70,7 +71,7 @@ pub async fn ensure_valid_token_with_force(
                 let password = store.get_decrypted_password(uuid)
                     .await
                     .map_err(|e| e.to_string())?;
-                auth_service.sign_in(&account.email, &password)
+                auth_service.sign_in_compat(&account.email, &password)
                     .await
                     .map_err(|e| e.to_string())?
             }
@@ -80,7 +81,7 @@ pub async fn ensure_valid_token_with_force(
         let password = store.get_decrypted_password(uuid)
             .await
             .map_err(|e| e.to_string())?;
-        auth_service.sign_in(&account.email, &password)
+        auth_service.sign_in_compat(&account.email, &password)
             .await
             .map_err(|e| e.to_string())?
     };
@@ -115,11 +116,20 @@ pub async fn login_account(
         .await
         .map_err(|e| e.to_string())?;
     
-    // 登录获取Token
+    // 登录获取Token：先尝试 Windsurf 2.0 (devin-auth)，失败则回退到 Firebase
     let auth_service = AuthService::new();
-    let (token, refresh_token, expires_at) = auth_service.sign_in(&account.email, &password)
-        .await
-        .map_err(|e| e.to_string())?;
+    let (token, refresh_token, expires_at) = match auth_service.sign_in_v2(&account.email, &password).await {
+        Ok(auth_result) => {
+            info!("[login_account] sign_in_v2 成功: {}", account.email);
+            (auth_result.session_token, auth_result.auth1_token, chrono::Utc::now() + chrono::Duration::hours(1))
+        }
+        Err(e) => {
+            info!("[login_account] sign_in_v2 失败({}), 回退到 Firebase: {}", e, account.email);
+            auth_service.sign_in(&account.email, &password)
+                .await
+                .map_err(|e| e.to_string())?
+        }
+    };
     
     // 更新Token和Refresh Token
     store.update_account_tokens(uuid, token.clone(), refresh_token, expires_at)
@@ -316,7 +326,7 @@ pub async fn refresh_token(
                 let password = store.get_decrypted_password(uuid)
                     .await
                     .map_err(|e| e.to_string())?;
-                auth_service.sign_in(&account.email, &password)
+                auth_service.sign_in_compat(&account.email, &password)
                     .await
                     .map_err(|e| e.to_string())?
             }
@@ -326,7 +336,7 @@ pub async fn refresh_token(
         let password = store.get_decrypted_password(uuid)
             .await
             .map_err(|e| e.to_string())?;
-        auth_service.sign_in(&account.email, &password)
+        auth_service.sign_in_compat(&account.email, &password)
             .await
             .map_err(|e| e.to_string())?
     };
@@ -1544,12 +1554,12 @@ async fn refresh_token_internal(
             Ok(result) => result,
             Err(_) => {
                 let password = store.get_decrypted_password(uuid).await.map_err(|e| e.to_string())?;
-                auth_service.sign_in(&account.email, &password).await.map_err(|e| e.to_string())?
+                auth_service.sign_in_compat(&account.email, &password).await.map_err(|e| e.to_string())?
             }
         }
     } else {
         let password = store.get_decrypted_password(uuid).await.map_err(|e| e.to_string())?;
-        auth_service.sign_in(&account.email, &password).await.map_err(|e| e.to_string())?
+        auth_service.sign_in_compat(&account.email, &password).await.map_err(|e| e.to_string())?
     };
     
     // 使用延迟保存的方法更新 token
