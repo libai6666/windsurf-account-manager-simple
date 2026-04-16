@@ -461,32 +461,44 @@ async fn trigger_windsurf_callback(app: &tauri::AppHandle, auth_token: &str) -> 
     
     info!("Triggering Windsurf callback: windsurf://codeium.windsurf#access_token=<hidden>&state={}&token_type=Bearer", state);
     
-    // 使用 Windsurf CLI --open-url 直接传递给运行中的 Windsurf 实例（避免 ShellExecuteW 弹出 Git Bash）
-    if let Some(exe_path) = find_windsurf_exe() {
-        use std::os::windows::process::CommandExt;
-        let output = std::process::Command::new(&exe_path)
-            .arg("--open-url")
-            .arg(&callback_url)
-            .creation_flags(0x08000000) // CREATE_NO_WINDOW
-            .output();
-        match output {
-            Ok(o) => {
-                if !o.status.success() {
-                    let stderr = String::from_utf8_lossy(&o.stderr);
-                    warn!("Windsurf --open-url exited with {}: {}", o.status, stderr.trim());
+    // Windows: 使用 Windsurf CLI --open-url 直接传递给运行中的 Windsurf 实例（避免 ShellExecuteW 弹出 Git Bash）
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(exe_path) = find_windsurf_exe() {
+            use std::os::windows::process::CommandExt;
+            let output = std::process::Command::new(&exe_path)
+                .arg("--open-url")
+                .arg(&callback_url)
+                .creation_flags(0x08000000) // CREATE_NO_WINDOW
+                .output();
+            match output {
+                Ok(o) => {
+                    if !o.status.success() {
+                        let stderr = String::from_utf8_lossy(&o.stderr);
+                        warn!("Windsurf --open-url exited with {}: {}", o.status, stderr.trim());
+                    }
+                    info!("Successfully triggered Windsurf callback via CLI");
                 }
-                info!("Successfully triggered Windsurf callback via CLI");
+                Err(e) => {
+                    warn!("Windsurf CLI failed ({}), falling back to opener", e);
+                    use tauri_plugin_opener::OpenerExt;
+                    app.opener()
+                        .open_url(&callback_url, None::<&str>)
+                        .map_err(|e| AppError::FileOperation(format!("Failed to open URL: {}", e)))?;
+                }
             }
-            Err(e) => {
-                warn!("Windsurf CLI failed ({}), falling back to opener", e);
-                use tauri_plugin_opener::OpenerExt;
-                app.opener()
-                    .open_url(&callback_url, None::<&str>)
-                    .map_err(|e| AppError::FileOperation(format!("Failed to open URL: {}", e)))?;
-            }
+        } else {
+            // 找不到 Windsurf 可执行文件时回退到 opener
+            use tauri_plugin_opener::OpenerExt;
+            app.opener()
+                .open_url(&callback_url, None::<&str>)
+                .map_err(|e| AppError::FileOperation(format!("Failed to open URL: {}", e)))?;
         }
-    } else {
-        // 找不到 Windsurf 可执行文件时回退到 opener
+    }
+    
+    // macOS/Linux: 直接使用 opener 打开回调URL
+    #[cfg(not(target_os = "windows"))]
+    {
         use tauri_plugin_opener::OpenerExt;
         app.opener()
             .open_url(&callback_url, None::<&str>)
