@@ -220,19 +220,40 @@ async fn call_register_user(id_token: &str) -> AppResult<RegisterUserResult> {
         .ok_or_else(|| AppError::ApiRequest("Failed to parse RegisterUser response".to_string()))
 }
 
-/// 获取 Firebase token 并调用 RegisterUser
+/// 获取 auth token 并调用 RegisterUser
+/// 支持两种 refresh_token 类型：
+/// - auth1_... : Windsurf 2.0 devin-auth token → WindsurfPostAuth → GetOneTimeAuthToken → RegisterUser
+/// - 其他 : Firebase refresh token → securetoken refresh → RegisterUser
 /// 返回 (RegisterUserResult, id_token, access_token, expires_in)
 async fn get_auth_token(refresh_token: &str) -> AppResult<(RegisterUserResult, String, String, String)> {
-    let token_response = refresh_access_token(refresh_token).await?;
-    info!("Successfully obtained Firebase ID token, calling RegisterUser...");
-    
-    let register_result = call_register_user(&token_response.id_token).await?;
-    info!("RegisterUser SUCCESS: apiKey={}..., name={}, server={}", 
-        &register_result.api_key[..std::cmp::min(register_result.api_key.len(), 20)],
-        register_result.name,
-        register_result.api_server_url);
-    
-    Ok((register_result, token_response.id_token, token_response.access_token, token_response.expires_in))
+    if refresh_token.starts_with("auth1_") {
+        // Windsurf 2.0 devin-auth 流程
+        info!("Using devin-auth flow (auth1_ token detected)...");
+        let auth_service = crate::services::auth_service::AuthService::new();
+        let auth_result = auth_service.refresh_ott(refresh_token).await?;
+        
+        // 用 OTT 调用 RegisterUser
+        let register_result = call_register_user(&auth_result.ott).await?;
+        info!("RegisterUser SUCCESS (via devin-auth): apiKey={}..., name={}, server={}", 
+            &register_result.api_key[..std::cmp::min(register_result.api_key.len(), 20)],
+            register_result.name,
+            register_result.api_server_url);
+        
+        // session_token 作为 id_token（用于回调），auth1_token 作为 access_token
+        Ok((register_result, auth_result.ott, auth_result.session_token, "3600".to_string()))
+    } else {
+        // 传统 Firebase refresh token 流程
+        let token_response = refresh_access_token(refresh_token).await?;
+        info!("Successfully obtained Firebase ID token, calling RegisterUser...");
+        
+        let register_result = call_register_user(&token_response.id_token).await?;
+        info!("RegisterUser SUCCESS: apiKey={}..., name={}, server={}", 
+            &register_result.api_key[..std::cmp::min(register_result.api_key.len(), 20)],
+            register_result.name,
+            register_result.api_server_url);
+        
+        Ok((register_result, token_response.id_token, token_response.access_token, token_response.expires_in))
+    }
 }
 
 /// 直接写入 Windsurf state.vscdb 完成账号切换（绕过回调URL）
@@ -436,13 +457,39 @@ async fn trigger_windsurf_callback(app: &tauri::AppHandle, auth_token: &str) -> 
     
     let callback_url = format!("windsurf://codeium.windsurf#{}", fragment);
     
-    info!("Triggering Windsurf callback: {}", callback_url);
+    info!("Triggering Windsurf callback: windsurf://codeium.windsurf#access_token=<hidden>&state={}&token_type=Bearer", state);
     
-    // 使用 tauri_plugin_opener 跨平台打开URL（Windows上直接调用ShellExecuteW，不依赖PATH中有PowerShell）
-    use tauri_plugin_opener::OpenerExt;
-    app.opener()
-        .open_url(&callback_url, None::<&str>)
-        .map_err(|e| AppError::FileOperation(format!("Failed to open URL: {}", e)))?;
+    // 使用 Windsurf CLI --open-url 直接传递给运行中的 Windsurf 实例（避免 ShellExecuteW 弹出 Git Bash）
+    if let Some(exe_path) = find_windsurf_exe() {
+        use std::os::windows::process::CommandExt;
+        let output = std::process::Command::new(&exe_path)
+            .arg("--open-url")
+            .arg(&callback_url)
+            .creation_flags(0x08000000) // CREATE_NO_WINDOW
+            .output();
+        match output {
+            Ok(o) => {
+                if !o.status.success() {
+                    let stderr = String::from_utf8_lossy(&o.stderr);
+                    warn!("Windsurf --open-url exited with {}: {}", o.status, stderr.trim());
+                }
+                info!("Successfully triggered Windsurf callback via CLI");
+            }
+            Err(e) => {
+                warn!("Windsurf CLI failed ({}), falling back to opener", e);
+                use tauri_plugin_opener::OpenerExt;
+                app.opener()
+                    .open_url(&callback_url, None::<&str>)
+                    .map_err(|e| AppError::FileOperation(format!("Failed to open URL: {}", e)))?;
+            }
+        }
+    } else {
+        // 找不到 Windsurf 可执行文件时回退到 opener
+        use tauri_plugin_opener::OpenerExt;
+        app.opener()
+            .open_url(&callback_url, None::<&str>)
+            .map_err(|e| AppError::FileOperation(format!("Failed to open URL: {}", e)))?;
+    }
     
     info!("Successfully triggered Windsurf callback");
     Ok(())

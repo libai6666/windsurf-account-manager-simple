@@ -70,7 +70,7 @@ pub async fn ensure_valid_token_with_force(
                 let password = store.get_decrypted_password(uuid)
                     .await
                     .map_err(|e| e.to_string())?;
-                auth_service.sign_in(&account.email, &password)
+                auth_service.sign_in_compat(&account.email, &password)
                     .await
                     .map_err(|e| e.to_string())?
             }
@@ -80,7 +80,7 @@ pub async fn ensure_valid_token_with_force(
         let password = store.get_decrypted_password(uuid)
             .await
             .map_err(|e| e.to_string())?;
-        auth_service.sign_in(&account.email, &password)
+        auth_service.sign_in_compat(&account.email, &password)
             .await
             .map_err(|e| e.to_string())?
     };
@@ -115,14 +115,18 @@ pub async fn login_account(
         .await
         .map_err(|e| e.to_string())?;
     
-    // 登录获取Token
+    // 登录获取Token (Windsurf 2.0: devin-auth 流程)
     let auth_service = AuthService::new();
-    let (token, refresh_token, expires_at) = auth_service.sign_in(&account.email, &password)
+    let auth_result = auth_service.sign_in_v2(&account.email, &password)
         .await
         .map_err(|e| e.to_string())?;
     
+    // session_token 用于 API 调用，auth1_token 用于后续刷新
+    let token = auth_result.session_token.clone();
+    let expires_at = chrono::Utc::now() + chrono::Duration::hours(1);
+    
     // 更新Token和Refresh Token
-    store.update_account_tokens(uuid, token.clone(), refresh_token, expires_at)
+    store.update_account_tokens(uuid, token.clone(), auth_result.auth1_token.clone(), expires_at)
         .await
         .map_err(|e| e.to_string())?;
     
@@ -294,7 +298,7 @@ pub async fn refresh_token(
                 let password = store.get_decrypted_password(uuid)
                     .await
                     .map_err(|e| e.to_string())?;
-                auth_service.sign_in(&account.email, &password)
+                auth_service.sign_in_compat(&account.email, &password)
                     .await
                     .map_err(|e| e.to_string())?
             }
@@ -304,7 +308,7 @@ pub async fn refresh_token(
         let password = store.get_decrypted_password(uuid)
             .await
             .map_err(|e| e.to_string())?;
-        auth_service.sign_in(&account.email, &password)
+        auth_service.sign_in_compat(&account.email, &password)
             .await
             .map_err(|e| e.to_string())?
     };
@@ -1498,12 +1502,12 @@ async fn refresh_token_internal(
             Ok(result) => result,
             Err(_) => {
                 let password = store.get_decrypted_password(uuid).await.map_err(|e| e.to_string())?;
-                auth_service.sign_in(&account.email, &password).await.map_err(|e| e.to_string())?
+                auth_service.sign_in_compat(&account.email, &password).await.map_err(|e| e.to_string())?
             }
         }
     } else {
         let password = store.get_decrypted_password(uuid).await.map_err(|e| e.to_string())?;
-        auth_service.sign_in(&account.email, &password).await.map_err(|e| e.to_string())?
+        auth_service.sign_in_compat(&account.email, &password).await.map_err(|e| e.to_string())?
     };
     
     // 使用延迟保存的方法更新 token
