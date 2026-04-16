@@ -26,41 +26,31 @@
           <span class="info-label">Windsurf 版本</span>
           <span class="info-value">{{ windsurfInfo.version || '未知' }}</span>
         </div>
-        <div class="info-item" v-if="windsurfInfo.remaining_usage !== undefined && windsurfInfo.remaining_usage !== null">
-          <span class="info-label">剩余额度</span>
-          <span class="info-value">
-            {{ windsurfInfo.remaining_usage }} / {{ windsurfInfo.total_usage || '?' }}
-          </span>
-        </div>
-        <div class="info-item" v-else-if="matchedAccount">
-          <span class="info-label">剩余额度</span>
-          <span class="info-value">
-            {{ matchedAccount.used_quota !== undefined && matchedAccount.total_quota !== undefined
-              ? `${matchedAccount.total_quota - matchedAccount.used_quota} / ${matchedAccount.total_quota}`
-              : '未知' }}
-          </span>
-        </div>
         <div class="info-item" v-if="matchedAccount">
           <span class="info-label">订阅到期</span>
           <span class="info-value">{{ formatExpiry(matchedAccount.subscription_expires_at) }}</span>
         </div>
-        <div class="info-item" v-if="matchedAccount?.daily_quota_remaining !== undefined">
-          <span class="info-label">每日配额</span>
-          <el-progress
-            :percentage="matchedAccount.daily_quota_remaining"
-            :stroke-width="14"
-            :color="getQuotaColor(matchedAccount.daily_quota_remaining)"
-            class="quota-progress"
-          />
-        </div>
-        <div class="info-item" v-if="matchedAccount?.weekly_quota_remaining !== undefined">
-          <span class="info-label">每周配额</span>
-          <el-progress
-            :percentage="matchedAccount.weekly_quota_remaining"
-            :stroke-width="14"
-            :color="getQuotaColor(matchedAccount.weekly_quota_remaining)"
-            class="quota-progress"
-          />
+        <div class="info-item quota-row" v-if="matchedAccount?.daily_quota_remaining !== undefined || matchedAccount?.weekly_quota_remaining !== undefined">
+          <div class="quota-pair">
+            <div class="quota-item" v-if="matchedAccount?.daily_quota_remaining !== undefined">
+              <span class="info-label">每日配额</span>
+              <el-progress
+                :percentage="matchedAccount.daily_quota_remaining"
+                :stroke-width="14"
+                :color="getQuotaColor(matchedAccount.daily_quota_remaining)"
+                class="quota-progress"
+              />
+            </div>
+            <div class="quota-item" v-if="matchedAccount?.weekly_quota_remaining !== undefined">
+              <span class="info-label">每周配额</span>
+              <el-progress
+                :percentage="matchedAccount.weekly_quota_remaining"
+                :stroke-width="14"
+                :color="getQuotaColor(matchedAccount.weekly_quota_remaining)"
+                class="quota-progress"
+              />
+            </div>
+          </div>
         </div>
       </div>
       <div v-else class="empty-state">
@@ -1038,6 +1028,21 @@ async function copyToClipboard(text: string) {
   display: flex;
   justify-content: center;
   padding-top: 12px;
+}
+
+.quota-row {
+  grid-column: 1 / -1;
+}
+
+.quota-pair {
+  display: flex;
+  gap: 32px;
+}
+
+.quota-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .quota-progress {
