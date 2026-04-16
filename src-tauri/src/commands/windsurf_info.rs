@@ -14,6 +14,10 @@ pub struct WindsurfCurrentInfo {
     pub team_id: Option<String>,
     pub version: Option<String>,
     pub is_active: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remaining_usage: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_usage: Option<i64>,
 }
 
 /// 旧版 windsurfAuthStatus 格式（含email/name字段）
@@ -43,6 +47,17 @@ struct WindsurfAuthStatusNew {
 struct CachedPlanInfo {
     #[serde(rename = "planName")]
     plan_name: Option<String>,
+    usage: Option<PlanUsage>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PlanUsage {
+    #[serde(default)]
+    messages: Option<i64>,
+    #[serde(rename = "usedMessages", default)]
+    used_messages: Option<i64>,
+    #[serde(rename = "remainingMessages", default)]
+    remaining_messages: Option<i64>,
 }
 
 /// 从 protobuf binary 中提取可打印字符串（简易解码，不依赖proto schema）
@@ -54,9 +69,11 @@ fn extract_strings_from_protobuf(data: &[u8]) -> Vec<String> {
         let wire_type = byte & 0x07;
         
         if wire_type == 2 {
+            // Length-delimited field, next byte(s) is the length (varint)
             i += 1;
             if i >= data.len() { break; }
             
+            // 解码 varint 长度
             let mut length: usize = 0;
             let mut shift = 0;
             while i < data.len() {
@@ -69,6 +86,7 @@ fn extract_strings_from_protobuf(data: &[u8]) -> Vec<String> {
             
             if length > 0 && length < 500 && i + length <= data.len() {
                 let slice = &data[i..i + length];
+                // 检查是否是有效的 UTF-8 可打印字符串
                 if let Ok(s) = std::str::from_utf8(slice) {
                     if s.chars().all(|c| c.is_alphanumeric() || c == ' ' || c == '@' || c == '.' || c == '-' || c == '_' || c == '+') {
                         if s.len() >= 2 {
@@ -79,6 +97,7 @@ fn extract_strings_from_protobuf(data: &[u8]) -> Vec<String> {
                 i += length;
             }
         } else if wire_type == 0 {
+            // Varint, skip
             i += 1;
             while i < data.len() && data[i] & 0x80 != 0 { i += 1; }
             i += 1;
@@ -125,24 +144,55 @@ fn find_latest_auth_user(connection: &rusqlite::Connection) -> Option<String> {
     })
 }
 
+/// 获取 Windsurf 数据库路径（跨平台）
+fn get_windsurf_db_path() -> Result<PathBuf, AppError> {
+    #[cfg(target_os = "windows")]
+    {
+        let appdata = std::env::var("APPDATA")
+            .map_err(|e| AppError::Config(format!("Failed to get APPDATA: {}", e)))?;
+        Ok(PathBuf::from(appdata)
+            .join("Windsurf")
+            .join("User")
+            .join("globalStorage")
+            .join("state.vscdb"))
+    }
+    
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var("HOME")
+            .map_err(|e| AppError::Config(format!("Failed to get HOME: {}", e)))?;
+        Ok(PathBuf::from(home)
+            .join("Library")
+            .join("Application Support")
+            .join("Windsurf")
+            .join("User")
+            .join("globalStorage")
+            .join("state.vscdb"))
+    }
+    
+    #[cfg(target_os = "linux")]
+    {
+        let home = std::env::var("HOME")
+            .map_err(|e| AppError::Config(format!("Failed to get HOME: {}", e)))?;
+        Ok(PathBuf::from(home)
+            .join(".config")
+            .join("Windsurf")
+            .join("User")
+            .join("globalStorage")
+            .join("state.vscdb"))
+    }
+}
+
 /// 获取当前Windsurf账号信息
 #[tauri::command]
 pub fn get_current_windsurf_info() -> Result<WindsurfCurrentInfo, AppError> {
-    let appdata = std::env::var("APPDATA")
-        .map_err(|e| AppError::Config(format!("Failed to get APPDATA: {}", e)))?;
-    let db_path = PathBuf::from(appdata)
-        .join("Windsurf")
-        .join("User")
-        .join("globalStorage")
-        .join("state.vscdb");
-    
-    info!("[WindsurfInfo] db_path: {}", db_path.display());
+    let db_path = get_windsurf_db_path()?;
     
     if !db_path.exists() {
-        warn!("[WindsurfInfo] state.vscdb not found");
         return Ok(WindsurfCurrentInfo {
             email: None, name: None, api_key: None, plan_name: None,
             team_id: None, version: None, is_active: false,
+            remaining_usage: None, total_usage: None,
         });
     }
     
@@ -166,32 +216,24 @@ pub fn get_current_windsurf_info() -> Result<WindsurfCurrentInfo, AppError> {
         |row| -> Result<String, rusqlite::Error> { row.get(0) },
     ).ok();
     
-    // 读取 cachedPlanInfo
+    // 读取 cachedPlanInfo（新版套餐信息）
     let cached_plan = connection.query_row(
         "SELECT value FROM ItemTable WHERE key = 'windsurf.settings.cachedPlanInfo'",
         [],
         |row| -> Result<String, rusqlite::Error> { row.get(0) },
     ).ok();
     
-    info!("[WindsurfInfo] auth_json present: {}, version: {:?}, cached_plan present: {}",
-        auth_json.is_some(), version, cached_plan.is_some());
-    
-    if let Some(ref auth) = auth_json {
-        // 日志：打印原始 auth JSON 的前 200 个字符（避免太长）
-        let preview = if auth.len() > 200 { &auth[..200] } else { auth };
-        info!("[WindsurfInfo] auth_json preview: {}", preview);
-    }
-    
     let mut info = WindsurfCurrentInfo {
         email: None, name: None, api_key: None, plan_name: None,
         team_id: None, version, is_active: false,
+        remaining_usage: None, total_usage: None,
     };
     
     if let Some(ref auth) = auth_json {
         // 方式1: 尝试旧版格式（直接有 email/name 字段）
         if let Ok(legacy) = serde_json::from_str::<WindsurfAuthStatusLegacy>(auth) {
             if legacy.email.is_some() || legacy.name.is_some() {
-                info!("[WindsurfInfo] Parsed LEGACY format: email={:?}, name={:?}", legacy.email, legacy.name);
+                info!("Parsed legacy auth format with email/name");
                 info.email = legacy.email;
                 info.name = legacy.name;
                 info.api_key = legacy.api_key;
@@ -207,19 +249,22 @@ pub fn get_current_windsurf_info() -> Result<WindsurfCurrentInfo, AppError> {
                 if new_auth.api_key.is_some() {
                     info.api_key = new_auth.api_key;
                     info.is_active = true;
-                    info!("[WindsurfInfo] Parsed NEW format with apiKey, has proto: {}", new_auth.user_status_proto.is_some());
+                    info!("Parsed new auth format with apiKey");
                     
-                    // 从 protobuf 提取用户名/邮箱
+                    // 从 protobuf 提取用户名
                     if let Some(ref proto_b64) = new_auth.user_status_proto {
                         if let Ok(proto_bytes) = general_purpose::STANDARD.decode(proto_b64) {
                             let strings = extract_strings_from_protobuf(&proto_bytes);
-                            info!("[WindsurfInfo] Protobuf extracted strings: {:?}", strings);
+                            info!("Extracted strings from protobuf: {:?}", strings);
+                            // 第一个有意义的字符串通常是用户名
                             for s in &strings {
                                 if s.contains('@') {
+                                    // 看起来像email
                                     info.email = Some(s.clone());
                                     break;
                                 }
                             }
+                            // 找用户名（非UUID、非email的第一个字符串）
                             for s in &strings {
                                 if !s.contains('-') || s.contains(' ') {
                                     if !s.contains('@') {
@@ -234,7 +279,7 @@ pub fn get_current_windsurf_info() -> Result<WindsurfCurrentInfo, AppError> {
                     // 如果protobuf没有提取到名字，从 windsurf_auth-{name}-usages 获取
                     if info.name.is_none() {
                         if let Some(name) = find_latest_auth_user(&connection) {
-                            info!("[WindsurfInfo] Got username from windsurf_auth usages: {}", name);
+                            info!("Got username from windsurf_auth usages: {}", name);
                             info.name = Some(name);
                         }
                     }
@@ -242,25 +287,34 @@ pub fn get_current_windsurf_info() -> Result<WindsurfCurrentInfo, AppError> {
             }
         }
     } else {
-        // windsurfAuthStatus 不存在，尝试从 windsurf_auth-{name}-usages 判断
+        // windsurfAuthStatus 不存在，尝试从 windsurf_auth-{name}-usages 判断是否有登录
         if let Some(name) = find_latest_auth_user(&connection) {
-            info!("[WindsurfInfo] No windsurfAuthStatus, but found auth user: {}", name);
+            info!("No windsurfAuthStatus, but found auth user: {}", name);
             info.name = Some(name);
             info.is_active = true;
         }
     }
     
-    // 从 cachedPlanInfo 补充套餐信息
+    // 从 cachedPlanInfo 补充套餐信息（新版）
     if let Some(ref plan_json) = cached_plan {
         if let Ok(plan) = serde_json::from_str::<CachedPlanInfo>(plan_json) {
+            // 只在还没有 plan_name 时才覆盖
             if info.plan_name.is_none() {
                 info.plan_name = plan.plan_name;
+            }
+            if let Some(usage) = plan.usage {
+                info.remaining_usage = usage.remaining_messages;
+                info.total_usage = usage.messages;
             }
         }
     }
     
-    info!("[WindsurfInfo] Final result: email={:?}, name={:?}, plan={:?}, is_active={}, version={:?}",
-        info.email, info.name, info.plan_name, info.is_active, info.version);
+    if info.is_active {
+        info!("Windsurf info: name={:?}, email={:?}, plan={:?}, version={:?}",
+            info.name, info.email, info.plan_name, info.version);
+    } else {
+        warn!("Could not detect active Windsurf session");
+    }
     
     Ok(info)
 }

@@ -1,5 +1,6 @@
 use crate::utils::{AppError, AppResult};
 use base64::{Engine, engine::general_purpose};
+use log::info;
 use reqwest;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -1167,22 +1168,35 @@ impl WindsurfService {
     /// 返回包含Stripe Checkout链接的JSON对象
     pub async fn subscribe_to_plan(
         &self, 
-        token: &str, 
+        token: &str,
+        auth1_token: Option<&str>,
         teams_tier: i32,
         payment_period: i32,
         team_name: Option<&str>,
         seats: Option<i32>,
         turnstile_token: Option<&str>
     ) -> AppResult<serde_json::Value> {
-        let url = format!("{}/exa.seat_management_pb.SeatManagementService/SubscribeToPlan", WINDSURF_BASE_URL);
+        // 新账号用 _backend/ 代理 + Origin 头模拟同源请求（浏览器行为）
+        // 老账号直连 web-backend.windsurf.com
+        let is_new_account = auth1_token.is_some();
+        let url = if is_new_account {
+            "https://windsurf.com/_backend/exa.seat_management_pb.SeatManagementService/SubscribeToPlan".to_string()
+        } else {
+            format!("{}/exa.seat_management_pb.SeatManagementService/SubscribeToPlan", WINDSURF_BASE_URL)
+        };
 
         // 调试日志
-        println!("[SubscribeToPlan] teams_tier={}, payment_period={}, team_name={:?}, seats={:?}, has_turnstile={}", 
-            teams_tier, payment_period, team_name, seats, turnstile_token.is_some());
+        info!("[SubscribeToPlan] teams_tier={}, payment_period={}, team_name={:?}, seats={:?}, has_turnstile={}, has_auth1={}, url={}", 
+            teams_tier, payment_period, team_name, seats, turnstile_token.is_some(), is_new_account, url);
 
         // 根据计划类型设置回调URL
-        let plan_tier_str = if teams_tier == 1 { "teams" } else { "pro" };
-        let success_url = format!("https://windsurf.com/billing/payment-success?plan_tier={}", plan_tier_str);
+        // 新账号: 使用与浏览器一致的 subscription-pending URL
+        let plan_tier_str = if teams_tier == 1 { "teams" } else if is_new_account { "trial" } else { "pro" };
+        let success_url = if is_new_account {
+            format!("https://windsurf.com/subscription-pending?expect_tier={}", plan_tier_str)
+        } else {
+            format!("https://windsurf.com/billing/payment-success?plan_tier={}", plan_tier_str)
+        };
         let cancel_url = format!("https://windsurf.com/plan?plan_cancelled=true&plan_tier={}", plan_tier_str);
 
         let body = self.build_subscribe_to_plan_body(
@@ -1196,36 +1210,51 @@ impl WindsurfService {
             turnstile_token
         );
         
-        println!("[SubscribeToPlan] 请求体大小: {} bytes", body.len());
+        info!("[SubscribeToPlan] 请求体大小: {} bytes, token_prefix={}...", body.len(), &token[..std::cmp::min(token.len(), 20)]);
 
-        let response = self.client
-            .post(&url)
-            .body(body)
-            .header("accept", "*/*")
-            .header("accept-language", "zh-CN,zh;q=0.9")
-            .header("cache-control", "no-cache")
-            .header("connect-protocol-version", "1")
-            .header("content-type", "application/proto")
-            .header("pragma", "no-cache")
-            .header("priority", "u=1, i")
-            .header("sec-ch-ua", r#""Chromium";v="142", "Google Chrome";v="142", "Not_A Brand";v="99""#)
-            .header("sec-ch-ua-mobile", "?0")
-            .header("sec-ch-ua-platform", r#""Windows""#)
-            .header("sec-fetch-dest", "empty")
-            .header("sec-fetch-mode", "cors")
-            .header("sec-fetch-site", "same-site")
-            .header("authorization", format!("Bearer {}", token))
-            .header("x-auth-token", token)
-            .header("x-debug-email", "")
-            .header("x-debug-team-name", "")
-            .header("Referer", "https://windsurf.com/")
-            .send()
-            .await?;
+        // 新账号: _backend/ 代理 + Devin 认证 headers（通过逆向浏览器 Connect RPC interceptor 发现）
+        // 老账号: web-backend 直连 + x-auth-token
+        let response = if is_new_account {
+            let a1 = auth1_token.unwrap(); // is_new_account 保证 auth1_token.is_some()
+            info!("[SubscribeToPlan] 新账号: 使用 X-Devin-Auth1-Token + X-Devin-Session-Token 认证");
+            self.client
+                .post(&url)
+                .body(body)
+                .header("content-type", "application/proto")
+                .header("connect-protocol-version", "1")
+                .header("X-Devin-Auth1-Token", a1)
+                .header("X-Devin-Session-Token", token)
+                .send()
+                .await?
+        } else {
+            self.client
+                .post(&url)
+                .body(body)
+                .header("accept", "*/*")
+                .header("accept-language", "zh-CN,zh;q=0.9")
+                .header("cache-control", "no-cache")
+                .header("connect-protocol-version", "1")
+                .header("content-type", "application/proto")
+                .header("pragma", "no-cache")
+                .header("priority", "u=1, i")
+                .header("sec-ch-ua", r#""Chromium";v="142", "Google Chrome";v="142", "Not:A-Brand";v="99""#)
+                .header("sec-ch-ua-mobile", "?0")
+                .header("sec-ch-ua-platform", r#""Windows""#)
+                .header("sec-fetch-dest", "empty")
+                .header("sec-fetch-mode", "cors")
+                .header("sec-fetch-site", "same-site")
+                .header("x-auth-token", token)
+                .header("x-debug-email", "")
+                .header("x-debug-team-name", "")
+                .header("Referer", "https://windsurf.com/")
+                .send()
+                .await?
+        };
 
         let status_code = response.status().as_u16();
         let response_body = response.bytes().await?;
         
-        println!("[SubscribeToPlan] 响应状态码: {}, 响应体大小: {} bytes", status_code, response_body.len());
+        info!("[SubscribeToPlan] 响应状态码: {}, 响应体大小: {} bytes", status_code, response_body.len());
 
         if status_code == 200 {
             // 响应直接是Protobuf二进制数据
@@ -1265,7 +1294,7 @@ impl WindsurfService {
             }
         } else {
             let error_msg = String::from_utf8_lossy(&response_body).to_string();
-            println!("[SubscribeToPlan] 错误响应: status={}, body={}", status_code, error_msg);
+            info!("[SubscribeToPlan] 错误响应: status={}, body={}", status_code, error_msg);
 
             // 解析错误信息，提供更友好的提示
             let friendly_error = if status_code == 400 {

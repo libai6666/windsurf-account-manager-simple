@@ -1,9 +1,37 @@
 use crate::utils::{AppError, AppResult};
 use chrono::{DateTime, Duration, Utc};
+use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 const FIREBASE_API_KEY: &str = "AIzaSyDsOl-1XpT5err0Tcnx8FFod1H8gVGIycY";
+
+// ============= Windsurf 2.0 Devin-Auth 登录相关结构 =============
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DevinLoginRequest {
+    pub email: String,
+    pub password: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DevinLoginResponse {
+    pub token: String,
+    pub user_id: String,
+    pub email: String,
+}
+
+/// Windsurf 2.0 登录结果：包含 OTT（用于编辑器认证）和 session 信息
+#[derive(Debug, Clone)]
+pub struct WindsurfAuthResult {
+    pub ott: String,
+    pub session_token: String,
+    pub auth1_token: String,
+    pub account_id: String,
+    pub org_id: String,
+    pub user_id: String,
+    pub email: String,
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SignInRequest {
@@ -299,4 +327,287 @@ impl AuthService {
         let buffer = Duration::minutes(5);
         Utc::now() + buffer >= *expires_at
     }
+
+    /// Windsurf 2.0 兼容登录：返回与旧 sign_in 相同的 (token, refresh_token, expires_at) 格式
+    /// token = session_token（用于 API 调用），refresh_token = auth1_token（用于后续刷新）
+    pub async fn sign_in_compat(&self, email: &str, password: &str) -> AppResult<(String, String, DateTime<Utc>)> {
+        let result = self.sign_in_v2(email, password).await?;
+        let expires_at = Utc::now() + Duration::hours(1);
+        Ok((result.session_token, result.auth1_token, expires_at))
+    }
+
+    // ============= Windsurf 2.0 新认证方法 =============
+
+    /// Windsurf 2.0 登录：通过 devin-auth + WindsurfPostAuth + GetOneTimeAuthToken
+    /// 返回 WindsurfAuthResult，包含 OTT（用于 handleAuthToken 回调）
+    pub async fn sign_in_v2(&self, email: &str, password: &str) -> AppResult<WindsurfAuthResult> {
+        // Step 1: _devin-auth/password/login
+        info!("[sign_in_v2] Step 1: Calling _devin-auth/password/login for {}", email);
+        let login_resp = match self.client
+            .post("https://windsurf.com/_devin-auth/password/login")
+            .json(&DevinLoginRequest {
+                email: email.to_string(),
+                password: password.to_string(),
+            })
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                super::report_request_success();
+                resp
+            }
+            Err(e) => {
+                if e.is_timeout() || e.is_connect() {
+                    super::report_timeout_error();
+                } else {
+                    super::report_request_failure();
+                }
+                return Err(AppError::Network(format!("devin-auth login failed: {}", e)));
+            }
+        };
+
+        if !login_resp.status().is_success() {
+            let status = login_resp.status();
+            let error_text = login_resp.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+            if error_text.contains("invalid_credentials") || error_text.contains("Invalid") || status.as_u16() == 401 {
+                return Err(AppError::AuthFailed("邮箱或密码错误，请检查后重试".to_string()));
+            }
+            return Err(AppError::AuthFailed(format!("登录失败({}): {}", status, error_text)));
+        }
+
+        let login_data: DevinLoginResponse = login_resp.json().await
+            .map_err(|e| AppError::Api(format!("Failed to parse login response: {}", e)))?;
+        info!("[sign_in_v2] Step 1 OK: user_id={}, email={}", login_data.user_id, login_data.email);
+
+        // Step 2: WindsurfPostAuth (protobuf)
+        info!("[sign_in_v2] Step 2: Calling WindsurfPostAuth...");
+        let post_auth_body = encode_protobuf_string(1, &login_data.token);
+        let post_auth_resp = match self.client
+            .post("https://windsurf.com/_backend/exa.seat_management_pb.SeatManagementService/WindsurfPostAuth")
+            .header("Content-Type", "application/proto")
+            .header("Connect-Protocol-Version", "1")
+            .body(post_auth_body)
+            .send()
+            .await
+        {
+            Ok(resp) => resp,
+            Err(e) => return Err(AppError::Network(format!("WindsurfPostAuth failed: {}", e))),
+        };
+
+        if !post_auth_resp.status().is_success() {
+            let error_text = post_auth_resp.text().await.unwrap_or_default();
+            return Err(AppError::Api(format!("WindsurfPostAuth error: {}", error_text)));
+        }
+
+        let post_auth_bytes = post_auth_resp.bytes().await
+            .map_err(|e| AppError::Api(format!("Failed to read WindsurfPostAuth response: {}", e)))?;
+        let post_auth_fields = parse_protobuf_fields(&post_auth_bytes);
+
+        let session_token = post_auth_fields.get(&1)
+            .ok_or_else(|| AppError::Api("WindsurfPostAuth: missing session_token (field 1)".to_string()))?
+            .clone();
+        let refreshed_auth1 = post_auth_fields.get(&3).cloned().unwrap_or_default();
+        let account_id = post_auth_fields.get(&4).cloned().unwrap_or_default();
+        let org_id = post_auth_fields.get(&5).cloned().unwrap_or_default();
+        info!("[sign_in_v2] Step 2 OK: account_id={}, org_id={}", account_id, org_id);
+
+        // Step 3: GetOneTimeAuthToken (protobuf)
+        info!("[sign_in_v2] Step 3: Calling GetOneTimeAuthToken...");
+        let ott_body = encode_protobuf_string(1, &session_token);
+        let ott_resp = match self.client
+            .post("https://windsurf.com/_backend/exa.seat_management_pb.SeatManagementService/GetOneTimeAuthToken")
+            .header("Content-Type", "application/proto")
+            .header("Connect-Protocol-Version", "1")
+            .body(ott_body)
+            .send()
+            .await
+        {
+            Ok(resp) => resp,
+            Err(e) => return Err(AppError::Network(format!("GetOneTimeAuthToken failed: {}", e))),
+        };
+
+        if !ott_resp.status().is_success() {
+            let error_text = ott_resp.text().await.unwrap_or_default();
+            return Err(AppError::Api(format!("GetOneTimeAuthToken error: {}", error_text)));
+        }
+
+        let ott_bytes = ott_resp.bytes().await
+            .map_err(|e| AppError::Api(format!("Failed to read OTT response: {}", e)))?;
+        let ott_fields = parse_protobuf_fields(&ott_bytes);
+
+        let ott = ott_fields.get(&1)
+            .ok_or_else(|| AppError::Api("GetOneTimeAuthToken: missing auth_token (field 1)".to_string()))?
+            .clone();
+        info!("[sign_in_v2] Step 3 OK: OTT={}...", &ott[..std::cmp::min(ott.len(), 20)]);
+
+        Ok(WindsurfAuthResult {
+            ott,
+            session_token,
+            auth1_token: refreshed_auth1,
+            account_id,
+            org_id,
+            user_id: login_data.user_id,
+            email: login_data.email,
+        })
+    }
+
+    /// 使用 auth1_token 刷新 session 并获取新 OTT
+    pub async fn refresh_ott(&self, auth1_token: &str) -> AppResult<WindsurfAuthResult> {
+        info!("[refresh_ott] Refreshing OTT with auth1_token...");
+        
+        // WindsurfPostAuth
+        let post_auth_body = encode_protobuf_string(1, auth1_token);
+        let post_auth_resp = self.client
+            .post("https://windsurf.com/_backend/exa.seat_management_pb.SeatManagementService/WindsurfPostAuth")
+            .header("Content-Type", "application/proto")
+            .header("Connect-Protocol-Version", "1")
+            .body(post_auth_body)
+            .send()
+            .await
+            .map_err(|e| AppError::Network(format!("WindsurfPostAuth refresh failed: {}", e)))?;
+
+        if !post_auth_resp.status().is_success() {
+            let error_text = post_auth_resp.text().await.unwrap_or_default();
+            return Err(AppError::Api(format!("WindsurfPostAuth refresh error: {}", error_text)));
+        }
+
+        let post_auth_bytes = post_auth_resp.bytes().await
+            .map_err(|e| AppError::Api(format!("Failed to read response: {}", e)))?;
+        let fields = parse_protobuf_fields(&post_auth_bytes);
+
+        let session_token = fields.get(&1)
+            .ok_or_else(|| AppError::Api("Missing session_token".to_string()))?
+            .clone();
+        let refreshed_auth1 = fields.get(&3).cloned().unwrap_or_default();
+        let account_id = fields.get(&4).cloned().unwrap_or_default();
+        let org_id = fields.get(&5).cloned().unwrap_or_default();
+
+        // GetOneTimeAuthToken
+        let ott_body = encode_protobuf_string(1, &session_token);
+        let ott_resp = self.client
+            .post("https://windsurf.com/_backend/exa.seat_management_pb.SeatManagementService/GetOneTimeAuthToken")
+            .header("Content-Type", "application/proto")
+            .header("Connect-Protocol-Version", "1")
+            .body(ott_body)
+            .send()
+            .await
+            .map_err(|e| AppError::Network(format!("GetOneTimeAuthToken refresh failed: {}", e)))?;
+
+        if !ott_resp.status().is_success() {
+            let error_text = ott_resp.text().await.unwrap_or_default();
+            return Err(AppError::Api(format!("GetOneTimeAuthToken refresh error: {}", error_text)));
+        }
+
+        let ott_bytes = ott_resp.bytes().await
+            .map_err(|e| AppError::Api(format!("Failed to read OTT response: {}", e)))?;
+        let ott_fields = parse_protobuf_fields(&ott_bytes);
+        let ott = ott_fields.get(&1)
+            .ok_or_else(|| AppError::Api("Missing OTT".to_string()))?
+            .clone();
+
+        info!("[refresh_ott] OK: OTT={}...", &ott[..std::cmp::min(ott.len(), 20)]);
+
+        Ok(WindsurfAuthResult {
+            ott,
+            session_token,
+            auth1_token: refreshed_auth1,
+            account_id,
+            org_id,
+            user_id: String::new(),
+            email: String::new(),
+        })
+    }
+
+    /// 用现有的 session_token 获取一个新的 OTT（一次性令牌）
+    pub async fn get_fresh_ott(&self, session_token: &str) -> AppResult<String> {
+        let ott_body = encode_protobuf_string(1, session_token);
+        let ott_resp = self.client
+            .post("https://windsurf.com/_backend/exa.seat_management_pb.SeatManagementService/GetOneTimeAuthToken")
+            .header("Content-Type", "application/proto")
+            .header("Connect-Protocol-Version", "1")
+            .body(ott_body)
+            .send()
+            .await
+            .map_err(|e| AppError::Network(format!("GetOneTimeAuthToken failed: {}", e)))?;
+
+        if !ott_resp.status().is_success() {
+            let error_text = ott_resp.text().await.unwrap_or_default();
+            return Err(AppError::Api(format!("GetOneTimeAuthToken error: {}", error_text)));
+        }
+
+        let ott_bytes = ott_resp.bytes().await
+            .map_err(|e| AppError::Api(format!("Failed to read OTT response: {}", e)))?;
+        let ott_fields = parse_protobuf_fields(&ott_bytes);
+        let ott = ott_fields.get(&1)
+            .ok_or_else(|| AppError::Api("Missing OTT in response".to_string()))?
+            .clone();
+
+        info!("[get_fresh_ott] New OTT={}...", &ott[..std::cmp::min(ott.len(), 20)]);
+        Ok(ott)
+    }
+}
+
+// ============= Protobuf 编解码工具 =============
+
+/// 编码 protobuf 的 string 字段（field_number, string_value）
+fn encode_protobuf_string(field_number: u32, value: &str) -> Vec<u8> {
+    let tag = ((field_number << 3) | 2) as u8;
+    let value_bytes = value.as_bytes();
+    let mut result = Vec::with_capacity(1 + 5 + value_bytes.len());
+    result.push(tag);
+    // 编码 varint 长度
+    let mut len = value_bytes.len();
+    loop {
+        if len <= 0x7F {
+            result.push(len as u8);
+            break;
+        }
+        result.push(((len & 0x7F) | 0x80) as u8);
+        len >>= 7;
+    }
+    result.extend_from_slice(value_bytes);
+    result
+}
+
+/// 解析 protobuf 消息中的所有 string 字段
+fn parse_protobuf_fields(data: &[u8]) -> std::collections::HashMap<u32, String> {
+    let mut fields = std::collections::HashMap::new();
+    let mut i = 0;
+    while i < data.len() {
+        let tag = data[i];
+        let field_num = (tag >> 3) as u32;
+        let wire_type = tag & 0x07;
+        i += 1;
+
+        match wire_type {
+            2 => { // length-delimited (string)
+                let mut len: usize = 0;
+                let mut shift = 0;
+                while i < data.len() {
+                    let b = data[i];
+                    i += 1;
+                    len |= ((b & 0x7F) as usize) << shift;
+                    if b & 0x80 == 0 { break; }
+                    shift += 7;
+                }
+                if i + len <= data.len() {
+                    if let Ok(s) = std::str::from_utf8(&data[i..i + len]) {
+                        fields.insert(field_num, s.to_string());
+                    }
+                    i += len;
+                } else {
+                    break;
+                }
+            }
+            0 => { // varint
+                while i < data.len() {
+                    let b = data[i];
+                    i += 1;
+                    if b & 0x80 == 0 { break; }
+                }
+            }
+            _ => break, // 不支持的 wire type
+        }
+    }
+    fields
 }

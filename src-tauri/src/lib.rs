@@ -80,6 +80,11 @@ pub fn run() {
             // 将数据存储注入到应用状态
             app.manage(store.clone());
             
+            // 初始化机器设备码存储
+            let machine_id_store = commands::MachineIdStore::new(app.handle())
+                .expect("Failed to initialize machine ID store");
+            app.manage(Arc::new(machine_id_store));
+            
             // 初始化自动重置配置存储
             let auto_reset_store = AutoResetStore::new(app.handle())
                 .expect("Failed to initialize auto reset store");
@@ -201,6 +206,16 @@ pub fn run() {
             commands::reset_machine_id,
             commands::check_admin_privileges,
             commands::check_auto_switch,
+            
+            // 机器设备码管理命令
+            commands::get_current_machine_ids,
+            commands::get_machine_id_records,
+            commands::save_current_machine_id,
+            commands::apply_machine_id,
+            commands::update_machine_id_label,
+            commands::delete_machine_id_record,
+            commands::clear_all_machine_id_records,
+            commands::toggle_machine_id_bookmark,
             
             // Windsurf信息命令
             commands::get_current_windsurf_info,

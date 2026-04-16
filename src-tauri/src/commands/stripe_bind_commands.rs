@@ -1630,8 +1630,9 @@ pub async fn stripe_bind_start(
             .cloned();
 
         let windsurf_service = WindsurfService::new();
+        let auth1 = account.refresh_token.as_deref().filter(|t| t.starts_with("auth1_"));
         let result = windsurf_service.subscribe_to_plan(
-            &token, teams_tier, payment_period, None, None, turnstile_token.as_deref(),
+            &token, auth1, teams_tier, payment_period, None, None, turnstile_token.as_deref(),
         ).await.map_err(|e: AppError| format!("获取试用链接失败 ({}): {}", account.email, e))?;
 
         // 检查API是否成功

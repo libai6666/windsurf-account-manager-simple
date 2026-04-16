@@ -13,6 +13,7 @@ pub mod team_commands;
 pub mod auto_reset_commands;
 pub mod cunzhi_commands;
 pub mod stripe_bind_commands;
+pub mod machine_id_commands;
 
 pub use account_commands::*;
 pub use api_commands::*;
@@ -29,3 +30,4 @@ pub use team_commands::*;
 pub use auto_reset_commands::*;
 pub use cunzhi_commands::*;
 pub use stripe_bind_commands::*;
+pub use machine_id_commands::*;

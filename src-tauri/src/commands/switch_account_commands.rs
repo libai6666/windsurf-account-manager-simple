@@ -12,11 +12,6 @@ use std::path::PathBuf;
 #[cfg(target_os = "windows")]
 use winreg::{RegKey, enums::{HKEY_LOCAL_MACHINE, KEY_ALL_ACCESS}};
 
-#[cfg(target_os = "windows")]
-use std::os::windows::process::CommandExt;
-
-#[cfg(target_os = "windows")]
-const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct GoogleTokenResponse {
@@ -36,7 +31,7 @@ async fn refresh_access_token(refresh_token: &str) -> AppResult<GoogleTokenRespo
     
     // Google Token API
     let url = "https://securetoken.googleapis.com/v1/token";
-    let api_key = "AIzaSyBPFmef6bkwMJAYP0sJZAi4k5XP1lXJXuY"; // Firebase API Key
+    let api_key = "AIzaSyDsOl-1XpT5err0Tcnx8FFod1H8gVGIycY"; // Firebase API Key (与auth_service保持一致)
     
     let params = [
         ("grant_type", "refresh_token"),
@@ -46,6 +41,7 @@ async fn refresh_access_token(refresh_token: &str) -> AppResult<GoogleTokenRespo
     let response = client
         .post(&format!("{}?key={}", url, api_key))
         .header("Content-Type", "application/x-www-form-urlencoded")
+        .header("Referer", "https://windsurf.com/")
         .form(&params)
         .send()
         .await
@@ -147,45 +143,306 @@ fn deserialize_protobuf_response(data: &[u8]) -> Option<String> {
     None
 }
 
-/// 使用access_token获取auth_token
-async fn get_auth_token(access_token: &str) -> AppResult<String> {
+/// RegisterUser 响应数据
+struct RegisterUserResult {
+    api_key: String,
+    name: String,
+    api_server_url: String,
+}
+
+/// 解析 RegisterUser protobuf 响应
+fn parse_register_user_response(data: &[u8]) -> Option<RegisterUserResult> {
+    let mut api_key = None;
+    let mut name = None;
+    let mut api_server_url = None;
+    let mut pos = 0;
+    while pos < data.len() {
+        let tag = data[pos]; pos += 1;
+        let wire_type = tag & 0x07;
+        let field_number = tag >> 3;
+        if wire_type == 2 {
+            let mut length = 0usize; let mut shift = 0;
+            while pos < data.len() {
+                let byte = data[pos]; pos += 1;
+                length |= ((byte & 0x7F) as usize) << shift;
+                if byte & 0x80 == 0 { break; }
+                shift += 7;
+            }
+            if pos + length <= data.len() {
+                if let Ok(value) = std::str::from_utf8(&data[pos..pos + length]) {
+                    match field_number {
+                        1 => api_key = Some(value.to_string()),
+                        2 => name = Some(value.to_string()),
+                        3 => api_server_url = Some(value.to_string()),
+                        _ => {}
+                    }
+                }
+                pos += length;
+            } else { break; }
+        } else if wire_type == 0 {
+            while pos < data.len() { if data[pos] & 0x80 == 0 { pos += 1; break; } pos += 1; }
+        } else { break; }
+    }
+    Some(RegisterUserResult {
+        api_key: api_key?,
+        name: name.unwrap_or_default(),
+        api_server_url: api_server_url.unwrap_or_else(|| "https://server.codeium.com".to_string()),
+    })
+}
+
+/// 调用 register.windsurf.com/RegisterUser 获取 apiKey
+async fn call_register_user(id_token: &str) -> AppResult<RegisterUserResult> {
     let client = reqwest::Client::new();
-    
-    // Windsurf GetOneTimeAuthToken endpoint
-    let url = "https://web-backend.windsurf.com/exa.seat_management_pb.SeatManagementService/GetOneTimeAuthToken";
-    
-    // Serialize request as Protobuf
-    let request_data = serialize_protobuf_string(access_token);
+    let register_url = "https://register.windsurf.com/exa.seat_management_pb.SeatManagementService/RegisterUser";
+    let request_data = serialize_protobuf_string(id_token);
     
     let response = client
-        .post(url)
+        .post(register_url)
         .header("Content-Type", "application/proto")
         .header("Accept", "application/proto")
-        .header("User-Agent", "Windsurf/1.4.2")
+        .header("Connect-Protocol-Version", "1")
+        .header("User-Agent", "connect-es/1.6.1")
         .body(request_data)
         .send()
         .await
-        .map_err(|e| AppError::Network(e.to_string()))?;
+        .map_err(|e| AppError::Network(format!("RegisterUser request failed: {}", e)))?;
     
-    if !response.status().is_success() {
+    let status = response.status();
+    if !status.is_success() {
         let error_text = response.text().await.unwrap_or_default();
-        error!("Failed to get auth token: {}", error_text);
-        return Err(AppError::ApiRequest(format!("Failed to get auth token: {}", error_text)));
+        return Err(AppError::ApiRequest(format!("RegisterUser failed ({}): {}", status, &error_text[..std::cmp::min(error_text.len(), 500)])));
     }
     
-    // Deserialize response
     let response_bytes = response.bytes().await
         .map_err(|e| AppError::Network(e.to_string()))?;
     
-    let auth_token = deserialize_protobuf_response(&response_bytes)
-        .ok_or_else(|| AppError::ApiRequest("Failed to parse auth token from response".to_string()))?;
+    parse_register_user_response(&response_bytes)
+        .ok_or_else(|| AppError::ApiRequest("Failed to parse RegisterUser response".to_string()))
+}
+
+/// 获取 auth token 并调用 RegisterUser
+/// 支持两种 refresh_token 类型：
+/// - auth1_... : Windsurf 2.0 devin-auth token → WindsurfPostAuth → GetOneTimeAuthToken → RegisterUser
+/// - 其他 : Firebase refresh token → securetoken refresh → RegisterUser
+/// 返回 (RegisterUserResult, id_token, access_token, expires_in)
+async fn get_auth_token(refresh_token: &str) -> AppResult<(RegisterUserResult, String, String, String)> {
+    if refresh_token.starts_with("auth1_") {
+        // Windsurf 2.0 devin-auth 流程
+        info!("Using devin-auth flow (auth1_ token detected)...");
+        let auth_service = crate::services::auth_service::AuthService::new();
+        let auth_result = auth_service.refresh_ott(refresh_token).await?;
+        
+        // 用第一个 OTT 调用 RegisterUser（会消耗该 OTT）
+        let register_result = call_register_user(&auth_result.ott).await?;
+        info!("RegisterUser SUCCESS (via devin-auth): apiKey={}..., name={}, server={}", 
+            &register_result.api_key[..std::cmp::min(register_result.api_key.len(), 20)],
+            register_result.name,
+            register_result.api_server_url);
+        
+        // 获取第二个 OTT 用于编辑器回调（OTT 是一次性的，第一个已被 RegisterUser 消耗）
+        let callback_ott = auth_service.get_fresh_ott(&auth_result.session_token).await?;
+        
+        Ok((register_result, callback_ott, auth_result.session_token, "3600".to_string()))
+    } else {
+        // 传统 Firebase refresh token 流程
+        let token_response = refresh_access_token(refresh_token).await?;
+        info!("Successfully obtained Firebase ID token, calling RegisterUser...");
+        
+        let register_result = call_register_user(&token_response.id_token).await?;
+        info!("RegisterUser SUCCESS: apiKey={}..., name={}, server={}", 
+            &register_result.api_key[..std::cmp::min(register_result.api_key.len(), 20)],
+            register_result.name,
+            register_result.api_server_url);
+        
+        Ok((register_result, token_response.id_token, token_response.access_token, token_response.expires_in))
+    }
+}
+
+/// 直接写入 Windsurf state.vscdb 完成账号切换（绕过回调URL）
+#[cfg(target_os = "windows")]
+fn write_windsurf_auth_direct(api_key: &str, name: &str, api_server_url: &str) -> AppResult<()> {
+    use aes_gcm::{Aes256Gcm, KeyInit, aead::Aead};
+    use aes_gcm::aead::generic_array::GenericArray;
+    use rand::RngCore;
     
-    info!("Successfully obtained auth token");
-    Ok(auth_token)
+    let appdata = std::env::var("APPDATA")
+        .map_err(|e| AppError::Config(format!("Failed to get APPDATA: {}", e)))?;
+    
+    // 1. 读取 AES 密钥 (从 Local State, DPAPI 保护)
+    let local_state_path = format!("{}\\Windsurf\\Local State", appdata);
+    let local_state_content = std::fs::read_to_string(&local_state_path)
+        .map_err(|e| AppError::FileOperation(format!("Failed to read Local State: {}", e)))?;
+    let local_state: serde_json::Value = serde_json::from_str(&local_state_content)
+        .map_err(|e| AppError::Config(format!("Failed to parse Local State: {}", e)))?;
+    let enc_key_b64 = local_state["os_crypt"]["encrypted_key"]
+        .as_str()
+        .ok_or_else(|| AppError::Config("No encrypted_key in Local State".to_string()))?;
+    
+    use base64::{Engine, engine::general_purpose};
+    let enc_key_raw = general_purpose::STANDARD.decode(enc_key_b64)
+        .map_err(|e| AppError::Config(format!("Failed to decode encrypted_key: {}", e)))?;
+    
+    // Strip 'DPAPI' prefix (5 bytes)
+    if enc_key_raw.len() < 6 || &enc_key_raw[..5] != b"DPAPI" {
+        return Err(AppError::Config("Invalid encrypted_key format".to_string()));
+    }
+    let dpapi_data = &enc_key_raw[5..];
+    
+    // DPAPI decrypt
+    let aes_key = dpapi_decrypt(dpapi_data)?;
+    if aes_key.len() != 32 {
+        return Err(AppError::Config(format!("Invalid AES key length: {}", aes_key.len())));
+    }
+    info!("Got AES key from DPAPI ({} bytes)", aes_key.len());
+    
+    // 2. 构建新 session JSON
+    let session_id = Uuid::new_v4().to_string();
+    let session_json = serde_json::json!([{
+        "id": session_id,
+        "accessToken": api_key,
+        "account": {"label": name, "id": name},
+        "scopes": []
+    }]);
+    let session_str = serde_json::to_string(&session_json)
+        .map_err(|e| AppError::Config(format!("Failed to serialize session: {}", e)))?;
+    
+    // 3. AES-256-GCM 加密
+    let cipher = Aes256Gcm::new(GenericArray::from_slice(&aes_key));
+    let mut nonce_bytes = [0u8; 12];
+    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    let nonce = GenericArray::from_slice(&nonce_bytes);
+    
+    let encrypted_session = cipher.encrypt(nonce, session_str.as_bytes())
+        .map_err(|e| AppError::Config(format!("AES encryption failed: {}", e)))?;
+    
+    // v10 prefix + nonce + ciphertext
+    let mut enc_blob = Vec::with_capacity(3 + 12 + encrypted_session.len());
+    enc_blob.extend_from_slice(b"v10");
+    enc_blob.extend_from_slice(&nonce_bytes);
+    enc_blob.extend_from_slice(&encrypted_session);
+    
+    // 转为 JSON Buffer 格式 (VS Code 的存储格式)
+    let buffer_json = serde_json::json!({
+        "type": "Buffer",
+        "data": enc_blob.iter().map(|&b| b as u64).collect::<Vec<u64>>()
+    });
+    let session_db_value = serde_json::to_string(&buffer_json)
+        .map_err(|e| AppError::Config(format!("Failed to serialize buffer: {}", e)))?;
+    
+    // 4. 加密 apiServerUrl
+    let mut nonce_bytes2 = [0u8; 12];
+    rand::thread_rng().fill_bytes(&mut nonce_bytes2);
+    let nonce2 = GenericArray::from_slice(&nonce_bytes2);
+    let encrypted_url = cipher.encrypt(nonce2, api_server_url.as_bytes())
+        .map_err(|e| AppError::Config(format!("AES encryption of apiServerUrl failed: {}", e)))?;
+    
+    let mut enc_blob2 = Vec::with_capacity(3 + 12 + encrypted_url.len());
+    enc_blob2.extend_from_slice(b"v10");
+    enc_blob2.extend_from_slice(&nonce_bytes2);
+    enc_blob2.extend_from_slice(&encrypted_url);
+    
+    let url_buffer_json = serde_json::json!({
+        "type": "Buffer",
+        "data": enc_blob2.iter().map(|&b| b as u64).collect::<Vec<u64>>()
+    });
+    let url_db_value = serde_json::to_string(&url_buffer_json)
+        .map_err(|e| AppError::Config(format!("Failed to serialize url buffer: {}", e)))?;
+    
+    // 5. 更新 windsurfAuthStatus (只更新 apiKey，保留其他字段)
+    let db_path = format!("{}\\Windsurf\\User\\globalStorage\\state.vscdb", appdata);
+    let conn = rusqlite::Connection::open(&db_path)
+        .map_err(|e| AppError::Database(format!("Failed to open state.vscdb: {}", e)))?;
+    
+    // 读取当前 windsurfAuthStatus
+    let current_auth: Option<String> = conn.query_row(
+        "SELECT value FROM ItemTable WHERE key = 'windsurfAuthStatus'",
+        [],
+        |row| row.get(0),
+    ).ok();
+    
+    let new_auth_status = if let Some(ref auth_str) = current_auth {
+        if let Ok(mut auth_val) = serde_json::from_str::<serde_json::Value>(auth_str) {
+            auth_val["apiKey"] = serde_json::Value::String(api_key.to_string());
+            serde_json::to_string(&auth_val).unwrap_or_else(|_| 
+                format!(r#"{{"apiKey":"{}"}}"#, api_key))
+        } else {
+            format!(r#"{{"apiKey":"{}"}}"#, api_key)
+        }
+    } else {
+        format!(r#"{{"apiKey":"{}"}}"#, api_key)
+    };
+    
+    // 6. 写入数据库
+    conn.execute(
+        "INSERT OR REPLACE INTO ItemTable (key, value) VALUES ('windsurfAuthStatus', ?1)",
+        rusqlite::params![new_auth_status],
+    ).map_err(|e| AppError::Database(format!("Failed to update windsurfAuthStatus: {}", e)))?;
+    
+    let session_secret_key = r#"secret://{"extensionId":"codeium.windsurf","key":"windsurf_auth.sessions"}"#;
+    conn.execute(
+        "INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?1, ?2)",
+        rusqlite::params![session_secret_key, session_db_value],
+    ).map_err(|e| AppError::Database(format!("Failed to update sessions secret: {}", e)))?;
+    
+    let url_secret_key = r#"secret://{"extensionId":"codeium.windsurf","key":"windsurf_auth.apiServerUrl"}"#;
+    conn.execute(
+        "INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?1, ?2)",
+        rusqlite::params![url_secret_key, url_db_value],
+    ).map_err(|e| AppError::Database(format!("Failed to update apiServerUrl secret: {}", e)))?;
+    
+    info!("Successfully wrote auth data to state.vscdb: apiKey={}..., name={}, server={}", 
+        &api_key[..std::cmp::min(api_key.len(), 20)], name, api_server_url);
+    
+    Ok(())
+}
+
+/// DPAPI 解密
+#[cfg(target_os = "windows")]
+fn dpapi_decrypt(data: &[u8]) -> AppResult<Vec<u8>> {
+    use winapi::um::dpapi::CryptUnprotectData;
+    use winapi::um::wincrypt::CRYPTOAPI_BLOB;
+    use std::ptr;
+    
+    extern "system" {
+        fn LocalFree(hMem: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
+    }
+    
+    let mut input_blob = CRYPTOAPI_BLOB {
+        cbData: data.len() as u32,
+        pbData: data.as_ptr() as *mut u8,
+    };
+    let mut output_blob = CRYPTOAPI_BLOB {
+        cbData: 0,
+        pbData: ptr::null_mut(),
+    };
+    
+    let result = unsafe {
+        CryptUnprotectData(
+            &mut input_blob,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+            0,
+            &mut output_blob,
+        )
+    };
+    
+    if result == 0 {
+        return Err(AppError::Config(format!("DPAPI CryptUnprotectData failed: {}", std::io::Error::last_os_error())));
+    }
+    
+    let decrypted = unsafe {
+        std::slice::from_raw_parts(output_blob.pbData, output_blob.cbData as usize).to_vec()
+    };
+    
+    unsafe { LocalFree(output_blob.pbData as *mut _); }
+    
+    Ok(decrypted)
 }
 
 /// 触发Windsurf回调URL以完成登录
-async fn trigger_windsurf_callback(auth_token: &str) -> AppResult<()> {
+async fn trigger_windsurf_callback(app: &tauri::AppHandle, auth_token: &str) -> AppResult<()> {
     // 生成state参数
     let state = Uuid::new_v4().to_string();
     
@@ -202,35 +459,49 @@ async fn trigger_windsurf_callback(auth_token: &str) -> AppResult<()> {
     
     let callback_url = format!("windsurf://codeium.windsurf#{}", fragment);
     
-    info!("Triggering Windsurf callback: {}", callback_url);
+    info!("Triggering Windsurf callback: windsurf://codeium.windsurf#access_token=<hidden>&state={}&token_type=Bearer", state);
     
-    // 使用系统默认程序打开URL（触发Windsurf处理）
+    // Windows: 使用 Windsurf CLI --open-url 直接传递给运行中的 Windsurf 实例（避免 ShellExecuteW 弹出 Git Bash）
     #[cfg(target_os = "windows")]
     {
-        use std::process::Command;
-        // 使用 PowerShell 的 Start-Process 来正确处理包含特殊字符的 URL
-        Command::new("powershell")
-            .args(&["-NoProfile", "-Command", &format!("Start-Process '{}'", callback_url)])
-            .creation_flags(CREATE_NO_WINDOW)
-            .spawn()
-            .map_err(|e| AppError::FileOperation(format!("Failed to open URL: {}", e)))?;
+        if let Some(exe_path) = find_windsurf_exe() {
+            use std::os::windows::process::CommandExt;
+            let output = std::process::Command::new(&exe_path)
+                .arg("--open-url")
+                .arg(&callback_url)
+                .creation_flags(0x08000000) // CREATE_NO_WINDOW
+                .output();
+            match output {
+                Ok(o) => {
+                    if !o.status.success() {
+                        let stderr = String::from_utf8_lossy(&o.stderr);
+                        warn!("Windsurf --open-url exited with {}: {}", o.status, stderr.trim());
+                    }
+                    info!("Successfully triggered Windsurf callback via CLI");
+                }
+                Err(e) => {
+                    warn!("Windsurf CLI failed ({}), falling back to opener", e);
+                    use tauri_plugin_opener::OpenerExt;
+                    app.opener()
+                        .open_url(&callback_url, None::<&str>)
+                        .map_err(|e| AppError::FileOperation(format!("Failed to open URL: {}", e)))?;
+                }
+            }
+        } else {
+            // 找不到 Windsurf 可执行文件时回退到 opener
+            use tauri_plugin_opener::OpenerExt;
+            app.opener()
+                .open_url(&callback_url, None::<&str>)
+                .map_err(|e| AppError::FileOperation(format!("Failed to open URL: {}", e)))?;
+        }
     }
     
-    #[cfg(target_os = "macos")]
+    // macOS/Linux: 直接使用 opener 打开回调URL
+    #[cfg(not(target_os = "windows"))]
     {
-        use std::process::Command;
-        Command::new("open")
-            .arg(&callback_url)
-            .spawn()
-            .map_err(|e| AppError::FileOperation(format!("Failed to open URL: {}", e)))?;
-    }
-    
-    #[cfg(target_os = "linux")]
-    {
-        use std::process::Command;
-        Command::new("xdg-open")
-            .arg(&callback_url)
-            .spawn()
+        use tauri_plugin_opener::OpenerExt;
+        app.opener()
+            .open_url(&callback_url, None::<&str>)
             .map_err(|e| AppError::FileOperation(format!("Failed to open URL: {}", e)))?;
     }
     
@@ -239,11 +510,102 @@ async fn trigger_windsurf_callback(auth_token: &str) -> AppResult<()> {
 }
 
 
+/// 重启 Windsurf：关闭现有进程，等待退出，然后重新启动
+#[cfg(target_os = "windows")]
+async fn restart_windsurf() -> bool {
+    use std::process::Command;
+    
+    // 查找 Windsurf 可执行路径
+    let windsurf_exe = find_windsurf_exe();
+    
+    // 关闭 Windsurf 进程
+    info!("Killing Windsurf processes...");
+    let kill_result = Command::new("taskkill")
+        .args(&["/F", "/IM", "Windsurf.exe"])
+        .output();
+    
+    match &kill_result {
+        Ok(output) => {
+            if output.status.success() {
+                info!("Windsurf processes killed");
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                warn!("taskkill output: {}", stderr.trim());
+            }
+        }
+        Err(e) => {
+            error!("Failed to run taskkill: {}", e);
+            return false;
+        }
+    }
+    
+    // 等待进程完全退出
+    tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
+    
+    // 重新启动 Windsurf
+    if let Some(exe_path) = windsurf_exe {
+        info!("Restarting Windsurf from: {}", exe_path);
+        match Command::new(&exe_path)
+            .spawn()
+        {
+            Ok(_) => {
+                info!("Windsurf restarted successfully");
+                return true;
+            }
+            Err(e) => {
+                error!("Failed to restart Windsurf: {}", e);
+            }
+        }
+    } else {
+        warn!("Could not find Windsurf executable path");
+    }
+    
+    false
+}
+
+/// 查找 Windsurf 可执行文件路径
+#[cfg(target_os = "windows")]
+fn find_windsurf_exe() -> Option<String> {
+    let candidates = [
+        r"C:\Program Files\Windsurf\Windsurf.exe",
+        r"C:\Users\Default\AppData\Local\Programs\Windsurf\Windsurf.exe",
+    ];
+    
+    // 先检查常见路径
+    for path in &candidates {
+        if std::path::Path::new(path).exists() {
+            return Some(path.to_string());
+        }
+    }
+    
+    // 尝试从用户 LOCALAPPDATA 查找
+    if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+        let user_path = format!(r"{}\Programs\Windsurf\Windsurf.exe", local_app_data);
+        if std::path::Path::new(&user_path).exists() {
+            return Some(user_path);
+        }
+    }
+    
+    // 尝试 which/where 查找
+    if let Ok(output) = std::process::Command::new("where").arg("Windsurf").output() {
+        if output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() {
+                return Some(path.lines().next().unwrap_or(&path).to_string());
+            }
+        }
+    }
+    
+    None
+}
+
 /// 一键切换账号命令（简化版：使用回调URL登录）
 #[tauri::command]
 pub async fn switch_account(
+    app: tauri::AppHandle,
     id: String,
     data_store: State<'_, Arc<DataStore>>,
+    machine_id_store: State<'_, Arc<crate::commands::machine_id_commands::MachineIdStore>>,
 ) -> Result<Value, String> {
     info!("Switching account: {}", id);
     
@@ -265,49 +627,10 @@ pub async fn switch_account(
     
     let refresh_token = account.refresh_token.unwrap();
     
-    // Step 1: 检查本地token是否有效
-    let (access_token, expires_in) = if let (Some(token), Some(expires_at)) = (&account.token, &account.token_expires_at) {
-        // 检查token是否还有至少5分钟有效期
-        let now = Utc::now();
-        let buffer = chrono::Duration::minutes(5);
-        if *expires_at > now + buffer {
-            info!("Using cached access token, expires at: {}", expires_at);
-            let remaining_seconds = (*expires_at - now).num_seconds();
-            (token.clone(), remaining_seconds.to_string())
-        } else {
-            info!("Token expired or expiring soon, refreshing...");
-            let token_response = match refresh_access_token(&refresh_token).await {
-                Ok(resp) => resp,
-                Err(e) => {
-                    error!("Failed to refresh access token: {:?}", e);
-                    return Ok(json!({
-                        "success": false,
-                        "error": format!("获取access_token失败: {}", e)
-                    }));
-                }
-            };
-            (token_response.access_token, token_response.expires_in)
-        }
-    } else {
-        // 没有本地token，需要刷新
-        info!("No cached token, refreshing access token...");
-        let token_response = match refresh_access_token(&refresh_token).await {
-            Ok(resp) => resp,
-            Err(e) => {
-                error!("Failed to refresh access token: {:?}", e);
-                return Ok(json!({
-                    "success": false,
-                    "error": format!("获取access_token失败: {}", e)
-                }));
-            }
-        };
-        (token_response.access_token, token_response.expires_in)
-    };
-    
-    // Step 2: 获取auth_token
-    info!("Getting auth token...");
-    let auth_token = match get_auth_token(&access_token).await {
-        Ok(token) => token,
+    // Step 1: 刷新Firebase token + 调用RegisterUser获取apiKey
+    info!("Getting auth token via Firebase refresh...");
+    let (register_result, id_token, access_token, expires_in) = match get_auth_token(&refresh_token).await {
+        Ok(result) => result,
         Err(e) => {
             error!("Failed to get auth token: {:?}", e);
             return Ok(json!({
@@ -317,28 +640,43 @@ pub async fn switch_account(
         }
     };
     
-    // Step 3: 尝试重置机器ID（可能需要管理员权限）
-    info!("Attempting to reset machine ID...");
-    let reset_result = reset_machine_id_internal().await;
-    let machine_id_reset = match reset_result {
-        Ok(_) => {
-            info!("Machine ID reset successful");
-            true
-        },
-        Err(e) => {
-            warn!("Failed to reset machine ID: {:?}", e);
-            warn!("重置机器ID失败，可能需要管理员权限。但切换账号仍可继续。");
-            false
+    // Step 2: 根据设置决定是否重置机器ID
+    let settings = data_store.get_settings().await.map_err(|e| e.to_string())?;
+    let should_reset = settings.reset_machine_id_on_switch;
+    
+    let machine_id_reset = if should_reset {
+        info!("Attempting to reset machine ID (setting enabled)...");
+        // 重置前自动保存当前设备码
+        crate::commands::machine_id_commands::auto_save_before_reset(
+            &machine_id_store,
+            Some(account.email.clone()),
+            Some(id.clone()),
+        ).await;
+        
+        let reset_result = reset_machine_id_internal().await;
+        match reset_result {
+            Ok(_) => {
+                info!("Machine ID reset successful");
+                true
+            },
+            Err(e) => {
+                warn!("Failed to reset machine ID: {:?}", e);
+                warn!("重置机器ID失败，可能需要管理员权限。但切换账号仍可继续。");
+                false
+            }
         }
+    } else {
+        info!("Skipping machine ID reset (setting disabled)");
+        false
     };
     
-    // Step 4: 触发Windsurf回调URL以自动登录
-    info!("Triggering Windsurf callback...");
-    if let Err(e) = trigger_windsurf_callback(&auth_token).await {
-        error!("Failed to trigger callback: {:?}", e);
+    // Step 3: 通过回调URL触发无感切号（extension.js 补丁中的 handleAuthToken 会处理全部流程）
+    info!("Triggering seamless account switch via callback URL...");
+    if let Err(e) = trigger_windsurf_callback(&app, &id_token).await {
+        error!("Callback failed: {}", e);
         return Ok(json!({
             "success": false,
-            "error": format!("触发Windsurf登录失败: {}", e)
+            "error": format!("触发回调URL失败: {}", e)
         }));
     }
     
@@ -352,22 +690,22 @@ pub async fn switch_account(
         error!("Failed to update account token: {:?}", e);
     }
     
-    // 更新自动换号设置中的当前账号ID（手动切号时同步更新）
-    if let Ok(mut current_settings) = data_store.get_settings().await {
-        current_settings.auto_switch_current_account_id = Some(id.clone());
-        let _ = data_store.update_settings(current_settings).await;
-    }
+    info!("Successfully switched Windsurf account to: {}", register_result.name);
     
-    info!("Successfully triggered Windsurf login for account");
+    // 更新自动换号跟踪的当前账号ID
+    if let Ok(mut settings) = data_store.get_settings().await {
+        settings.auto_switch_current_account_id = Some(id.clone());
+        let _ = data_store.update_settings(settings).await;
+    }
     
     Ok(json!({
         "success": true,
         "message": if machine_id_reset {
-            "已成功触发Windsurf登录并重置机器ID"
+            "已成功无感切换账号并重置机器ID"
         } else {
-            "已成功触发Windsurf登录（未重置机器ID，可能需要管理员权限）"
+            "已成功无感切换账号"
         },
-        "auth_token": auth_token,
+        "api_key": register_result.api_key,
         "machine_id_reset": machine_id_reset
     }))
 }
@@ -635,7 +973,9 @@ pub fn is_root() -> bool {
 /// 候选账号需同时满足：周配额>0 且 日配额>阈值
 #[tauri::command]
 pub async fn check_auto_switch(
+    app: tauri::AppHandle,
     data_store: State<'_, Arc<DataStore>>,
+    machine_id_store: State<'_, Arc<crate::commands::machine_id_commands::MachineIdStore>>,
 ) -> Result<Value, String> {
     let settings = data_store.get_settings().await.map_err(|e| e.to_string())?;
     
@@ -656,7 +996,7 @@ pub async fn check_auto_switch(
     
     let editor_email = windsurf_info.email.clone();
     
-    // 获取所有账号
+    // 获取分组内所有账号
     let all_accounts = data_store.get_all_accounts().await.map_err(|e| e.to_string())?;
     
     // 在分组内匹配编辑器当前登录的账号
@@ -669,15 +1009,18 @@ pub async fn check_auto_switch(
         None
     };
     
-    // null → A：编辑器未登录或未匹配到账号，直接找候选号切换
+    // null → A 情况：编辑器未登录或未匹配到账号，直接进入候选选择流程
     let (current_account, current_id_str) = match current_account {
         Some(acc) => {
             let id_str = acc.id.to_string();
             (acc, id_str)
         }
         None => {
+            // 编辑器无登录账号或账号不在管理列表中，直接找候选号切换
             println!("[自动换号] 编辑器当前无已识别账号(email={:?})，将直接选择候选号切换", editor_email);
             
+            // 跳到候选号选择逻辑（设置 dummy 值以继续后续流程）
+            // 构造一个"需要切换"的场景
             let group_candidates: Vec<_> = all_accounts.iter()
                 .filter(|a| {
                     a.group.as_deref() == Some(group)
@@ -694,6 +1037,7 @@ pub async fn check_auto_switch(
                 }));
             }
             
+            // 直接找配额最充足的候选号
             let windsurf_service = crate::services::windsurf_service::WindsurfService::new();
             let is_free_plan = |acc: &crate::models::Account| -> bool {
                 acc.plan_name.as_ref().map(|p| p.to_lowercase().contains("free")).unwrap_or(true)
@@ -721,6 +1065,7 @@ pub async fn check_auto_switch(
                 }
             }
             
+            // 没有缓存合适的，刷新后再找
             if best_candidate.is_none() {
                 let cache_ttl = chrono::Duration::minutes(3);
                 let now = chrono::Utc::now();
@@ -769,30 +1114,15 @@ pub async fn check_auto_switch(
                 Some(rt) if !rt.is_empty() => rt.clone(),
                 _ => return Ok(json!({ "action": "error", "reason": format!("目标账号 {} 没有refresh_token", target_email) })),
             };
-            let (access_token, expires_in) = if let (Some(token), Some(expires_at)) = (&target_account.token, &target_account.token_expires_at) {
-                let now = Utc::now();
-                if *expires_at > now + chrono::Duration::minutes(5) {
-                    (token.clone(), (*expires_at - now).num_seconds().to_string())
-                } else {
-                    match refresh_access_token(&refresh_token).await {
-                        Ok(resp) => (resp.access_token, resp.expires_in),
-                        Err(e) => return Ok(json!({ "action": "error", "reason": format!("刷新目标账号token失败: {}", e) })),
-                    }
-                }
-            } else {
-                match refresh_access_token(&refresh_token).await {
-                    Ok(resp) => (resp.access_token, resp.expires_in),
-                    Err(e) => return Ok(json!({ "action": "error", "reason": format!("获取目标账号token失败: {}", e) })),
-                }
-            };
-            let auth_token = match get_auth_token(&access_token).await {
-                Ok(t) => t,
+            let (register_result, id_token, access_token, expires_in) = match get_auth_token(&refresh_token).await {
+                Ok(r) => r,
                 Err(e) => return Ok(json!({ "action": "error", "reason": format!("获取auth_token失败: {}", e) })),
             };
-            let _ = reset_machine_id_internal().await;
-            if let Err(e) = trigger_windsurf_callback(&auth_token).await {
-                return Ok(json!({ "action": "error", "reason": format!("触发Windsurf登录失败: {}", e) }));
+            if settings.reset_machine_id_on_switch {
+                crate::commands::machine_id_commands::auto_save_before_reset(&machine_id_store, editor_email.clone(), None).await;
+                let _ = reset_machine_id_internal().await;
             }
+            let _ = trigger_windsurf_callback(&app, &id_token).await;
             let expires_at = Utc::now() + chrono::Duration::seconds(expires_in.parse::<i64>().unwrap_or(3600));
             let _ = data_store.update_account_token(target_id, access_token, expires_at).await;
             let mut new_settings = settings.clone();
@@ -899,28 +1229,33 @@ pub async fn check_auto_switch(
     };
     
     // 候选号比较逻辑：非Free优先，然后日配额最高
+    // 返回true表示new_acc比current更优
     let is_better_candidate = |new_daily: i32, new_is_free: bool, cur: &Option<(Uuid, String, i32, i32, bool)>| -> bool {
         match cur {
             None => true,
             Some((_, _, cur_daily, _, cur_is_free)) => {
+                // 非Free优先于Free
                 if !new_is_free && *cur_is_free {
                     return true;
                 }
                 if new_is_free && !*cur_is_free {
                     return false;
                 }
+                // 同类型中，日配额更高的优先
                 new_daily > *cur_daily
             }
         }
     };
     
     // 查找配额最高的账号（候选条件：周配额>0 且 日配额>阈值，Free账号优先级最低）
+    // best_candidate: (id, email, daily, weekly, is_free)
     let mut best_candidate: Option<(Uuid, String, i32, i32, bool)> = None;
     
     for acc in &group_accounts {
         let daily = acc.daily_quota_remaining.unwrap_or(0);
         let weekly = acc.weekly_quota_remaining.unwrap_or(0);
         let acc_is_free = is_free_plan(acc);
+        // 候选号必须同时满足：周配额>0 且 日配额>阈值
         if daily > threshold && weekly > 0 {
             if is_better_candidate(daily, acc_is_free, &best_candidate) {
                 best_candidate = Some((acc.id, acc.email.clone(), daily, weekly, acc_is_free));
@@ -929,6 +1264,7 @@ pub async fn check_auto_switch(
     }
     
     // 如果没有找到已缓存的合适账号，逐个刷新分组账号配额再验证
+    // 优化：跳过3分钟内已刷新过的账号，避免频繁API调用
     if best_candidate.is_none() {
         let cache_ttl = chrono::Duration::minutes(3);
         let now = chrono::Utc::now();
@@ -937,6 +1273,7 @@ pub async fn check_auto_switch(
         
         println!("[自动换号] 缓存数据中未找到合适账号，逐个刷新分组账号配额...");
         for acc in &group_accounts {
+            // 如果账号在3分钟内已刷新过，使用缓存数据
             if let Some(last_update) = acc.last_quota_update {
                 if now - last_update < cache_ttl {
                     skipped_count += 1;
@@ -977,6 +1314,7 @@ pub async fn check_auto_switch(
                         let acc_is_free = is_free_plan(acc);
                         println!("[自动换号] 刷新账号 {}: 日{}%, 周{}%{}", acc.email, daily, weekly, if acc_is_free { " (Free)" } else { "" });
                         
+                        // 候选号必须同时满足：周配额>0 且 日配额>阈值
                         if daily > threshold && weekly > 0 {
                             if is_better_candidate(daily, acc_is_free, &best_candidate) {
                                 best_candidate = Some((acc.id, acc.email.clone(), daily, weekly, acc_is_free));
@@ -1017,39 +1355,9 @@ pub async fn check_auto_switch(
         }
     };
     
-    // 获取 access token
-    let (access_token, expires_in) = if let (Some(token), Some(expires_at)) = (&target_account.token, &target_account.token_expires_at) {
-        let now = Utc::now();
-        let buffer = chrono::Duration::minutes(5);
-        if *expires_at > now + buffer {
-            let remaining = (*expires_at - now).num_seconds();
-            (token.clone(), remaining.to_string())
-        } else {
-            match refresh_access_token(&refresh_token).await {
-                Ok(resp) => (resp.access_token, resp.expires_in),
-                Err(e) => {
-                    return Ok(json!({
-                        "action": "error",
-                        "reason": format!("刷新目标账号token失败: {}", e)
-                    }));
-                }
-            }
-        }
-    } else {
-        match refresh_access_token(&refresh_token).await {
-            Ok(resp) => (resp.access_token, resp.expires_in),
-            Err(e) => {
-                return Ok(json!({
-                    "action": "error",
-                    "reason": format!("获取目标账号token失败: {}", e)
-                }));
-            }
-        }
-    };
-    
-    // 获取 auth_token
-    let auth_token = match get_auth_token(&access_token).await {
-        Ok(token) => token,
+    // 获取 auth_token (Windsurf 2.0+: RegisterUser获取apiKey)
+    let (register_result, id_token, access_token, expires_in) = match get_auth_token(&refresh_token).await {
+        Ok(r) => r,
         Err(e) => {
             return Ok(json!({
                 "action": "error",
@@ -1058,16 +1366,19 @@ pub async fn check_auto_switch(
         }
     };
     
-    // 重置机器ID
-    let _ = reset_machine_id_internal().await;
-    
-    // 触发 Windsurf 回调
-    if let Err(e) = trigger_windsurf_callback(&auth_token).await {
-        return Ok(json!({
-            "action": "error",
-            "reason": format!("触发Windsurf登录失败: {}", e)
-        }));
+    // 根据设置决定是否重置机器ID
+    if settings.reset_machine_id_on_switch {
+        // 重置前自动保存当前设备码
+        crate::commands::machine_id_commands::auto_save_before_reset(
+            &machine_id_store,
+            Some(current_account.email.clone()),
+            Some(current_id_str.clone()),
+        ).await;
+        let _ = reset_machine_id_internal().await;
     }
+    
+    // 无感切号：通过回调URL触发
+    let _ = trigger_windsurf_callback(&app, &id_token).await;
     
     // 更新目标账号的token信息
     let expires_at = Utc::now() + chrono::Duration::seconds(expires_in.parse::<i64>().unwrap_or(3600));

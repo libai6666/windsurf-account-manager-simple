@@ -948,6 +948,7 @@ pub async fn get_trial_payment_link_enhanced(
     // 调用subscribe_to_plan方法获取支付链接
     let result = service.subscribe_to_plan(
         &token, 
+        None,
         teams_tier,
         payment_period,
         team_name.as_deref(),

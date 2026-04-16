@@ -50,7 +50,7 @@ headless_chrome = "1.0"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
-winapi = { version = "0.3", features = ["securitybaseapi", "processthreadsapi", "winnt", "handleapi", "minwindef", "shellapi", "winuser"] }
+winapi = { version = "0.3", features = ["securitybaseapi", "processthreadsapi", "winnt", "handleapi", "minwindef", "shellapi", "winuser", "dpapi", "wincrypt"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
