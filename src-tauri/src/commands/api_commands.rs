@@ -40,6 +40,49 @@ pub fn is_401_error(result: &serde_json::Value) -> bool {
         .unwrap_or(false)
 }
 
+/// 按 refresh_token 类型选择刷新方式，失败时才回退到密码登录。
+/// - `auth1_` 开头: 调 `WindsurfPostAuth`（新版 Windsurf 2.0 账号，无需密码）
+/// - 其他: 调 Firebase `securetoken` 端点（老版 Firebase 账号）
+/// - 两者都失败或没有 refresh_token 时，才调 `sign_in_compat` 走密码登录
+///
+/// 这样可以避免批量刷新时，因为 Firebase 端点对 auth1 token 的必然失败，
+/// 导致 20+ 并发同时打 `_devin-auth/password/login` 触发 429 Rate Limit。
+async fn refresh_token_or_relogin(
+    auth_service: &AuthService,
+    store: &Arc<DataStore>,
+    uuid: Uuid,
+    email: &str,
+    refresh_token: Option<&str>,
+) -> Result<(String, String, chrono::DateTime<chrono::Utc>), String> {
+    if let Some(rt) = refresh_token {
+        let refresh_result = if rt.starts_with("auth1_") {
+            auth_service.refresh_session_with_auth1(rt).await
+        } else {
+            auth_service.refresh_token(rt).await
+        };
+
+        match refresh_result {
+            Ok(result) => return Ok(result),
+            Err(e) => {
+                log::warn!(
+                    "[refresh_token_or_relogin] {} refresh 失败 ({})，回退到密码登录",
+                    email, e
+                );
+            }
+        }
+    }
+
+    // 回退：调 _devin-auth/password/login 重新登录
+    let password = store
+        .get_decrypted_password(uuid)
+        .await
+        .map_err(|e| e.to_string())?;
+    auth_service
+        .sign_in_compat(email, &password)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// 确保账户有有效的Token（支持强制刷新）
 /// force_refresh: 强制刷新token，用于处理服务器端使token失效的情况（如401错误）
 pub async fn ensure_valid_token_with_force(
@@ -62,29 +105,14 @@ pub async fn ensure_valid_token_with_force(
     
     let auth_service = AuthService::new();
     
-    // 优先尝试使用refresh token
-    let (token, refresh_token_new, expires_at) = if let Some(refresh_token) = &account.refresh_token {
-        match auth_service.refresh_token(refresh_token).await {
-            Ok(result) => result,
-            Err(_) => {
-                // refresh token失败，重新登录
-                let password = store.get_decrypted_password(uuid)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                auth_service.sign_in_compat(&account.email, &password)
-                    .await
-                    .map_err(|e| e.to_string())?
-            }
-        }
-    } else {
-        // 没有refresh token，直接重新登录
-        let password = store.get_decrypted_password(uuid)
-            .await
-            .map_err(|e| e.to_string())?;
-        auth_service.sign_in_compat(&account.email, &password)
-            .await
-            .map_err(|e| e.to_string())?
-    };
+    // 优先尝试使用refresh token（按 auth1_ 前缀路由，避免新账号走 Firebase 端点然后无谓地回退到密码登录）
+    let (token, refresh_token_new, expires_at) = refresh_token_or_relogin(
+        &auth_service,
+        store,
+        uuid,
+        &account.email,
+        account.refresh_token.as_deref(),
+    ).await?;
     
     // 更新token到数据库
     store.update_account_tokens(uuid, token.clone(), refresh_token_new.clone(), expires_at)
@@ -294,30 +322,14 @@ pub async fn refresh_token(
     
     let auth_service = AuthService::new();
     
-    // 优先尝试使用refresh token
-    let (token, refresh_token_new, expires_at) = if let Some(refresh_token) = &account.refresh_token {
-        // 尝试使用refresh token
-        match auth_service.refresh_token(refresh_token).await {
-            Ok(result) => result,
-            Err(_) => {
-                // refresh token失败，重新登录
-                let password = store.get_decrypted_password(uuid)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                auth_service.sign_in_compat(&account.email, &password)
-                    .await
-                    .map_err(|e| e.to_string())?
-            }
-        }
-    } else {
-        // 没有refresh token，直接重新登录
-        let password = store.get_decrypted_password(uuid)
-            .await
-            .map_err(|e| e.to_string())?;
-        auth_service.sign_in_compat(&account.email, &password)
-            .await
-            .map_err(|e| e.to_string())?
-    };
+    // 优先尝试使用refresh token（按 auth1_ 前缀路由，避免新账号走 Firebase 端点然后无谓地回退到密码登录）
+    let (token, refresh_token_new, expires_at) = refresh_token_or_relogin(
+        &auth_service,
+        &store,
+        uuid,
+        &account.email,
+        account.refresh_token.as_deref(),
+    ).await?;
     
     // 更新Token和Refresh Token
     store.update_account_tokens(uuid, token.clone(), refresh_token_new, expires_at)
@@ -1131,6 +1143,8 @@ fn get_current_user_internal<'a>(
                 }
 
                 updated_account.last_quota_update = Some(chrono::Utc::now());
+                // API 调通说明账号有效，把 status 重置为 Active（防止被历史 Error 状态卡住前端 UI）
+                updated_account.status = crate::models::AccountStatus::Active;
                 store.update_account(updated_account).await
                     .map_err(|e| format!("保存账户信息失败: {}", e))?;
             }
@@ -1240,6 +1254,8 @@ fn get_current_user_internal<'a>(
             }
 
             updated_account.last_quota_update = Some(chrono::Utc::now());
+            // API 调通说明账号有效，把 status 重置为 Active（防止被历史 Error 状态卡住前端 UI）
+            updated_account.status = crate::models::AccountStatus::Active;
 
             // 保存更新后的账户信息
             store.update_account(updated_account).await
@@ -1502,19 +1518,15 @@ async fn refresh_token_internal(
     let account = store.get_account(uuid).await.map_err(|e| e.to_string())?;
     let auth_service = AuthService::new();
     
-    // 刷新 token
-    let (token, refresh_token_new, expires_at) = if let Some(ref_token) = &account.refresh_token {
-        match auth_service.refresh_token(ref_token).await {
-            Ok(result) => result,
-            Err(_) => {
-                let password = store.get_decrypted_password(uuid).await.map_err(|e| e.to_string())?;
-                auth_service.sign_in_compat(&account.email, &password).await.map_err(|e| e.to_string())?
-            }
-        }
-    } else {
-        let password = store.get_decrypted_password(uuid).await.map_err(|e| e.to_string())?;
-        auth_service.sign_in_compat(&account.email, &password).await.map_err(|e| e.to_string())?
-    };
+    // 刷新 token：auth1_ 前缀走 WindsurfPostAuth，其他走 Firebase，两者失败才 fallback 到密码登录
+    // 避免批量刷新时 20+ 并发同时打 _devin-auth/password/login 导致 429
+    let (token, refresh_token_new, expires_at) = refresh_token_or_relogin(
+        &auth_service,
+        store,
+        uuid,
+        &account.email,
+        account.refresh_token.as_deref(),
+    ).await?;
     
     // 使用延迟保存的方法更新 token
     if save_immediately {

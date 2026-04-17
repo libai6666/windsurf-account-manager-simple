@@ -458,6 +458,74 @@ impl AuthService {
         })
     }
 
+    /// 使用 auth1_token 刷新 session_token（不获取 OTT）
+    /// 返回与旧 sign_in 相同的 (session_token, auth1_token, expires_at) 格式，便于替换 Firebase refresh_token 调用
+    pub async fn refresh_session_with_auth1(&self, auth1_token: &str) -> AppResult<(String, String, DateTime<Utc>)> {
+        info!("[refresh_session_with_auth1] Refreshing session via WindsurfPostAuth...");
+
+        let post_auth_body = encode_protobuf_string(1, auth1_token);
+        let post_auth_resp = match self.client
+            .post("https://windsurf.com/_backend/exa.seat_management_pb.SeatManagementService/WindsurfPostAuth")
+            .header("Content-Type", "application/proto")
+            .header("Connect-Protocol-Version", "1")
+            .body(post_auth_body)
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                super::report_request_success();
+                resp
+            }
+            Err(e) => {
+                if e.is_timeout() || e.is_connect() {
+                    super::report_timeout_error();
+                } else {
+                    super::report_request_failure();
+                }
+                return Err(AppError::Network(format!("WindsurfPostAuth failed: {}", e)));
+            }
+        };
+
+        if !post_auth_resp.status().is_success() {
+            let status = post_auth_resp.status();
+            let error_text = post_auth_resp.text().await.unwrap_or_default();
+            // auth1 失效 -> TokenExpired，让调用方回退到密码登录
+            if status.as_u16() == 401
+                || error_text.contains("unauthenticated")
+                || error_text.contains("invalid_token")
+            {
+                warn!("[refresh_session_with_auth1] auth1_token expired: {}", error_text);
+                return Err(AppError::TokenExpired);
+            }
+            return Err(AppError::Api(format!(
+                "WindsurfPostAuth error ({}): {}",
+                status, error_text
+            )));
+        }
+
+        let post_auth_bytes = post_auth_resp
+            .bytes()
+            .await
+            .map_err(|e| AppError::Api(format!("Failed to read WindsurfPostAuth response: {}", e)))?;
+        let fields = parse_protobuf_fields(&post_auth_bytes);
+
+        let session_token = fields
+            .get(&1)
+            .cloned()
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| AppError::Api("WindsurfPostAuth: missing session_token (field 1)".to_string()))?;
+
+        // 服务端未返回新 auth1 时，继续沿用旧的（避免把 refresh_token 覆盖成空字符串）
+        let refreshed_auth1 = fields
+            .get(&3)
+            .cloned()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| auth1_token.to_string());
+
+        let expires_at = Utc::now() + Duration::hours(1);
+        Ok((session_token, refreshed_auth1, expires_at))
+    }
+
     /// 使用 auth1_token 刷新 session 并获取新 OTT
     pub async fn refresh_ott(&self, auth1_token: &str) -> AppResult<WindsurfAuthResult> {
         info!("[refresh_ott] Refreshing OTT with auth1_token...");
