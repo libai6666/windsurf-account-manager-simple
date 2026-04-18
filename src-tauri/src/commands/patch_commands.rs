@@ -155,15 +155,41 @@ fn resolve_shortcut(_lnk_path: &Path) -> Result<PathBuf, String> {
 }
 
 /// 应用无感换号补丁
+///
+/// 参数：
+/// - `windsurf_path`：Windsurf 安装目录
+/// - `force`：是否强制重新打补丁。为 true 时会先尝试用最干净的备份还原 extension.js，再重新应用补丁，
+///   用于覆盖已损坏/旧版本补丁的场景。
 #[command]
 pub async fn apply_seamless_patch(
     windsurf_path: String,
+    force: Option<bool>,
     data_store: State<'_, Arc<DataStore>>,
 ) -> Result<serde_json::Value, String> {
     let extension_file = PathBuf::from(&windsurf_path).join(get_extension_js_relative_path());
     
     if !extension_file.exists() {
         return Err(format!("extension.js 文件不存在: {:?}", extension_file));
+    }
+    
+    let force = force.unwrap_or(false);
+    let mut restored_from_backup: Option<String> = None;
+    
+    // force 模式：先用最干净的备份覆盖当前文件，再走正常的打补丁流程
+    if force && is_file_patched(&extension_file) {
+        let extension_dir = extension_file.parent()
+            .ok_or("无法获取扩展目录")?
+            .to_path_buf();
+        let saved_backup = data_store
+            .get_settings()
+            .await
+            .map_err(|e| e.to_string())?
+            .patch_backup_path
+            .clone();
+        let backup_path = find_latest_backup(&extension_dir, &saved_backup)?;
+        fs::copy(&backup_path, &extension_file)
+            .map_err(|e| format!("还原备份失败: {} (备份文件: {:?})", e, backup_path))?;
+        restored_from_backup = Some(backup_path.to_string_lossy().to_string());
     }
     
     // 1. 先读取文件内容，检查是否已打补丁
@@ -213,13 +239,25 @@ pub async fn apply_seamless_patch(
         }
     }
     
-    // 4. 验证是否需要修改（如果内容没变化，说明已打过补丁，直接返回，不创建备份）
+    // 4. 验证是否需要修改
+    // 如果内容没变化，要进一步区分两种情况：
+    //   a) 文件确实已经打过补丁（包含补丁特征 "Failed to handle OAuth callback"）
+    //   b) 正则表达式未能匹配当前 Windsurf 版本（常见于首次安装最新版 Windsurf 的新用户，
+    //      之前这里被错误地当作 "已打过补丁" 从而陷入死循环）
     if modified_content == content {
-        return Ok(serde_json::json!({
-            "success": true,
-            "already_patched": true,
-            "message": "补丁已经应用过了"
-        }));
+        if is_file_patched(&extension_file) {
+            return Ok(serde_json::json!({
+                "success": true,
+                "already_patched": true,
+                "message": "补丁已经应用过了"
+            }));
+        } else {
+            return Err(
+                "补丁规则未能匹配当前 Windsurf 版本的 extension.js（首次使用/Windsurf 升级后常见）。\
+                请确认 Windsurf 版本，或点击\"重新打补丁\"按钮尝试从备份还原后再应用。"
+                    .to_string(),
+            );
+        }
     }
     
     // 5. 确认需要打补丁后，才管理和创建备份文件
@@ -285,7 +323,13 @@ pub async fn apply_seamless_patch(
         "success": true,
         "modifications": modifications,
         "backup_file": backup_file.to_string_lossy().to_string(),
-        "message": "补丁应用成功，Windsurf正在重启"
+        "restored_from_backup": restored_from_backup,
+        "forced": force,
+        "message": if force {
+            "补丁已重新应用，Windsurf正在重启"
+        } else {
+            "补丁应用成功，Windsurf正在重启"
+        }
     }))
 }
 
