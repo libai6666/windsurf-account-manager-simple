@@ -200,25 +200,48 @@ pub async fn apply_seamless_patch(
     let mut modifications = vec![];
     
     // 2. 应用修改1: 添加全局 OAuth 回调处理器
-    let pattern1_str = r#"this\._uriHandler\.event\((\w+)=>\{"/refresh-authentication-session"===(\w+)\.path&&\(0,(\w+)\.refreshAuthenticationSession\)\(\)\}\)"#;
-    let pattern1 = Regex::new(pattern1_str)
-        .map_err(|e| format!("正则表达式错误: {}", e))?;
-    
-    if let Some(captures) = pattern1.captures(&modified_content) {
-        let var_name1 = &captures[1];
-        let var_name2 = &captures[2];
-        let module_name = &captures[3];
-        
-        // 检查两个变量名是否相同
-        if var_name1 == var_name2 {
+    // 新版 Windsurf（三元表达式 + maybeHandleUriWithToken 分支）：
+    //   this._uriHandler.event(A=>{"/refresh-authentication-session"===A.path?(0,m.refreshAuthenticationSession)():this._loginInProgress||this.maybeHandleUriWithToken(A)})
+    let pattern1_new_str = r#"this\._uriHandler\.event\((\w+)=>\{"/refresh-authentication-session"===(\w+)\.path\?\(0,(\w+)\.refreshAuthenticationSession\)\(\):this\._loginInProgress\|\|this\.maybeHandleUriWithToken\((\w+)\)\}\)"#;
+    // 旧版 Windsurf（&& 短路写法）：
+    //   this._uriHandler.event(A=>{"/refresh-authentication-session"===A.path&&(0,m.refreshAuthenticationSession)()})
+    let pattern1_old_str = r#"this\._uriHandler\.event\((\w+)=>\{"/refresh-authentication-session"===(\w+)\.path&&\(0,(\w+)\.refreshAuthenticationSession\)\(\)\}\)"#;
+
+    let pattern1_new = Regex::new(pattern1_new_str)
+        .map_err(|e| format!("正则表达式错误(新): {}", e))?;
+    let pattern1_old = Regex::new(pattern1_old_str)
+        .map_err(|e| format!("正则表达式错误(旧): {}", e))?;
+
+    // 先尝试新版格式，再回退到旧版
+    let pattern1_match = pattern1_new
+        .captures(&modified_content)
+        .map(|c| ("new", c))
+        .or_else(|| pattern1_old.captures(&modified_content).map(|c| ("old", c)));
+
+    if let Some((variant, captures)) = pattern1_match {
+        let var_name1 = captures.get(1).map(|m| m.as_str()).unwrap_or("");
+        let var_name2 = captures.get(2).map(|m| m.as_str()).unwrap_or("");
+        let module_name = captures.get(3).map(|m| m.as_str()).unwrap_or("");
+        // 新版有第4个捕获组（maybeHandleUriWithToken 的参数名），旧版无
+        let var_name4 = captures.get(4).map(|m| m.as_str());
+
+        // 所有捕获到的变量名必须一致，避免误替换
+        let vars_consistent = var_name1 == var_name2
+            && var_name4.map(|v| v == var_name1).unwrap_or(true);
+
+        if vars_consistent && !var_name1.is_empty() && !module_name.is_empty() {
             let replacement = format!(
                 r#"this._uriHandler.event(async {}=>{{if("/refresh-authentication-session"==={}.path){{(0,{}.refreshAuthenticationSession)()}}else{{try{{const t=new URLSearchParams({}.fragment).get("access_token");if(null===t)throw new Error("No token");await this.handleAuthToken(t)}}catch(e){{console.error("[Windsurf] Failed to handle OAuth callback:",e)}}}}}})"#,
                 var_name1, var_name1, module_name, var_name1
             );
-            
-            let full_match = captures.get(0).unwrap().as_str();
-            modified_content = modified_content.replace(full_match, &replacement);
-            modifications.push("OAuth回调处理器");
+
+            let full_match = captures.get(0).unwrap().as_str().to_string();
+            modified_content = modified_content.replace(&full_match, &replacement);
+            modifications.push(if variant == "new" {
+                "OAuth回调处理器(新版格式)"
+            } else {
+                "OAuth回调处理器"
+            });
         }
     }
     
