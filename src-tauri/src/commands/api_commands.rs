@@ -82,6 +82,48 @@ pub fn is_401_error(result: &serde_json::Value) -> bool {
 
 
 
+fn find_stripe_session_id_from_logs(logs: &[OperationLog], account_id: Uuid) -> Option<String> {
+
+    logs.iter()
+
+        .rev()
+
+        .find_map(|log| {
+
+            if log.account_id != Some(account_id) {
+
+                return None;
+
+            }
+
+
+
+            log.details.as_ref().and_then(|details| {
+
+                details.get("stripe_session_id")
+
+                    .and_then(|v| v.as_str())
+
+                    .map(|s| s.to_string())
+
+                    .or_else(|| {
+
+                        details.get("stripe_url")
+
+                            .and_then(|v| v.as_str())
+
+                            .and_then(WindsurfService::extract_checkout_session_id)
+
+                    })
+
+            })
+
+        })
+
+}
+
+
+
 /// 按 refresh_token 类型选择刷新方式，失败时才回退到密码登录。
 
 /// - `auth1_` 开头: 调 `WindsurfPostAuth`（新版 Windsurf 2.0 账号，无需密码）
@@ -1526,7 +1568,11 @@ pub async fn get_billing(
 
     // 确保有有效的Token（优先使用缓存）
 
-    ensure_valid_token(&store, &mut account, uuid).await?;
+    // 新账号 (auth1_) 走 _backend/ 代理 + Devin 认证，需要新鲜的 session_token
+
+    let force = account.refresh_token.as_ref().map_or(false, |rt| rt.starts_with("auth1_"));
+
+    ensure_valid_token_with_force(&store, &mut account, uuid, force).await?;
 
     
 
@@ -1534,17 +1580,353 @@ pub async fn get_billing(
 
     let token = account.token.ok_or("No token available")?;
 
+    let refresh_token = account.refresh_token.clone();
+
+    
+
+    // 新账号把 auth1_token 传给 get_team_billing 做 Devin 认证
+
+    let auth1 = refresh_token.as_deref().filter(|t| t.starts_with("auth1_"));
+
+    let is_new_account = auth1.is_some();
+
     
 
     // 获取账单信息
 
     let windsurf_service = WindsurfService::new();
 
-    let result = windsurf_service.get_team_billing(&token)
+    let mut result = windsurf_service.get_team_billing(&token, auth1)
 
         .await
 
         .map_err(|e: AppError| e.to_string())?;
+
+    
+
+    // 新账号 (Windsurf 2.0) 的 GetTeamBilling 不返回 plan_name / 配额 / 支付方式
+
+    // 用 GetPlanStatus 补位 plan_name 和配额（银行卡需 Stripe Portal，暂不支持）
+
+    if is_new_account {
+
+        match windsurf_service.get_plan_status(&token).await {
+
+            Ok(plan_status_result) => {
+
+                if plan_status_result.get("success").and_then(|v| v.as_bool()).unwrap_or(false) {
+
+                    if let Some(plan_status) = plan_status_result.get("plan_status") {
+
+                        // 1. plan_name: GetTeamBilling 没给才补
+
+                        let need_plan_name = result.get("plan_name")
+
+                            .and_then(|v| v.as_str())
+
+                            .map(|s| s.is_empty())
+
+                            .unwrap_or(true);
+
+                        if need_plan_name {
+
+                            if let Some(name) = plan_status.get("plan_name").and_then(|v| v.as_str()) {
+
+                                result["plan_name"] = serde_json::json!(name);
+
+                            }
+
+                        }
+
+                        
+
+                        // 2. 配额: GetTeamBilling 没给 total_quota 或为 0 才补
+
+                        let existing_total = result.get("total_quota")
+
+                            .and_then(|v| v.as_i64())
+
+                            .unwrap_or(0);
+
+                        if existing_total == 0 {
+
+                            let monthly_prompt = plan_status.get("monthly_prompt_credits")
+
+                                .and_then(|v| v.as_i64())
+
+                                .unwrap_or(0);
+
+                            let available_flex = plan_status.get("available_flex_credits")
+
+                                .and_then(|v| v.as_i64())
+
+                                .unwrap_or(0);
+
+                            let used_prompt = plan_status.get("used_prompt_credits")
+
+                                .and_then(|v| v.as_i64())
+
+                                .unwrap_or(0);
+
+                            let monthly_flow = plan_status.get("monthly_flow_credits")
+
+                                .and_then(|v| v.as_i64())
+
+                                .unwrap_or(0);
+
+                            
+
+                            if monthly_prompt > 0 {
+
+                                result["base_quota"] = serde_json::json!(monthly_prompt);
+
+                                result["total_quota"] = serde_json::json!(monthly_prompt + available_flex);
+
+                                result["used_quota"] = serde_json::json!(used_prompt);
+
+                                if available_flex > 0 {
+
+                                    result["extra_credits"] = serde_json::json!(available_flex);
+
+                                }
+
+                                // cache_limit 用 flow credits 近似表示（老账号是 subMesssage_12.int_9）
+
+                                if monthly_flow > 0 {
+
+                                    result["cache_limit"] = serde_json::json!(monthly_flow);
+
+                                }
+
+                            }
+
+                        }
+
+                        
+
+                        // 3. 标记为新账号 + 附加 plan_status 原始数据（便于前端展示"完整账单请到 Stripe Portal 查看"）
+
+                        result["is_new_account"] = serde_json::json!(true);
+
+                        result["plan_status_data"] = plan_status.clone();
+
+                    }
+
+                } else {
+
+                    log::warn!("[get_billing] GetPlanStatus 返回失败: {:?}", plan_status_result.get("error"));
+
+                }
+
+            },
+
+            Err(e) => {
+
+                log::warn!("[get_billing] GetPlanStatus 调用失败（不影响主流程）: {}", e);
+
+            }
+
+        }
+
+        
+
+        // 4. 支付方式: _backend/ 代理不返回 payment_method，
+
+        let mut acc_full = store.get_account(uuid).await.ok();
+
+        if result.get("payment_method").is_none() {
+
+            let stripe_session_id_from_logs = match store.get_logs(Some(1000)).await {
+
+                Ok(logs) => find_stripe_session_id_from_logs(&logs, uuid),
+
+                Err(_) => None,
+
+            };
+
+
+
+            let stripe_session_id = acc_full.as_ref()
+
+                .and_then(|acc| acc.stripe_checkout_session_id.clone())
+
+                .or(stripe_session_id_from_logs);
+
+
+
+            if let Some(session_id) = stripe_session_id {
+
+                log::info!("[get_billing] 尝试通过 Stripe session 回查支付方式: {}", session_id);
+
+                match windsurf_service.get_stripe_payment_method_from_session(&session_id).await {
+
+                    Ok(Some(pm)) => {
+
+                        log::info!("[get_billing] Stripe 回查成功: {:?}", pm);
+
+                        result["payment_method"] = pm.clone();
+
+
+
+                        if let Some(acc) = acc_full.as_mut() {
+
+                            let mut dirty = false;
+
+
+
+                            if acc.stripe_checkout_session_id.as_deref() != Some(session_id.as_str()) {
+
+                                acc.stripe_checkout_session_id = Some(session_id.clone());
+
+                                dirty = true;
+
+                            }
+
+
+
+                            if let Some(last4) = pm.get("last4").and_then(|v| v.as_str()) {
+
+                                if acc.bound_card_last4.as_deref() != Some(last4) {
+
+                                    acc.bound_card_last4 = Some(last4.to_string());
+
+                                    dirty = true;
+
+                                }
+
+                            }
+
+
+
+                            if let Some(card_type) = pm.get("type").and_then(|v| v.as_str()) {
+
+                                if acc.bound_card_brand.as_deref() != Some(card_type) {
+
+                                    acc.bound_card_brand = Some(card_type.to_string());
+
+                                    dirty = true;
+
+                                }
+
+                            }
+
+
+
+                            if let Some(exp_month) = pm.get("exp_month").and_then(|v| v.as_str()) {
+
+                                if acc.bound_card_exp_month.as_deref() != Some(exp_month) {
+
+                                    acc.bound_card_exp_month = Some(exp_month.to_string());
+
+                                    dirty = true;
+
+                                }
+
+                            }
+
+
+
+                            if let Some(exp_year) = pm.get("exp_year").and_then(|v| v.as_str()) {
+
+                                if acc.bound_card_exp_year.as_deref() != Some(exp_year) {
+
+                                    acc.bound_card_exp_year = Some(exp_year.to_string());
+
+                                    dirty = true;
+
+                                }
+
+                            }
+
+
+
+                            if dirty {
+
+                                acc.bound_card_at = Some(chrono::Utc::now());
+
+                                if let Err(e) = store.update_account(acc.clone()).await {
+
+                                    log::warn!("[get_billing] 保存 Stripe 回查卡信息失败: {}", e);
+
+                                }
+
+                            }
+
+                        }
+
+                    }
+
+                    Ok(None) => {
+
+                        log::info!("[get_billing] Stripe 回查未拿到支付方式");
+
+                    }
+
+                    Err(e) => {
+
+                        log::warn!("[get_billing] Stripe 回查失败: {}", e);
+
+                    }
+
+                }
+
+            } else {
+
+                log::info!("[get_billing] 没有可用的 Stripe session_id");
+
+            }
+
+        }
+
+        // 4. 支付方式: _backend/ 代理不返回 payment_method，
+        //    但 web-backend.windsurf.com 老端点接受 session_token 且会返回 payment_method (field 10)
+        //    (已验证: get_plan_status 使用同一老端点 + session_token 可正常工作)
+        if result.get("payment_method").is_none() {
+            log::info!("[get_billing] _backend 未返回 payment_method, 尝试 web-backend 老端点...");
+            match windsurf_service.get_team_billing_via_old_endpoint(&token).await {
+                Ok(old_result) => {
+                    if let Some(pm) = old_result.get("payment_method") {
+                        log::info!("[get_billing] 老端点返回了 payment_method: {:?}", pm);
+                        result["payment_method"] = pm.clone();
+                    } else {
+                        log::info!("[get_billing] 老端点也没有 payment_method");
+                    }
+                    // 同时补充其他 _backend 缺失的字段
+                    for key in ["on_trial", "plan_unit_amount", "sub_interval", "invoice_url"] {
+                        if result.get(key).is_none() {
+                            if let Some(v) = old_result.get(key) {
+                                result[key] = v.clone();
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    log::warn!("[get_billing] 老端点调用失败: {}", e);
+                }
+            }
+        }
+
+        // 5. 最终回退: 从本地 Account 读取协议绑卡时保存的卡信息
+        if result.get("payment_method").is_none() {
+            if let Ok(acc_full) = store.get_account(uuid).await {
+                if let Some(last4) = acc_full.bound_card_last4.as_ref() {
+                    let mut pm = serde_json::json!({
+                        "type": acc_full.bound_card_brand.clone().unwrap_or_else(|| "card".to_string()),
+                        "last4": last4,
+                    });
+                    if let Some(m) = acc_full.bound_card_exp_month.as_ref() {
+                        pm["exp_month"] = serde_json::json!(m);
+                    }
+                    if let Some(y) = acc_full.bound_card_exp_year.as_ref() {
+                        pm["exp_year"] = serde_json::json!(y);
+                    }
+                    result["payment_method"] = pm;
+                    log::info!("[get_billing] 使用本地 bound_card 数据: ****{}", last4);
+                }
+            }
+        }
+
+    }
 
     
 
@@ -1581,6 +1963,49 @@ pub async fn get_billing(
 }
 
 
+
+/// 创建 Stripe Billing Portal Session（新账号专用）
+///
+/// 复刻官网 "Manage billing" 按钮: GET https://app.devin.ai/api/billing/subscription/manage
+/// 返回 302 重定向到 https://billing.stripe.com/p/session/live_xxx，
+/// 该 URL 可直接交给系统浏览器打开，用户即可看到完整的 Stripe Billing Portal
+/// （订阅详情、银行卡、发票历史、取消订阅等）。
+///
+/// 仅对新账号（refresh_token 以 auth1_ 开头）有效；老账号调用会返回错误。
+#[tauri::command]
+pub async fn create_billing_portal_session(
+    id: String,
+    store: State<'_, Arc<DataStore>>,
+) -> Result<String, String> {
+    let uuid = Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+
+    let account = store.get_account(uuid).await.map_err(|e| e.to_string())?;
+
+    let auth1_token = account
+        .refresh_token
+        .as_ref()
+        .filter(|t| t.starts_with("auth1_"))
+        .cloned()
+        .ok_or_else(|| "此功能仅支持 Windsurf 2.0 新账号（refresh_token 需以 auth1_ 开头）".to_string())?;
+
+    let windsurf_service = WindsurfService::new();
+    let portal_url = windsurf_service
+        .create_billing_portal_session(&auth1_token)
+        .await
+        .map_err(|e: AppError| e.to_string())?;
+
+    // 记录日志
+    let success = portal_url.contains("billing.stripe.com");
+    let log = OperationLog::new(
+        OperationType::GetBilling,
+        if success { OperationStatus::Success } else { OperationStatus::Failed },
+        format!("获取 Stripe Billing Portal {}: {}", if success { "成功" } else { "失败" }, account.email),
+    )
+    .with_account(uuid, account.email);
+    let _ = store.add_log(log).await;
+
+    Ok(portal_url)
+}
 
 /// 取消订阅
 
@@ -3574,7 +3999,7 @@ pub async fn get_trial_payment_link(
 
 
 
-    let token = account.token.ok_or("No token available")?;
+    let token = account.token.clone().ok_or("No token available")?;
 
     let refresh_token = account.refresh_token.clone();
 
@@ -3596,7 +4021,7 @@ pub async fn get_trial_payment_link(
 
     let windsurf_service = WindsurfService::new();
 
-    let result = windsurf_service.subscribe_to_plan(
+    let mut result = windsurf_service.subscribe_to_plan(
 
         &token,
 
@@ -3618,13 +4043,76 @@ pub async fn get_trial_payment_link(
 
         .map_err(|e: AppError| e.to_string())?;
 
+    // 如果返回 failed_precondition，可能是批量导入时 auth 状态不一致
+    // 尝试完整重新登录后再试一次
+    let first_success = result.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
+    let is_precondition_fail = !first_success && result.get("error_details")
+        .and_then(|v| v.as_str())
+        .map_or(false, |e| e.contains("failed_precondition"));
 
+    if is_precondition_fail {
+        log::info!("[get_trial_payment_link] failed_precondition，尝试完整重新登录后重试: {}", account.email);
+        let auth_service = AuthService::new();
+        let password = store.get_decrypted_password(uuid).await.map_err(|e| e.to_string())?;
+        match auth_service.sign_in_v2(&account.email, &password).await {
+            Ok(auth_result) => {
+                let new_token = auth_result.session_token;
+                let new_auth1 = auth_result.auth1_token;
+                let new_expires = chrono::Utc::now() + chrono::Duration::hours(1);
+                store.update_account_tokens(uuid, new_token.clone(), new_auth1.clone(), new_expires)
+                    .await.map_err(|e| e.to_string())?;
+                account.token = Some(new_token.clone());
+                account.refresh_token = Some(new_auth1.clone());
+
+                let retry_auth1: Option<&str> = if new_auth1.starts_with("auth1_") { Some(&new_auth1) } else { None };
+                result = windsurf_service.subscribe_to_plan(
+                    &new_token,
+                    retry_auth1,
+                    final_teams_tier,
+                    final_payment_period,
+                    team_name.as_deref(),
+                    seat_count,
+                    turnstile_token.as_deref()
+                ).await.map_err(|e: AppError| e.to_string())?;
+                log::info!("[get_trial_payment_link] 重新登录后重试结果: success={}", result.get("success").and_then(|v| v.as_bool()).unwrap_or(false));
+            }
+            Err(e) => {
+                log::warn!("[get_trial_payment_link] 重新登录失败，返回原始错误: {}", e);
+            }
+        }
+    }
 
     // 记录日志
 
     let success = result.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
 
     let stripe_url = result.get("stripe_url").and_then(|v| v.as_str()).unwrap_or("");
+
+    let stripe_session_id = result.get("stripe_session_id")
+
+        .and_then(|v| v.as_str())
+
+        .map(|s| s.to_string())
+
+        .or_else(|| WindsurfService::extract_checkout_session_id(stripe_url));
+
+
+
+    if success {
+
+        if let Some(session_id) = stripe_session_id.clone() {
+
+            account.stripe_checkout_session_id = Some(session_id);
+
+            if let Err(e) = store.update_account(account.clone()).await {
+
+                log::warn!("[subscribe_to_plan] 保存 stripe_checkout_session_id 失败: {}", e);
+
+            }
+
+        }
+
+    }
 
 
 
@@ -3665,6 +4153,8 @@ pub async fn get_trial_payment_link(
         "payment_period": final_payment_period,
 
         "stripe_url": stripe_url,
+
+        "stripe_session_id": stripe_session_id,
 
     }));
 

@@ -136,7 +136,7 @@
         </div>
         
         <!-- 支付信息 -->
-        <div class="info-card payment-card" v-if="billingData.payment_method || billingData.plan_unit_amount">
+        <div class="info-card payment-card" v-if="billingData.payment_method || billingData.plan_unit_amount || billingData.is_new_account">
           <div class="card-title">
             <el-icon><CreditCard /></el-icon>
             <span>支付方式</span>
@@ -154,6 +154,9 @@
                 </div>
               </div>
             </div>
+            <div v-else-if="billingData.is_new_account" class="no-payment new-account-hint">
+              银行卡信息需在 Stripe Portal 查看
+            </div>
             <div v-else class="no-payment">
               未绑定支付方式
             </div>
@@ -162,6 +165,20 @@
               <el-link type="primary" :href="billingData.invoice_url" target="_blank">
                 <el-icon><Link /></el-icon> 查看最近发票
               </el-link>
+            </div>
+
+            <!-- 新账号: 复刻官网 "Manage billing" 按钮, 打开 Stripe Billing Portal -->
+            <div class="portal-link" v-if="billingData.is_new_account">
+              <el-button
+                type="primary"
+                size="small"
+                :loading="openingPortal"
+                :icon="Link"
+                @click="openBillingPortal"
+                plain
+              >
+                在浏览器打开完整账单
+              </el-button>
             </div>
           </div>
         </div>
@@ -225,6 +242,8 @@
 <script setup lang="ts">
 import { ref, watch, computed } from 'vue';
 import { ElMessage } from 'element-plus';
+import { invoke } from '@tauri-apps/api/core';
+import { openUrl } from '@tauri-apps/plugin-opener';
 import { 
   Loading, 
   Trophy, 
@@ -249,6 +268,38 @@ const emit = defineEmits<{
 
 const visible = ref(props.modelValue);
 const showFullResponse = ref(false);
+const openingPortal = ref(false);
+
+async function openBillingPortal() {
+  if (!props.accountId) {
+    ElMessage.error('账户信息缺失');
+    return;
+  }
+  openingPortal.value = true;
+  try {
+    const url = await invoke<string>('create_billing_portal_session', { id: props.accountId });
+    if (!url || !url.includes('billing.stripe.com')) {
+      ElMessage.error('未能获取有效的账单 Portal 链接');
+      return;
+    }
+    await openUrl(url);
+    ElMessage.success('已在默认浏览器打开完整账单');
+  } catch (err: any) {
+    const raw = String(err?.message || err || '');
+    // 业务预期: 免费 Trial 账号未关联 Devin 组织, 后端会返回 401 + "No organizations found"
+    if (raw.includes('No organizations found') || raw.includes('HTTP 401')) {
+      ElMessage({
+        message: '此账号未关联付费订阅组织，无完整账单可查看（仅付费账号可用）',
+        type: 'warning',
+        duration: 4000,
+      });
+    } else {
+      ElMessage.error(`打开账单失败: ${raw}`);
+    }
+  } finally {
+    openingPortal.value = false;
+  }
+}
 
 watch(() => props.modelValue, (val) => {
   visible.value = val;
@@ -321,6 +372,10 @@ function formatPaymentType(type: string) {
     'card': '信用卡',
     'visa': 'Visa',
     'mastercard': 'MasterCard',
+    'amex': 'American Express',
+    'jcb': 'JCB',
+    'diners': 'Diners Club',
+    'discover': 'Discover',
     'alipay': '支付宝',
     'wechat': '微信支付'
   };
@@ -643,6 +698,24 @@ async function copyToClipboard() {
     text-align: center;
     border-top: 1px solid #f0f2f5;
     padding-top: 12px;
+  }
+
+  .portal-link {
+    text-align: center;
+    border-top: 1px solid #f0f2f5;
+    padding-top: 12px;
+    margin-top: 8px;
+
+    .el-button {
+      width: 100%;
+    }
+  }
+
+  .new-account-hint {
+    background: #fef6ec !important;
+    color: #e6a23c !important;
+    font-size: 12px;
+    line-height: 1.6;
   }
 }
 

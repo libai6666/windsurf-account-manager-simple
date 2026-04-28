@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# HAR samples (contain card numbers, tokens, cookies)
+docs/samples/*.har

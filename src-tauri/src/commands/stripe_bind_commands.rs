@@ -19,6 +19,76 @@ use std::ffi::OsStr;
 static BIND_TASKS: Lazy<Mutex<HashMap<String, BindTaskState>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
+/// 根据卡号前缀识别品牌（覆盖常见卡网: unionpay/visa/mastercard/amex/jcb/discover/diners）
+fn detect_card_brand(number: &str) -> String {
+    let digits: String = number.chars().filter(|c| c.is_ascii_digit()).collect();
+    let b = digits.as_str();
+    // UnionPay (62/81)
+    if b.starts_with("62") || b.starts_with("81") { return "unionpay".into(); }
+    // Visa (4)
+    if b.starts_with('4') { return "visa".into(); }
+    // Amex (34/37)
+    if b.starts_with("34") || b.starts_with("37") { return "amex".into(); }
+    // JCB (35)
+    if b.starts_with("35") { return "jcb".into(); }
+    // Diners (30, 36, 38, 39)
+    if b.starts_with("30") || b.starts_with("36") || b.starts_with("38") || b.starts_with("39") {
+        return "diners".into();
+    }
+    // MasterCard (51-55 或 2221-2720)
+    if b.len() >= 2 {
+        if let Ok(n2) = b[..2].parse::<u32>() {
+            if (51..=55).contains(&n2) { return "mastercard".into(); }
+        }
+    }
+    if b.len() >= 4 {
+        if let Ok(n4) = b[..4].parse::<u32>() {
+            if (2221..=2720).contains(&n4) { return "mastercard".into(); }
+        }
+    }
+    // Discover (60/65)
+    if b.starts_with("60") || b.starts_with("65") { return "discover".into(); }
+    "card".into()
+}
+
+/// 将协议绑卡成功的卡信息（尾号/品牌/有效期）写入 Account.bound_card_*
+/// 失败时仅记录日志，不影响绑卡主流程
+async fn persist_bound_card_to_account(
+    store: &Arc<DataStore>,
+    account_id: &str,
+    card: &CardInfo,
+) {
+    let uuid = match Uuid::parse_str(account_id) {
+        Ok(u) => u,
+        Err(e) => {
+            log::warn!("[BoundCard] 解析 account_id 失败: {} ({})", account_id, e);
+            return;
+        }
+    };
+    let mut acc = match store.get_account(uuid).await {
+        Ok(a) => a,
+        Err(e) => {
+            log::warn!("[BoundCard] 查找账号失败: {} ({})", account_id, e);
+            return;
+        }
+    };
+    let digits: String = card.number.chars().filter(|c| c.is_ascii_digit()).collect();
+    let last4: String = digits.chars().skip(digits.len().saturating_sub(4)).collect();
+    acc.bound_card_last4 = Some(last4);
+    acc.bound_card_brand = Some(detect_card_brand(&digits));
+    acc.bound_card_exp_month = Some(card.exp_month.clone());
+    acc.bound_card_exp_year = Some(card.exp_year.clone());
+    acc.bound_card_at = Some(chrono::Utc::now());
+    let log_brand = acc.bound_card_brand.clone().unwrap_or_else(|| "card".into());
+    let log_last4 = acc.bound_card_last4.clone().unwrap_or_else(|| "?".into());
+    if let Err(e) = store.update_account(acc).await {
+        log::warn!("[BoundCard] 保存失败: {}", e);
+    } else {
+        log::info!("[BoundCard] 已保存卡信息: {} ****{} ({}/{})", 
+            log_brand, log_last4, card.exp_month, card.exp_year);
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BindTaskState {
     pub task_id: String,
@@ -1742,6 +1812,8 @@ pub async fn stripe_bind_start(
                                 if state == "succeeded" {
                                     emit_log(&app, &batch_id, "info", &format!(
                                         "  ✅ [{}] 调试卡 ****{} 绑卡成功!", email, last4));
+                                    // 持久化绑定的卡信息到 Account
+                                    persist_bound_card_to_account(&store, &account_id, dcard).await;
                                     // 通知前端: 这张调试卡成功了
                                     let _ = app.emit("stripe-bind-card-success", json!({
                                         "task_id": batch_id,
@@ -1808,6 +1880,8 @@ pub async fn stripe_bind_start(
                         Ok(data) => {
                             let state = data.get("state").and_then(|v| v.as_str()).unwrap_or("unknown");
                             if state == "succeeded" {
+                                // 持久化绑定的卡信息到 Account
+                                persist_bound_card_to_account(&store, &account_id, card).await;
                                 ("success".to_string(), None)
                             } else {
                                 ("failed".to_string(), Some(format!("state={}", state)))

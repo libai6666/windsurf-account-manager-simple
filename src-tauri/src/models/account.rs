@@ -59,7 +59,23 @@ pub struct Account {
     // 是否有免费Pro试用资格 (从 CheckProTrialEligibility API 获取)
     #[serde(default)]
     pub trial_eligible: Option<bool>,
+    // 已绑定支付方式信息（来自本应用的 Stripe 协议绑卡成功结果）
+    // 用于展示银行卡尾号，避免依赖 Stripe Billing Portal
+    #[serde(default)]
+    pub bound_card_last4: Option<String>,
+    #[serde(default)]
+    pub bound_card_brand: Option<String>,
+    #[serde(default)]
+    pub bound_card_exp_month: Option<String>,
+    #[serde(default)]
+    pub bound_card_exp_year: Option<String>,
+    #[serde(default)]
+    pub bound_card_at: Option<DateTime<Utc>>,
     // 自定义排序顺序（用于拖拽排序）
+    // SubscribeToPlan 返回的 Stripe checkout session ID (cs_live_xxx)
+    // 用于后续查询 Stripe API 获取已完成支付的银行卡信息
+    #[serde(default)]
+    pub stripe_checkout_session_id: Option<String>,
     #[serde(default, rename = "sortOrder")]
     pub sort_order: i32,
 }
@@ -104,6 +120,12 @@ impl Account {
             is_team_owner: None,
             used_trial: None,
             trial_eligible: None,
+            bound_card_last4: None,
+            bound_card_brand: None,
+            bound_card_exp_month: None,
+            bound_card_exp_year: None,
+            bound_card_at: None,
+            stripe_checkout_session_id: None,
             sort_order: 0,
         }
     }

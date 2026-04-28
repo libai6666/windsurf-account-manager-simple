@@ -139,6 +139,7 @@ pub fn run() {
             commands::reset_credits,
             commands::update_seats,
             commands::get_billing,
+            commands::create_billing_portal_session,
             commands::update_plan,
             commands::cancel_subscription,
             commands::resume_subscription,

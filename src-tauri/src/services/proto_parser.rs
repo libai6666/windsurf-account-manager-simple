@@ -875,6 +875,13 @@ impl ProtobufParser {
         let parsed = parser.parse_message().map_err(|e| format!("Parse error: {}", e))?;
         
         // 解析账单信息
+        let top_keys: Vec<&String> = parsed.as_object().map(|m| m.keys().collect()).unwrap_or_default();
+        log::info!("[GetTeamBilling] parsed top-level keys: {:?}", top_keys);
+        // 诊断: 打印完整 raw 数据和 subMesssage_12 内容
+        if let Some(sm12) = parsed.get("subMesssage_12") {
+            log::info!("[GetTeamBilling] subMesssage_12 = {}", sm12);
+        }
+        log::info!("[GetTeamBilling] full raw = {}", parsed);
         let mut billing_info = json!({
             "success": true,
             "raw_data": parsed.clone()

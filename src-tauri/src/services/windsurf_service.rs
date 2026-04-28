@@ -1,12 +1,16 @@
 use crate::utils::{AppError, AppResult};
 use base64::{Engine, engine::general_purpose};
-use log::info;
+use log::{info, warn};
 use reqwest;
+use reqwest::header::{HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::sync::Arc;
 
 const WINDSURF_BASE_URL: &str = "https://web-backend.windsurf.com";
+const STRIPE_API: &str = "https://api.stripe.com";
+const STRIPE_VERSION_BASE: &str = "2025-03-31.basil";
+const KNOWN_PK: &str = "pk_live_51NRMxXFKuRRGjKOF8UiLeVezJmJe3xlk8tHCRctncoDJmMElhArAYMgN1n5s3tOMdlDyJZZkm1KcEa386dj5XS8d00TmPn497w";
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct UpdateSeatsResult {
@@ -28,12 +32,208 @@ pub struct WindsurfService {
     client: Arc<reqwest::Client>,
 }
 
+fn stripe_headers() -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert("Accept", HeaderValue::from_static("application/json"));
+    headers.insert("Origin", HeaderValue::from_static("https://js.stripe.com"));
+    headers.insert("Referer", HeaderValue::from_static("https://js.stripe.com/"));
+    headers
+}
+
+fn value_to_string(value: &Value) -> Option<String> {
+    match value {
+        Value::String(s) => Some(s.clone()),
+        Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
+fn extract_token_with_prefix(raw: &str, prefix: &str) -> Option<String> {
+    raw.find(prefix).map(|start| {
+        let suffix = &raw[start..];
+        let end = suffix
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .unwrap_or(suffix.len());
+        suffix[..end].to_string()
+    })
+}
+
+fn extract_card_details(value: &Value) -> Option<Value> {
+    match value {
+        Value::Object(map) => {
+            if let Some(last4) = map.get("last4").and_then(value_to_string) {
+                let brand = map
+                    .get("display_brand")
+                    .or_else(|| map.get("brand"))
+                    .or_else(|| map.get("network"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_ascii_lowercase())
+                    .unwrap_or_else(|| "card".to_string());
+                let mut payment_method = json!({
+                    "type": brand,
+                    "last4": last4,
+                });
+                if let Some(exp_month) = map.get("exp_month").and_then(value_to_string) {
+                    payment_method["exp_month"] = json!(exp_month);
+                }
+                if let Some(exp_year) = map.get("exp_year").and_then(value_to_string) {
+                    payment_method["exp_year"] = json!(exp_year);
+                }
+                return Some(payment_method);
+            }
+
+            for child in map.values() {
+                if let Some(payment_method) = extract_card_details(child) {
+                    return Some(payment_method);
+                }
+            }
+            None
+        }
+        Value::Array(items) => {
+            for item in items {
+                if let Some(payment_method) = extract_card_details(item) {
+                    return Some(payment_method);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
 impl WindsurfService {
     pub fn new() -> Self {
         // 使用全局共享的 HTTP 客户端，避免每次请求都创建新实例
         Self {
             client: super::get_http_client(),
         }
+    }
+
+    pub fn extract_checkout_session_id(raw: &str) -> Option<String> {
+        extract_token_with_prefix(raw, "cs_live_")
+            .or_else(|| extract_token_with_prefix(raw, "cs_test_"))
+    }
+
+    pub async fn get_stripe_payment_method_from_session(&self, session_id: &str) -> AppResult<Option<Value>> {
+        let poll_url = format!("{}/v1/payment_pages/{}/poll", STRIPE_API, session_id);
+        let poll_params = [
+            ("key", KNOWN_PK),
+            ("_stripe_version", STRIPE_VERSION_BASE),
+        ];
+
+        let poll_response = self.client
+            .get(&poll_url)
+            .headers(stripe_headers())
+            .query(&poll_params)
+            .send()
+            .await
+            .map_err(|e| AppError::Network(format!("Stripe poll request failed: {}", e)))?;
+
+        if !poll_response.status().is_success() {
+            warn!("[StripeLookup] poll status={} for {}", poll_response.status(), session_id);
+            return Ok(None);
+        }
+
+        let poll_result: Value = poll_response
+            .json()
+            .await
+            .map_err(|e| AppError::Api(format!("Stripe poll parse failed: {}", e)))?;
+
+        if let Some(payment_method) = extract_card_details(&poll_result) {
+            info!("[StripeLookup] card found directly from poll for {}", session_id);
+            return Ok(Some(payment_method));
+        }
+
+        let raw = serde_json::to_string(&poll_result).unwrap_or_default();
+        let setup_intent_id = poll_result
+            .get("setup_intent")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .or_else(|| extract_token_with_prefix(&raw, "seti_"));
+
+        let Some(setup_intent_id) = setup_intent_id else {
+            info!("[StripeLookup] no setup_intent found for {}", session_id);
+            return Ok(None);
+        };
+
+        let Some(client_secret) = extract_token_with_prefix(&raw, &format!("{}_secret_", setup_intent_id)) else {
+            info!("[StripeLookup] no client_secret found for {}", session_id);
+            return Ok(None);
+        };
+
+        let setup_intent_url = format!("{}/v1/setup_intents/{}", STRIPE_API, setup_intent_id);
+        let setup_intent_params = vec![
+            ("client_secret".to_string(), client_secret),
+            ("is_stripe_sdk".to_string(), "false".to_string()),
+            ("key".to_string(), KNOWN_PK.to_string()),
+            ("_stripe_version".to_string(), STRIPE_VERSION_BASE.to_string()),
+        ];
+
+        let setup_intent_response = self.client
+            .get(&setup_intent_url)
+            .headers(stripe_headers())
+            .query(&setup_intent_params)
+            .send()
+            .await
+            .map_err(|e| AppError::Network(format!("Stripe setup_intent request failed: {}", e)))?;
+
+        if !setup_intent_response.status().is_success() {
+            warn!("[StripeLookup] setup_intent status={} for {}", setup_intent_response.status(), session_id);
+            return Ok(None);
+        }
+
+        let setup_intent_result: Value = setup_intent_response
+            .json()
+            .await
+            .map_err(|e| AppError::Api(format!("Stripe setup_intent parse failed: {}", e)))?;
+
+        if let Some(payment_method) = extract_card_details(&setup_intent_result) {
+            info!("[StripeLookup] card found from setup_intent for {}", session_id);
+            return Ok(Some(payment_method));
+        }
+
+        let setup_raw = serde_json::to_string(&setup_intent_result).unwrap_or_default();
+        let payment_method_id = setup_intent_result
+            .get("payment_method")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .or_else(|| extract_token_with_prefix(&setup_raw, "pm_"));
+
+        let Some(payment_method_id) = payment_method_id else {
+            info!("[StripeLookup] no payment_method id found for {}", session_id);
+            return Ok(None);
+        };
+
+        let payment_method_url = format!("{}/v1/payment_methods/{}", STRIPE_API, payment_method_id);
+        let payment_method_params = [
+            ("key", KNOWN_PK),
+            ("_stripe_version", STRIPE_VERSION_BASE),
+        ];
+
+        let payment_method_response = self.client
+            .get(&payment_method_url)
+            .headers(stripe_headers())
+            .query(&payment_method_params)
+            .send()
+            .await
+            .map_err(|e| AppError::Network(format!("Stripe payment_method request failed: {}", e)))?;
+
+        if !payment_method_response.status().is_success() {
+            warn!("[StripeLookup] payment_method status={} for {}", payment_method_response.status(), session_id);
+            return Ok(None);
+        }
+
+        let payment_method_result: Value = payment_method_response
+            .json()
+            .await
+            .map_err(|e| AppError::Api(format!("Stripe payment_method parse failed: {}", e)))?;
+
+        if let Some(payment_method) = extract_card_details(&payment_method_result) {
+            info!("[StripeLookup] card found from payment_method for {}", session_id);
+            return Ok(Some(payment_method));
+        }
+
+        Ok(None)
     }
 
     fn build_request_body(&self, token: &str, seat_count: i32) -> Vec<u8> {
@@ -526,9 +726,16 @@ impl WindsurfService {
         }
     }
     
-    pub async fn get_team_billing(&self, token: &str) -> AppResult<serde_json::Value> {
-        let url = format!("{}/exa.seat_management_pb.SeatManagementService/GetTeamBilling", WINDSURF_BASE_URL);
-        
+    pub async fn get_team_billing(&self, token: &str, auth1_token: Option<&str>) -> AppResult<serde_json::Value> {
+        // 新账号 (Windsurf 2.0, refresh_token 以 auth1_ 开头) 走 _backend/ 代理 + Devin 认证头
+        // 老账号 (Firebase) 直连 web-backend.windsurf.com + x-auth-token
+        let is_new_account = auth1_token.is_some();
+        let url = if is_new_account {
+            "https://windsurf.com/_backend/exa.seat_management_pb.SeatManagementService/GetTeamBilling".to_string()
+        } else {
+            format!("{}/exa.seat_management_pb.SeatManagementService/GetTeamBilling", WINDSURF_BASE_URL)
+        };
+
         // GetTeamBilling的body格式: 0x0a + token长度 + token
         // 注意：不是 0x0a 0xa1 0x07，那是UpdatePlan用的
         let token_bytes = token.as_bytes();
@@ -546,30 +753,44 @@ impl WindsurfService {
         
         full_body.extend_from_slice(token_bytes);
         
-        println!("[GetTeamBilling] Sending request to {}", url);
+        println!("[GetTeamBilling] Sending request to {} (new_account={})", url, is_new_account);
         
-        let result = self.client
-            .post(&url)
-            .body(full_body)
-            .header("accept", "*/*")
-            .header("accept-language", "zh-CN,zh;q=0.9")
-            .header("cache-control", "no-cache")
-            .header("connect-protocol-version", "1")
-            .header("content-type", "application/proto")
-            .header("pragma", "no-cache")
-            .header("priority", "u=1, i")
-            .header("sec-ch-ua", r#""Chromium";v="142", "Google Chrome";v="142", "Not_A Brand";v="99""#)
-            .header("sec-ch-ua-mobile", "?0")
-            .header("sec-ch-ua-platform", r#""Windows""#)
-            .header("sec-fetch-dest", "empty")
-            .header("sec-fetch-mode", "cors")
-            .header("sec-fetch-site", "same-site")
-            .header("x-auth-token", token)
-            .header("x-debug-email", "")
-            .header("x-debug-team-name", "")
-            .header("Referer", "https://windsurf.com/")
-            .send()
-            .await;
+        let result = if is_new_account {
+            let a1 = auth1_token.unwrap(); // is_new_account 保证 auth1_token.is_some()
+            self.client
+                .post(&url)
+                .body(full_body)
+                .header("content-type", "application/proto")
+                .header("connect-protocol-version", "1")
+                .header("X-Devin-Auth1-Token", a1)
+                .header("X-Devin-Session-Token", token)
+                .header("Referer", "https://windsurf.com/")
+                .send()
+                .await
+        } else {
+            self.client
+                .post(&url)
+                .body(full_body)
+                .header("accept", "*/*")
+                .header("accept-language", "zh-CN,zh;q=0.9")
+                .header("cache-control", "no-cache")
+                .header("connect-protocol-version", "1")
+                .header("content-type", "application/proto")
+                .header("pragma", "no-cache")
+                .header("priority", "u=1, i")
+                .header("sec-ch-ua", r#""Chromium";v="142", "Google Chrome";v="142", "Not_A Brand";v="99""#)
+                .header("sec-ch-ua-mobile", "?0")
+                .header("sec-ch-ua-platform", r#""Windows""#)
+                .header("sec-fetch-dest", "empty")
+                .header("sec-fetch-mode", "cors")
+                .header("sec-fetch-site", "same-site")
+                .header("x-auth-token", token)
+                .header("x-debug-email", "")
+                .header("x-debug-team-name", "")
+                .header("Referer", "https://windsurf.com/")
+                .send()
+                .await
+        };
         
         match result {
             Ok(response) => {
@@ -611,6 +832,141 @@ impl WindsurfService {
                 }))
             }
         }
+    }
+
+    /// 通过老端点 (web-backend.windsurf.com) 获取 GetTeamBilling
+    /// 老端点会返回 payment_method 字段 (subMesssage_10)，而 _backend/ 代理不返回。
+    /// get_plan_status 已验证 web-backend.windsurf.com 接受 Devin session_token，
+    /// 所以这里也能工作。
+    pub async fn get_team_billing_via_old_endpoint(&self, session_token: &str) -> AppResult<serde_json::Value> {
+        let url = format!("{}/exa.seat_management_pb.SeatManagementService/GetTeamBilling", WINDSURF_BASE_URL);
+
+        let token_bytes = session_token.as_bytes();
+        let token_length = token_bytes.len();
+        let mut full_body = vec![0x0a];
+        if token_length < 128 {
+            full_body.push(token_length as u8);
+        } else {
+            full_body.push(((token_length & 0x7F) | 0x80) as u8);
+            full_body.push((token_length >> 7) as u8);
+        }
+        full_body.extend_from_slice(token_bytes);
+
+        log::info!("[GetTeamBilling-OldEndpoint] Trying web-backend for payment_method...");
+
+        let response = self.client
+            .post(&url)
+            .body(full_body)
+            .header("accept", "*/*")
+            .header("connect-protocol-version", "1")
+            .header("content-type", "application/proto")
+            .header("x-auth-token", session_token)
+            .header("Referer", "https://windsurf.com/")
+            .send()
+            .await
+            .map_err(|e| AppError::Network(format!("Old endpoint request failed: {}", e)))?;
+
+        let status_code = response.status().as_u16();
+        let response_bytes = response.bytes().await.unwrap_or_default();
+        log::info!("[GetTeamBilling-OldEndpoint] status={}, size={}", status_code, response_bytes.len());
+
+        if status_code == 200 && !response_bytes.is_empty() {
+            match crate::services::proto_parser::ProtobufParser::parse_get_team_billing_response(&response_bytes) {
+                Ok(parsed) => Ok(parsed),
+                Err(e) => {
+                    log::warn!("[GetTeamBilling-OldEndpoint] parse failed: {}", e);
+                    Err(AppError::Api(format!("Parse error: {}", e)))
+                }
+            }
+        } else {
+            Err(AppError::Api(format!("HTTP {} (size={})", status_code, response_bytes.len())))
+        }
+    }
+
+    /// 创建 Stripe Billing Portal Session（新账号专用）
+    ///
+    /// 对应 Devin 的 `GET https://app.devin.ai/api/billing/subscription/manage` 接口。
+    /// 该端点返回 302 重定向到 `https://billing.stripe.com/p/session/live_...`，
+    /// 浏览器跟随后即进入官方 Stripe Billing Portal（完整银行卡/发票/订阅管理）。
+    ///
+    /// # Arguments
+    /// * `auth1_token` - auth1_ 开头的 refresh_token，用作 Bearer 认证
+    ///
+    /// # Returns
+    /// 成功: 返回 live_xxx 的完整 URL 字符串，可直接交给系统浏览器打开
+    pub async fn create_billing_portal_session(&self, auth1_token: &str) -> AppResult<String> {
+        let url = "https://app.devin.ai/api/billing/subscription/manage";
+
+        // 禁用重定向跟随，这样才能从 302 响应里读到 Location
+        let no_redirect_client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+            .map_err(|e| AppError::Network(format!("Failed to build client: {}", e)))?;
+
+        info!("[CreateBillingPortalSession] GET {}", url);
+
+        let response = no_redirect_client
+            .get(url)
+            .bearer_auth(auth1_token)
+            .header("Accept", "application/json")
+            .header("Accept-Language", "zh-CN,zh;q=0.9")
+            .header("Referer", "https://app.devin.ai/")
+            .send()
+            .await
+            .map_err(|e| AppError::Network(format!("Request failed: {}", e)))?;
+
+        let status = response.status().as_u16();
+        info!("[CreateBillingPortalSession] Response status: {}", status);
+
+        // 3xx 重定向：从 Location 头读取 Stripe URL
+        if (300..400).contains(&status) {
+            let location = response
+                .headers()
+                .get("location")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string());
+
+            if let Some(loc) = location {
+                info!("[CreateBillingPortalSession] Got Stripe URL via 3xx: {}", loc);
+                if loc.contains("billing.stripe.com") {
+                    return Ok(loc);
+                }
+                return Err(AppError::Api(format!(
+                    "Unexpected redirect target: {}",
+                    loc
+                )));
+            }
+            return Err(AppError::Api(format!(
+                "{} response but no Location header",
+                status
+            )));
+        }
+
+        // 2xx 但返回 JSON 的兜底路径: { "url": "https://billing.stripe.com/p/session/live_..." }
+        if status == 200 {
+            let body_text = response.text().await.unwrap_or_default();
+            if let Ok(j) = serde_json::from_str::<serde_json::Value>(&body_text) {
+                if let Some(url_s) = j.get("url").and_then(|v| v.as_str()) {
+                    if url_s.contains("billing.stripe.com") {
+                        info!("[CreateBillingPortalSession] Got Stripe URL via JSON body");
+                        return Ok(url_s.to_string());
+                    }
+                }
+            }
+            return Err(AppError::Api(format!(
+                "200 but unexpected body (len={})",
+                body_text.len()
+            )));
+        }
+
+        // 其它状态码
+        let body_text = response.text().await.unwrap_or_default();
+        Err(AppError::Api(format!(
+            "HTTP {} - {}",
+            status,
+            body_text.chars().take(200).collect::<String>()
+        )))
     }
 
     /// 更新订阅计划
@@ -1270,6 +1626,7 @@ impl WindsurfService {
                             "success": true,
                             "status_code": status_code,
                             "stripe_url": stripe_url,
+                            "stripe_session_id": Self::extract_checkout_session_id(stripe_url),
                             "teams_tier": teams_tier,
                             "payment_period": payment_period,
                             "timestamp": chrono::Utc::now().to_rfc3339(),
@@ -1298,7 +1655,15 @@ impl WindsurfService {
 
             // 解析错误信息，提供更友好的提示
             let friendly_error = if status_code == 400 {
-                if error_msg.contains("invalid_argument") {
+                if error_msg.contains("failed_precondition") {
+                    if error_msg.contains("no longer able to subscribe") {
+                        "该账号已被Windsurf限制订阅，可能之前已使用过试用或被风控，请更换账号".to_string()
+                    } else if error_msg.contains("already subscribed") || error_msg.contains("already_subscribed") {
+                        "该账号已有订阅计划，无需重复订阅".to_string()
+                    } else {
+                        format!("账号状态异常，无法订阅: {}", error_msg)
+                    }
+                } else if error_msg.contains("invalid_argument") {
                     "请求参数错误，可能是价格ID无效或账号不支持此操作".to_string()
                 } else if error_msg.contains("turnstile") || error_msg.contains("Turnstile") {
                     "Turnstile 验证失败，请重新验证".to_string()

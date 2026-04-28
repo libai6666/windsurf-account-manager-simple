@@ -425,6 +425,19 @@
             >
               重新检测
             </el-button>
+            <el-button
+              v-if="windsurfPath"
+              size="small"
+              type="warning"
+              style="margin-left: 10px;"
+              :loading="patchLoading"
+              @click="forceReapplyPatch"
+            >
+              重新打补丁
+            </el-button>
+            <div style="margin-top: 5px; color: #909399; font-size: 12px;">
+              若首次开启无感换号提示"补丁已经应用过了"但状态仍为"未安装"，可点击"重新打补丁"强制覆盖。
+            </div>
           </el-form-item>
           
           <el-divider content-position="left">自动换号</el-divider>
@@ -1140,6 +1153,53 @@ async function handleSeamlessSwitch(value: boolean) {
   } catch (error) {
     ElMessage.error(`${action}失败: ${error}`);
     settings.seamlessSwitchEnabled = !value;
+  } finally {
+    patchLoading.value = false;
+  }
+}
+
+async function forceReapplyPatch() {
+  if (!windsurfPath.value) {
+    ElMessage.error('请先检测或设置Windsurf路径');
+    return;
+  }
+  
+  try {
+    await ElMessageBox.confirm(
+      '将尝试从最干净的备份还原 extension.js 并重新应用补丁，随后会重启 Windsurf。是否继续？',
+      '重新打补丁',
+      {
+        confirmButtonText: '确定',
+        cancelButtonText: '取消',
+        type: 'warning',
+      }
+    );
+  } catch {
+    return;
+  }
+  
+  patchLoading.value = true;
+  try {
+    const result = await invoke<any>('apply_seamless_patch', {
+      windsurfPath: windsurfPath.value,
+      force: true,
+    });
+    
+    if (result.success) {
+      if (result.already_patched) {
+        ElMessage.info('补丁已经应用过了');
+      } else {
+        ElMessage.success(result.message || '补丁已重新应用');
+      }
+      await checkPatchStatus();
+      settings.windsurfPath = windsurfPath.value;
+      settings.patchBackupPath = result.backup_file || settings.patchBackupPath;
+      await settingsStore.updateSettings(settings);
+    } else {
+      ElMessage.error(result.message || '重新打补丁失败');
+    }
+  } catch (error) {
+    ElMessage.error(`重新打补丁失败: ${error}`);
   } finally {
     patchLoading.value = false;
   }
