@@ -2,7 +2,7 @@ use tauri::command;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use regex::Regex;
+use regex::bytes::Regex;
 use chrono::Local;
 use std::sync::Arc;
 use tauri::State;
@@ -193,10 +193,14 @@ pub async fn apply_seamless_patch(
     }
     
     // 1. 先读取文件内容，检查是否已打补丁
-    let content = fs::read_to_string(&extension_file)
+    //    注意：必须按字节读取，extension.js 是大型 webpack bundle，
+    //    个别 Windsurf 版本 / 用户机器上文件中可能含有非 UTF-8 字节
+    //    （比如被其他工具改写过、自动更新被截断等）。
+    //    用 fs::read_to_string 会立即报 "stream did not contain valid UTF-8" 而失败。
+    let content: Vec<u8> = fs::read(&extension_file)
         .map_err(|e| format!("读取文件失败: {}", e))?;
     
-    let mut modified_content = content.clone();
+    let mut modified_content: Vec<u8> = content.clone();
     let mut modifications = vec![];
     
     // 2. 应用修改1: 添加全局 OAuth 回调处理器
@@ -219,15 +223,28 @@ pub async fn apply_seamless_patch(
         .or_else(|| pattern1_old.captures(&modified_content).map(|c| ("old", c)));
 
     if let Some((variant, captures)) = pattern1_match {
-        let var_name1 = captures.get(1).map(|m| m.as_str()).unwrap_or("");
-        let var_name2 = captures.get(2).map(|m| m.as_str()).unwrap_or("");
-        let module_name = captures.get(3).map(|m| m.as_str()).unwrap_or("");
+        // 注意：变量名按 \w+ 捕获，必然是 ASCII（合法 JS 标识符），
+        // 因此从字节切片转 str 一定成功，这里用 from_utf8 严格转换更安全。
+        let var_name1 = captures.get(1)
+            .and_then(|m| std::str::from_utf8(m.as_bytes()).ok())
+            .unwrap_or("")
+            .to_string();
+        let var_name2 = captures.get(2)
+            .and_then(|m| std::str::from_utf8(m.as_bytes()).ok())
+            .unwrap_or("")
+            .to_string();
+        let module_name = captures.get(3)
+            .and_then(|m| std::str::from_utf8(m.as_bytes()).ok())
+            .unwrap_or("")
+            .to_string();
         // 新版有第4个捕获组（maybeHandleUriWithToken 的参数名），旧版无
-        let var_name4 = captures.get(4).map(|m| m.as_str());
+        let var_name4 = captures.get(4)
+            .and_then(|m| std::str::from_utf8(m.as_bytes()).ok())
+            .map(|s| s.to_string());
 
         // 所有捕获到的变量名必须一致，避免误替换
         let vars_consistent = var_name1 == var_name2
-            && var_name4.map(|v| v == var_name1).unwrap_or(true);
+            && var_name4.as_deref().map(|v| v == var_name1).unwrap_or(true);
 
         if vars_consistent && !var_name1.is_empty() && !module_name.is_empty() {
             let replacement = format!(
@@ -235,8 +252,9 @@ pub async fn apply_seamless_patch(
                 var_name1, var_name1, module_name, var_name1
             );
 
-            let full_match = captures.get(0).unwrap().as_str().to_string();
-            modified_content = modified_content.replace(&full_match, &replacement);
+            // 字节级替换：取整段匹配的字节切片，构造新的 Vec<u8>
+            let full_match: Vec<u8> = captures.get(0).unwrap().as_bytes().to_vec();
+            modified_content = replace_bytes(&modified_content, &full_match, replacement.as_bytes());
             modifications.push(if variant == "new" {
                 "OAuth回调处理器(新版格式)"
             } else {
@@ -251,13 +269,14 @@ pub async fn apply_seamless_patch(
         .map_err(|e| format!("正则表达式错误2: {}", e))?;
     
     if let Some(captures) = pattern2.captures(&modified_content) {
-        let reject_var1 = &captures[2];  // 第二个参数
-        let reject_var2 = &captures[3];  // setTimeout中的变量
+        // 第二个参数 vs setTimeout 中的变量，都是 ASCII 标识符
+        let reject_var1 = captures[2].to_vec();
+        let reject_var2 = captures[3].to_vec();
         
         // 检查是否是同一个reject变量
         if reject_var1 == reject_var2 {
-            let full_match = captures.get(0).unwrap().as_str();
-            modified_content = modified_content.replace(full_match, "");
+            let full_match: Vec<u8> = captures.get(0).unwrap().as_bytes().to_vec();
+            modified_content = replace_bytes(&modified_content, &full_match, b"");
             modifications.push("移除超时限制");
         }
     }
@@ -395,10 +414,42 @@ pub async fn restore_seamless_patch(
     }))
 }
 
+/// 字节级 contains：在 haystack 中查找 needle 子序列
+fn bytes_contains(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    if haystack.len() < needle.len() {
+        return false;
+    }
+    haystack.windows(needle.len()).any(|w| w == needle)
+}
+
+/// 字节级 replace：把 haystack 中第一次出现的 needle 替换为 replacement
+fn replace_bytes(haystack: &[u8], needle: &[u8], replacement: &[u8]) -> Vec<u8> {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return haystack.to_vec();
+    }
+    if let Some(pos) = haystack
+        .windows(needle.len())
+        .position(|w| w == needle)
+    {
+        let mut out = Vec::with_capacity(haystack.len() - needle.len() + replacement.len());
+        out.extend_from_slice(&haystack[..pos]);
+        out.extend_from_slice(replacement);
+        out.extend_from_slice(&haystack[pos + needle.len()..]);
+        out
+    } else {
+        haystack.to_vec()
+    }
+}
+
 /// 检查文件是否包含补丁特征（是否已打过补丁）
 fn is_file_patched(file_path: &Path) -> bool {
-    if let Ok(content) = fs::read_to_string(file_path) {
-        content.contains("Failed to handle OAuth callback")
+    // 按字节读取，避免 UTF-8 校验失败导致这里直接判定为"未打补丁"，
+    // 进而错误地把一个其实已经打过补丁的文件当成"干净的备份"返回。
+    if let Ok(content) = fs::read(file_path) {
+        bytes_contains(&content, b"Failed to handle OAuth callback")
     } else {
         false
     }
@@ -470,12 +521,13 @@ pub async fn check_patch_status(
         }));
     }
     
-    let content = fs::read_to_string(&extension_file)
+    // 按字节读取，避免 extension.js 含有非 UTF-8 字节时整个状态检查接口直接报错
+    let content = fs::read(&extension_file)
         .map_err(|e| format!("读取文件失败: {}", e))?;
     
-    // 检查是否包含补丁标识
-    let has_oauth_handler = content.contains("Failed to handle OAuth callback");
-    let has_timeout_removed = !content.contains("18e4");
+    // 检查是否包含补丁标识（字节级 contains）
+    let has_oauth_handler = bytes_contains(&content, b"Failed to handle OAuth callback");
+    let has_timeout_removed = !bytes_contains(&content, b"18e4");
     
     Ok(serde_json::json!({
         "installed": has_oauth_handler,
