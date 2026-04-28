@@ -266,6 +266,27 @@ pub async fn login_account(
                     .unwrap_or(false);
                 updated_account.is_team_owner = Some(is_root_admin);
 
+                // 补充调用 GetPlanStatus 获取每日/每周配额信息（新配额系统）
+                // 注意：daily_quota_remaining / weekly_quota_remaining 等字段只在 GetPlanStatus 接口返回，
+                // GetCurrentUser 不带。否则前端会因 daily_quota_remaining 为 None 而显示旧的 "Trial 0/100" 卡片，
+                // 用户必须手动刷新一次才能看到新版日/周额度 UI。
+                if let Ok(plan_result) = windsurf_service.get_plan_status(&token).await {
+                    if let Some(plan_status) = plan_result.get("plan_status") {
+                        if let Some(v) = plan_status.get("daily_quota_remaining").and_then(|v| v.as_i64()) {
+                            updated_account.daily_quota_remaining = Some(v as i32);
+                        }
+                        if let Some(v) = plan_status.get("weekly_quota_remaining").and_then(|v| v.as_i64()) {
+                            updated_account.weekly_quota_remaining = Some(v as i32);
+                        }
+                        if let Some(v) = plan_status.get("daily_quota_reset").and_then(|v| v.as_i64()) {
+                            updated_account.daily_quota_reset = Some(v);
+                        }
+                        if let Some(v) = plan_status.get("weekly_quota_reset").and_then(|v| v.as_i64()) {
+                            updated_account.weekly_quota_reset = Some(v);
+                        }
+                    }
+                }
+
                 updated_account.last_quota_update = Some(chrono::Utc::now());
                 store.update_account(updated_account.clone()).await
                     .map_err(|e| format!("保存账户信息失败: {}", e))?;
