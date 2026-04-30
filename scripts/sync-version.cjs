@@ -31,6 +31,31 @@ function updatePackageJson(version) {
   return false;
 }
 
+function updatePackageLockJson(version) {
+  const filePath = path.join(ROOT_DIR, 'package-lock.json');
+  if (!fs.existsSync(filePath)) {
+    console.log(`⏭️  package-lock.json: 文件不存在，跳过`);
+    return false;
+  }
+  const content = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+  let changed = false;
+  if (content.version !== version) {
+    content.version = version;
+    changed = true;
+  }
+  if (content.packages?.['']?.version !== version) {
+    content.packages[''].version = version;
+    changed = true;
+  }
+  if (changed) {
+    fs.writeFileSync(filePath, JSON.stringify(content, null, 2) + '\n');
+    console.log(`✅ package-lock.json: ${version}`);
+    return true;
+  }
+  console.log(`⏭️  package-lock.json: 已是最新 (${version})`);
+  return false;
+}
+
 // 更新 Cargo.toml
 function updateCargoToml(version) {
   const filePath = path.join(ROOT_DIR, 'src-tauri', 'Cargo.toml');
@@ -55,8 +80,8 @@ function updateManifest(version) {
   }
   let content = fs.readFileSync(filePath, 'utf-8');
   const versionWithBuild = `${version}.0`;
-  const regex = /version="[\d.]+"/g;
-  const newContent = content.replace(regex, `version="${versionWithBuild}"`);
+  const regex = /(<assemblyIdentity[\s\S]*?version=")[\d.]+("[\s\S]*?name="com\.chao\.windsurf-account-manager")/;
+  const newContent = content.replace(regex, `$1${versionWithBuild}$2`);
   if (content !== newContent) {
     fs.writeFileSync(filePath, newContent);
     console.log(`✅ exe.manifest: ${versionWithBuild}`);
@@ -75,6 +100,7 @@ function main() {
   
   let updated = 0;
   if (updatePackageJson(version)) updated++;
+  if (updatePackageLockJson(version)) updated++;
   if (updateCargoToml(version)) updated++;
   if (updateManifest(version)) updated++;
   

@@ -12,6 +12,30 @@
       label-width="100px"
       autocomplete="off"
     >
+      <!-- 账号来源切换 -->
+      <el-form-item label="账号来源" class="source-form-item">
+        <el-radio-group v-model="accountSource" class="source-radio-group">
+          <el-radio value="windsurf" class="source-radio source-radio-windsurf">
+            <span class="source-card">
+              <span class="source-logo source-logo-windsurf">W</span>
+              <span class="source-copy">
+                <span class="source-title">Windsurf</span>
+                <span class="source-hint">windsurf.com 注册</span>
+              </span>
+            </span>
+          </el-radio>
+          <el-radio value="devin" class="source-radio source-radio-devin">
+            <span class="source-card">
+              <span class="source-logo source-logo-devin">D</span>
+              <span class="source-copy">
+                <span class="source-title">Devin</span>
+                <span class="source-hint">app.devin.ai 注册</span>
+              </span>
+            </span>
+          </el-radio>
+        </el-radio-group>
+      </el-form-item>
+
       <!-- 添加方式切换 -->
       <el-form-item label="添加方式">
         <el-radio-group v-model="addMode" @change="handleModeChange">
@@ -124,6 +148,7 @@ const uiStore = useUIStore();
 const formRef = ref<FormInstance>();
 const loading = ref(false);
 const addMode = ref<'password' | 'refresh_token'>('password');
+const accountSource = ref<'windsurf' | 'devin'>('windsurf');
 
 const formData = reactive({
   email: '',
@@ -230,7 +255,8 @@ async function handleSubmit() {
           refreshToken: trimmedToken,
           nickname: trimmedNickname,
           tags: formData.tags,
-          group: formData.group || '默认分组'
+          group: formData.group || '默认分组',
+          accountSource: accountSource.value
         });
         
         if (result.success) {
@@ -259,7 +285,8 @@ async function handleSubmit() {
           password: trimmedPassword,
           nickname: trimmedNickname,
           tags: formData.tags,
-          group: formData.group || '默认分组'
+          group: formData.group || '默认分组',
+          account_source: accountSource.value
         });
         
         ElMessage.success('账号添加成功，正在获取账号信息...');
@@ -302,5 +329,107 @@ function handleClose() {
   formData.group = '默认分组';
   formData.tags = [];
   addMode.value = 'password';
+  accountSource.value = 'windsurf';
 }
 </script>
+
+<style scoped>
+.source-form-item {
+  margin-bottom: 20px;
+}
+
+.source-radio-group {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  width: 100%;
+}
+
+.source-radio {
+  height: auto;
+  margin-right: 0;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 14px;
+  background: linear-gradient(180deg, #ffffff, #f8fafc);
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.06);
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease, background 0.18s ease;
+}
+
+.source-radio:hover {
+  transform: translateY(-1px);
+  border-color: var(--el-color-primary-light-5);
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.1);
+}
+
+.source-radio:deep(.el-radio__input) {
+  display: none;
+}
+
+.source-radio:deep(.el-radio__label) {
+  width: 100%;
+  padding: 0;
+}
+
+.source-radio.is-checked {
+  border-color: var(--el-color-primary);
+  background: linear-gradient(180deg, #eef7ff, #ffffff);
+  box-shadow: 0 12px 30px rgba(64, 158, 255, 0.18);
+}
+
+.source-radio-devin.is-checked {
+  border-color: #8b5cf6;
+  background: linear-gradient(180deg, #f4f0ff, #ffffff);
+  box-shadow: 0 12px 30px rgba(139, 92, 246, 0.18);
+}
+
+.source-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 58px;
+  padding: 12px 14px;
+}
+
+.source-logo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  border-radius: 10px;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: -0.2px;
+}
+
+.source-logo-windsurf {
+  background: linear-gradient(135deg, #38bdf8, #2563eb);
+}
+
+.source-logo-devin {
+  background: linear-gradient(135deg, #a78bfa, #7c3aed);
+}
+
+.source-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.source-title {
+  color: var(--el-text-color-primary);
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+.source-hint {
+  color: var(--el-text-color-placeholder);
+  font-size: 12px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+</style>

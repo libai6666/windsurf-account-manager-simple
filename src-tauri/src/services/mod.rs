@@ -2,11 +2,13 @@ pub mod auth_service;
 pub mod windsurf_service;
 pub mod proto_parser;
 pub mod analytics_service;
+pub mod devin_service;
 
 pub use auth_service::*;
 pub use windsurf_service::*;
 // pub use proto_parser::*;
 pub use analytics_service::*;  // Not used directly yet, commented to avoid warnings
+pub use devin_service::DevinService;
 
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{OnceLock, RwLock, Mutex};

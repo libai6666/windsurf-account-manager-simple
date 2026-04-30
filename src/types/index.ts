@@ -110,7 +110,16 @@ export interface Account {
   trial_eligible?: boolean;
   // 自定义排序顺序（用于拖拽排序）
   sortOrder?: number;
+  // 账号来源平台：
+  // - 'windsurf'（默认）：在 windsurf.com 注册，订阅走 windsurf SubscribeToPlan
+  // - 'devin'：在 app.devin.ai 注册，订阅走 Devin /api/billing/checkout
+  account_source?: 'windsurf' | 'devin';
 }
+
+/**
+ * 账号来源类型
+ */
+export type AccountSource = 'windsurf' | 'devin';
 
 // ============================================================
 // GetCurrentUser API 响应类型（与后端 proto_parser.rs 保持一致）

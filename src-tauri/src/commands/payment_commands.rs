@@ -941,22 +941,86 @@ pub async fn get_trial_payment_link_enhanced(
     team_name: Option<String>,
     seat_count: Option<i32>,
     turnstile_token: Option<String>,
+    account_source: Option<String>,
+    auth1_token: Option<String>,
+    account_id: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    // 获取WindsurfService实例
-    let service = crate::services::windsurf_service::WindsurfService::new();
-    
-    // 调用subscribe_to_plan方法获取支付链接
-    let result = service.subscribe_to_plan(
-        &token, 
-        None,
-        teams_tier,
-        payment_period,
-        team_name.as_deref(),
-        seat_count,
-        turnstile_token.as_deref()
-    )
-        .await
-        .map_err(|e| e.to_string())?;
+    // === Devin 平台账号：走 app.devin.ai/api/billing/checkout ===
+    let stored_account = if let Some(account_id) = account_id.as_deref().filter(|s| !s.trim().is_empty()) {
+        match Uuid::parse_str(account_id) {
+            Ok(uuid) => data_store.get_account(uuid).await.ok(),
+            Err(e) => {
+                log::warn!("[get_trial_payment_link_enhanced] 无效账号ID {}: {}", account_id, e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let effective_account_source = stored_account
+        .as_ref()
+        .and_then(|account| account.account_source.clone())
+        .or(account_source);
+    let effective_auth1_token = stored_account
+        .as_ref()
+        .and_then(|account| account.refresh_token.clone())
+        .or(auth1_token);
+    let is_devin = matches!(effective_account_source.as_deref(), Some("devin"));
+    log::info!(
+        "[get_trial_payment_link_enhanced] account_id={:?}, request_source={:?}, stored_source={:?}, effective_source={:?}, is_devin={}",
+        account_id,
+        effective_account_source.as_deref(),
+        stored_account.as_ref().and_then(|account| account.account_source.as_deref()),
+        effective_account_source.as_deref(),
+        is_devin
+    );
+    let result = if is_devin {
+        let auth1 = effective_auth1_token
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| "Devin 账号缺少 auth1 token (refresh_token)，请先登录".to_string())?;
+        let devin = crate::services::DevinService::new();
+        match devin.get_trial_checkout_url(auth1.as_str()).await {
+            Ok((stripe_url, org_id, org_name)) => {
+                let session_id = crate::services::WindsurfService::extract_checkout_session_id(&stripe_url);
+                json!({
+                    "success": true,
+                    "stripe_url": stripe_url,
+                    "subscription_url": stripe_url,
+                    "stripe_session_id": session_id,
+                    "org_id": org_id,
+                    "org_name": org_name,
+                    "teams_tier": 2,
+                    "payment_period": 1,
+                    "status_code": 200,
+                    "account_source": "devin",
+                    "timestamp": chrono::Utc::now().to_rfc3339(),
+                })
+            }
+            Err(e) => {
+                json!({
+                    "success": false,
+                    "error": e.to_string(),
+                    "account_source": "devin",
+                    "timestamp": chrono::Utc::now().to_rfc3339(),
+                })
+            }
+        }
+    } else {
+        // === Windsurf 平台账号：保持原有 SubscribeToPlan 流程 ===
+        let service = crate::services::windsurf_service::WindsurfService::new();
+        let windsurf_auth1 = effective_auth1_token.as_deref().filter(|t| t.starts_with("auth1_"));
+        service.subscribe_to_plan(
+            &token,
+            windsurf_auth1,
+            teams_tier,
+            payment_period,
+            team_name.as_deref(),
+            seat_count,
+            turnstile_token.as_deref()
+        )
+            .await
+            .map_err(|e| e.to_string())?
+    };
     
     // 检查是否成功
     let success = result.get("success")
@@ -966,7 +1030,7 @@ pub async fn get_trial_payment_link_enhanced(
     if !success {
         return Ok(result);
     }
-    
+
     // 如果成功获取链接
     if let Some(stripe_url) = result.get("stripe_url").and_then(|v| v.as_str()) {
         if !stripe_url.is_empty() && auto_open {
@@ -991,9 +1055,10 @@ pub async fn get_trial_payment_link_enhanced(
                 "window_opened": true,
                 "window_label": window_label,
                 "incognito_mode": true,  // 标记使用了无痕模式
-                "teams_tier": teams_tier,
-                "payment_period": payment_period,
+                "teams_tier": if is_devin { 2 } else { teams_tier },
+                "payment_period": if is_devin { 1 } else { payment_period },
                 "account_name": account_name,
+                "account_source": if is_devin { "devin" } else { "windsurf" },
                 "timestamp": chrono::Utc::now().to_rfc3339(),
             }));
         }

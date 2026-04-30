@@ -7,6 +7,21 @@
     @close="handleClose"
   >
     <div class="import-container">
+      <!-- 账号来源切换 -->
+      <div class="mode-section source-section">
+        <span class="mode-label">账号来源：</span>
+        <el-radio-group v-model="accountSource">
+          <el-radio value="windsurf">
+            <span class="source-tag source-windsurf">Windsurf</span>
+            <span class="source-hint">windsurf.com</span>
+          </el-radio>
+          <el-radio value="devin">
+            <span class="source-tag source-devin">Devin</span>
+            <span class="source-hint">app.devin.ai</span>
+          </el-radio>
+        </el-radio-group>
+      </div>
+
       <!-- 导入模式切换 -->
       <div class="mode-section">
         <span class="mode-label">导入模式：</span>
@@ -196,7 +211,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'update:modelValue', value: boolean): void;
-  (e: 'import', accounts: Array<{ email: string; password: string; remark: string; refreshToken?: string }>, autoLogin: boolean, group: string, tags: string[], mode: 'password' | 'refresh_token'): void;
+  (e: 'import', accounts: Array<{ email: string; password: string; remark: string; refreshToken?: string }>, autoLogin: boolean, group: string, tags: string[], mode: 'password' | 'refresh_token', accountSource: 'windsurf' | 'devin'): void;
 }>();
 
 const settingsStore = useSettingsStore();
@@ -215,6 +230,7 @@ const fileInputRef = ref<HTMLInputElement | null>(null);
 const selectedGroup = ref<string>('');
 const selectedTags = ref<string[]>([]);
 const importMode = ref<'password' | 'refresh_token'>('password');
+const accountSource = ref<'windsurf' | 'devin'>('windsurf');
 
 const unlimitedConcurrent = computed(() => settingsStore.settings?.unlimitedConcurrentRefresh || false);
 const concurrencyLimit = computed(() => settingsStore.settings?.concurrent_limit || 5);
@@ -304,7 +320,7 @@ function handleFileSelected(event: Event) {
 function handleImport() {
   if (validAccounts.value.length === 0) return;
   importing.value = true;
-  emit('import', [...validAccounts.value], autoLogin.value, selectedGroup.value || '默认分组', [...selectedTags.value], importMode.value);
+  emit('import', [...validAccounts.value], autoLogin.value, selectedGroup.value || '默认分组', [...selectedTags.value], importMode.value, accountSource.value);
 }
 
 // 关闭对话框
@@ -316,6 +332,7 @@ function handleClose() {
     selectedGroup.value = '';
     selectedTags.value = [];
     importMode.value = 'password';
+    accountSource.value = 'windsurf';
     visible.value = false;
   }
 }
@@ -335,6 +352,7 @@ watch(visible, (val) => {
     selectedTags.value = [];
     importing.value = false;
     importMode.value = 'password';
+    accountSource.value = 'windsurf';
   }
 });
 
@@ -357,6 +375,32 @@ defineExpose({
   padding: 8px 12px;
   background: #f0f9eb;
   border-radius: 6px;
+}
+
+.source-section {
+  background: #f4f0fe;
+}
+
+.source-tag {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  margin-right: 4px;
+  letter-spacing: 0.3px;
+}
+.source-windsurf {
+  color: #fff;
+  background: linear-gradient(135deg, #2196f3, #1976d2);
+}
+.source-devin {
+  color: #fff;
+  background: linear-gradient(135deg, #9b6cf3, #7245d7);
+}
+.source-hint {
+  color: var(--el-text-color-placeholder);
+  font-size: 12px;
 }
 
 .mode-label {

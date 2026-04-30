@@ -78,7 +78,17 @@ pub struct Account {
     pub stripe_checkout_session_id: Option<String>,
     #[serde(default, rename = "sortOrder")]
     pub sort_order: i32,
+    // 账号来源平台：
+    // - "windsurf"（默认）：在 windsurf.com 注册，订阅走 windsurf SubscribeToPlan
+    // - "devin"：在 app.devin.ai 注册，订阅走 Devin /api/billing/checkout
+    // 注：序列化字段名为 snake_case `account_source`，与前端 TS 接口保持一致；
+    // 同时通过 alias 兼容历史版本写入磁盘的 camelCase `accountSource`。
+    #[serde(default, alias = "accountSource")]
+    pub account_source: Option<String>,
 }
+
+pub const ACCOUNT_SOURCE_WINDSURF: &str = "windsurf";
+pub const ACCOUNT_SOURCE_DEVIN: &str = "devin";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -127,6 +137,7 @@ impl Account {
             bound_card_at: None,
             stripe_checkout_session_id: None,
             sort_order: 0,
+            account_source: None,
         }
     }
 
@@ -136,5 +147,10 @@ impl Account {
         } else {
             false
         }
+    }
+
+    /// 判断账号是否为 Devin 平台账号
+    pub fn is_devin(&self) -> bool {
+        matches!(self.account_source.as_deref(), Some(ACCOUNT_SOURCE_DEVIN))
     }
 }

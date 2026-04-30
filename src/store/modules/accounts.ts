@@ -300,6 +300,7 @@ export const useAccountsStore = defineStore('accounts', () => {
     nickname: string;
     tags: string[];
     group?: string;
+    account_source?: 'windsurf' | 'devin';
   }) {
     loading.value = true;
     error.value = null;

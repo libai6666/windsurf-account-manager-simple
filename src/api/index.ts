@@ -22,9 +22,25 @@ export const accountApi = {
 
     group?: string;
 
+    account_source?: 'windsurf' | 'devin';
+
   }): Promise<Account> {
 
-    return await invoke('add_account', data);
+    return await invoke('add_account', {
+
+      email: data.email,
+
+      password: data.password,
+
+      nickname: data.nickname,
+
+      tags: data.tags,
+
+      group: data.group,
+
+      accountSource: data.account_source,
+
+    });
 
   },
 
@@ -453,6 +469,10 @@ export const apiService = {
     success: boolean;
 
     stripe_url?: string;
+
+    subscription_url?: string;
+
+    account_source?: string;
 
     teams_tier?: number;
 

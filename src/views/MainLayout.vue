@@ -790,6 +790,53 @@ const batchTrialSelectedAccounts = ref<{ id: string; email: string; token?: stri
 const defaultConcurrencyCount = ref(4);
 const pendingApiCalls = ref(0);
 
+const BULK_IMPORT_MAX_CONCURRENCY = 4;
+const BULK_REFRESH_CHUNK_SIZE = 10;
+const BULK_REFRESH_FALLBACK_CONCURRENCY = 3;
+
+function delay(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function getSafeConcurrency(maxLimit: number): number {
+  const configured = settingsStore.settings?.concurrent_limit || maxLimit;
+  return Math.max(1, Math.min(configured, maxLimit));
+}
+
+function getBatchConcurrency(total: number, maxLimit: number): number {
+  if (settingsStore.settings?.unlimitedConcurrentRefresh) {
+    return Math.max(1, total);
+  }
+  return getSafeConcurrency(maxLimit);
+}
+
+async function runInChunks<T, R>(
+  items: T[],
+  limit: number,
+  task: (item: T) => Promise<R>,
+  onProgress?: (done: number, total: number) => void,
+  pauseMs = 180
+): Promise<R[]> {
+  const results: R[] = [];
+  const safeLimit = Math.max(1, limit);
+  for (let i = 0; i < items.length; i += safeLimit) {
+    const chunk = items.slice(i, i + safeLimit);
+    const settled = await Promise.allSettled(chunk.map(item => task(item)));
+    for (const item of settled) {
+      if (item.status === 'fulfilled') {
+        results.push(item.value);
+      } else {
+        throw item.reason;
+      }
+    }
+    onProgress?.(results.length, items.length);
+    if (i + safeLimit < items.length && pauseMs > 0) {
+      await delay(pauseMs);
+    }
+  }
+  return results;
+}
+
 // 排序相关
 const currentSortField = ref<string>('custom');
 const sortDirection = ref<'asc' | 'desc'>('asc');
@@ -1360,12 +1407,9 @@ async function handleBatchImportConfirm(
   autoLogin: boolean,
   group: string = '默认分组',
   tags: string[] = [],
-  mode: 'password' | 'refresh_token' = 'password'
+  mode: 'password' | 'refresh_token' = 'password',
+  accountSource: 'windsurf' | 'devin' = 'windsurf'
 ) {
-  // 获取并发设置
-  const unlimitedConcurrent = settingsStore.settings?.unlimitedConcurrentRefresh || false;
-  const concurrencyLimit = settingsStore.settings?.concurrent_limit || 5;
-  
   const modeLabel = mode === 'refresh_token' ? 'Refresh Token' : '邮箱密码';
   const targetGroup = group.trim() || '默认分组';
   const shouldApplyTags = tags.length > 0;
@@ -1401,12 +1445,12 @@ async function handleBatchImportConfirm(
     return;
   }
   
+  const concurrencyLimit = getBatchConcurrency(filteredAccounts.length, BULK_IMPORT_MAX_CONCURRENCY);
+  
   // 显示进度提示（包含跳过信息）
   const skipInfo = skippedCount > 0 ? `，跳过 ${skippedCount} 个已存在` : '';
   let progressMsg = ElMessage({
-    message: unlimitedConcurrent
-      ? `正在全量并发导入 ${filteredAccounts.length} 个账号（${modeLabel}模式）${skipInfo}...`
-      : `正在导入 ${filteredAccounts.length} 个账号（${modeLabel}模式，并发${concurrencyLimit}）${skipInfo}...`,
+    message: `正在稳定导入 ${filteredAccounts.length} 个账号（${modeLabel}模式，并发${concurrencyLimit}）${skipInfo}...`,
     duration: 0,
     icon: Loading
   });
@@ -1443,7 +1487,7 @@ async function handleBatchImportConfirm(
 
   const waitForRetry = async (attempt: number) => {
     if (attempt >= retryTimes) return;
-    await new Promise(resolve => setTimeout(resolve, 300));
+    await delay(600 + attempt * 500);
   };
   
   // 单个导入任务
@@ -1457,7 +1501,8 @@ async function handleBatchImportConfirm(
             refreshToken: item.refreshToken,
             nickname: item.remark || undefined,
             tags: shouldApplyTags ? [...tags] : [],
-            group: targetGroup
+            group: targetGroup,
+            accountSource
           });
           
           if (result.success) {
@@ -1471,7 +1516,8 @@ async function handleBatchImportConfirm(
             password: item.password,
             nickname: item.remark || item.email.split('@')[0],
             tags: shouldApplyTags ? [...tags] : [],
-            group: targetGroup
+            group: targetGroup,
+            account_source: accountSource
           });
           return { email: item.email, success: true, accountId: newAccount.id };
         }
@@ -1485,26 +1531,21 @@ async function handleBatchImportConfirm(
   };
   
   try {
-    if (unlimitedConcurrent) {
-      // 全量并发导入
-      const allResults = await Promise.all(filteredAccounts.map(item => importTask(item)));
-      results.push(...allResults);
-    } else {
-      // 分批并发处理
-      for (let i = 0; i < filteredAccounts.length; i += concurrencyLimit) {
-        const batch = filteredAccounts.slice(i, i + concurrencyLimit);
-        const batchResults = await Promise.all(batch.map(item => importTask(item)));
-        results.push(...batchResults);
-        
-        // 更新进度
+    const importResults = await runInChunks(
+      filteredAccounts,
+      concurrencyLimit,
+      importTask,
+      (done, total) => {
         progressMsg.close();
         progressMsg = ElMessage({
-          message: `导入进度: ${results.length}/${filteredAccounts.length}`,
+          message: `导入进度: ${done}/${total}`,
           duration: 0,
           icon: Loading
         });
-      }
-    }
+      },
+      250
+    );
+    results.push(...importResults);
     
     // 统计添加结果
     const addedAccounts = results.filter(r => r.success);
@@ -1515,9 +1556,7 @@ async function handleBatchImportConfirm(
     if (autoLogin && addedAccounts.length > 0 && mode === 'password') {
       progressMsg.close();
       progressMsg = ElMessage({
-        message: unlimitedConcurrent
-          ? `正在全量并发登录 ${addedAccounts.length} 个账号...`
-          : `正在登录 ${addedAccounts.length} 个账号（并发${concurrencyLimit}）...`,
+        message: `正在稳定登录 ${addedAccounts.length} 个账号（并发${concurrencyLimit}）...`,
         duration: 0,
         icon: Loading
       });
@@ -1542,26 +1581,21 @@ async function handleBatchImportConfirm(
       
       const loginResults: Array<{ success: boolean }> = [];
       
-      if (unlimitedConcurrent) {
-        // 全量并发登录
-        const allLoginResults = await Promise.all(addedAccounts.map(item => loginTask(item)));
-        loginResults.push(...allLoginResults);
-      } else {
-        // 分批并发登录
-        for (let i = 0; i < addedAccounts.length; i += concurrencyLimit) {
-          const batch = addedAccounts.slice(i, i + concurrencyLimit);
-          const batchResults = await Promise.all(batch.map(item => loginTask(item)));
-          loginResults.push(...batchResults);
-          
-          // 更新进度
+      const loginChunkResults = await runInChunks(
+        addedAccounts,
+        concurrencyLimit,
+        loginTask,
+        (done, total) => {
           progressMsg.close();
           progressMsg = ElMessage({
-            message: `登录进度: ${loginResults.length}/${addedAccounts.length}`,
+            message: `登录进度: ${done}/${total}`,
             duration: 0,
             icon: Loading
           });
-        }
-      }
+        },
+        300
+      );
+      loginResults.push(...loginChunkResults);
       
       loginSuccessCount = loginResults.filter(r => r.success).length;
     }
@@ -1619,23 +1653,24 @@ async function handleBatchImportConfirm(
         }
       };
 
-      if (unlimitedConcurrent) {
-        const allPostResults = await Promise.all(addedAccounts.map(item => postImportTask(item)));
-        postImportResults.push(...allPostResults);
-      } else {
-        for (let i = 0; i < addedAccounts.length; i += concurrencyLimit) {
-          const batch = addedAccounts.slice(i, i + concurrencyLimit);
-          const batchResults = await Promise.all(batch.map(item => postImportTask(item)));
-          postImportResults.push(...batchResults);
-
+      const postImportConcurrency = settingsStore.settings?.unlimitedConcurrentRefresh
+        ? addedAccounts.length
+        : Math.min(concurrencyLimit, 3);
+      const postChunkResults = await runInChunks(
+        addedAccounts,
+        postImportConcurrency,
+        postImportTask,
+        (done, total) => {
           progressMsg.close();
           progressMsg = ElMessage({
-            message: `离线检查进度: ${postImportResults.length}/${addedAccounts.length}`,
+            message: `离线检查进度: ${done}/${total}`,
             duration: 0,
             icon: Loading
           });
-        }
-      }
+        },
+        350
+      );
+      postImportResults.push(...postChunkResults);
 
       offlineRetryTotal = postImportResults.filter(result => result.offline).length;
       offlineRetrySuccess = postImportResults.filter(result => result.retrySuccess).length;
@@ -1704,55 +1739,105 @@ async function handleBatchRefresh() {
   }
   
   const totalCount = selectedIds.length;
+  const chunkSize = getBatchConcurrency(totalCount, BULK_REFRESH_CHUNK_SIZE);
+  const allResults: any[] = [];
   
-  const progressLoading = ElMessage({
-    message: `正在批量刷新 ${totalCount} 个账号状态...`,
+  let progressLoading = ElMessage({
+    message: `正在稳定批量刷新 ${totalCount} 个账号状态（每批 ${chunkSize} 个）...`,
     duration: 0,
     icon: Loading
   });
   
-  try {
-    // 使用优化的批量刷新 API（后端只保存一次）
-    const result = await apiService.batchRefreshTokens(selectedIds);
-    
-    progressLoading.close();
-    
-    const successCount = result.success_count || 0;
-    const failedCount = totalCount - successCount;
-    
-    // 刷新成功的账号，从后端重新获取数据更新 store
-    if (result.results) {
-      for (const item of result.results) {
-        if (item.success && item.data) {
-          // 从后端获取最新账号数据
-          try {
-            const latestAccount = await accountApi.getAccount(item.id);
-            if (item.data.plan_name) latestAccount.plan_name = item.data.plan_name;
-            if (item.data.used_quota !== undefined) latestAccount.used_quota = item.data.used_quota;
-            if (item.data.total_quota !== undefined) latestAccount.total_quota = item.data.total_quota;
-            if (item.data.expires_at) latestAccount.token_expires_at = item.data.expires_at;
-            latestAccount.status = 'active';
-            latestAccount.last_quota_update = dayjs().toISOString();
-            accountsStore.updateAccount(latestAccount);
-          } catch {
-            // 忽略单个账号的获取失败
-          }
-        } else {
-          // 刷新失败的账号，标记为 error
-          const account = accountsStore.accounts.find(a => a.id === item.id);
-          if (account) {
-            accountsStore.updateAccount({ ...account, status: 'error' as const });
-          }
-        }
+  const applyRefreshResult = async (item: any) => {
+    if (item.success && item.data) {
+      try {
+        const latestAccount = await accountApi.getAccount(item.id);
+        if (item.data.plan_name) latestAccount.plan_name = item.data.plan_name;
+        if (item.data.used_quota !== undefined) latestAccount.used_quota = item.data.used_quota;
+        if (item.data.total_quota !== undefined) latestAccount.total_quota = item.data.total_quota;
+        if (item.data.expires_at) latestAccount.token_expires_at = item.data.expires_at;
+        latestAccount.status = 'active';
+        latestAccount.last_quota_update = dayjs().toISOString();
+        await accountsStore.updateAccount(latestAccount);
+      } catch {
+        // 忽略单个账号的获取失败
+      }
+    } else {
+      const account = accountsStore.accounts.find(a => a.id === item.id);
+      if (account) {
+        await accountsStore.updateAccount({ ...account, status: 'error' as const });
       }
     }
+  };
+
+  const refreshSingleWithRetry = async (id: string) => {
+    const account = accountsStore.accounts.find(a => a.id === id);
+    let lastError = '未知错误';
+    for (let attempt = 0; attempt <= 1; attempt++) {
+      try {
+        const data = await apiService.refreshToken(id);
+        if (data.success) {
+          const result = { id, success: true, data };
+          await applyRefreshResult(result);
+          return result;
+        }
+        lastError = data.message || 'Token刷新失败';
+      } catch (error) {
+        lastError = String(error);
+      }
+      await delay(700 + attempt * 600);
+    }
+    const failed = { id, success: false, error: lastError, email: account?.email };
+    await applyRefreshResult(failed);
+    return failed;
+  };
+
+  try {
+    for (let i = 0; i < selectedIds.length; i += chunkSize) {
+      const chunk = selectedIds.slice(i, i + chunkSize);
+      let chunkResults: any[] = [];
+      try {
+        const result = await apiService.batchRefreshTokens(chunk);
+        chunkResults = result.results || [];
+        for (const item of chunkResults) {
+          await applyRefreshResult(item);
+        }
+      } catch (error) {
+        console.error('批量刷新批次失败，降级为单账号刷新:', error);
+        const fallbackConcurrency = settingsStore.settings?.unlimitedConcurrentRefresh
+          ? chunk.length
+          : BULK_REFRESH_FALLBACK_CONCURRENCY;
+        chunkResults = await runInChunks(
+          chunk,
+          fallbackConcurrency,
+          refreshSingleWithRetry,
+          undefined,
+          250
+        );
+      }
+      allResults.push(...chunkResults);
+      progressLoading.close();
+      progressLoading = ElMessage({
+        message: `刷新进度: ${Math.min(allResults.length, totalCount)}/${totalCount}`,
+        duration: 0,
+        icon: Loading
+      });
+      if (i + chunkSize < selectedIds.length) {
+        await delay(500);
+      }
+    }
+
+    progressLoading.close();
+    
+    const successCount = allResults.filter(item => item.success).length;
+    const failedCount = totalCount - successCount;
     
     // 显示结果
     if (failedCount === 0) {
       ElMessage.success(`刷新完成: 成功 ${successCount} 个`);
     } else {
       // 收集失败信息
-      const failedItems = result.results?.filter((r: any) => !r.success) || [];
+      const failedItems = allResults.filter((r: any) => !r.success);
       const failedEmails = failedItems.slice(0, 3).map((item: any) => {
         const account = accountsStore.accounts.find(a => a.id === item.id);
         return `${account?.email || item.id}: ${item.error || '未知错误'}`;
@@ -1918,8 +2003,9 @@ async function processBatchTrialLinksWithoutVerification(
           undefined
         );
         
-        if (result.success && result.stripe_url) {
-          collectedLinks.push({ email: account.email, accountId: account.id, success: true, url: result.stripe_url });
+        const linkUrl = result.subscription_url || result.stripe_url;
+        if (result.success && linkUrl) {
+          collectedLinks.push({ email: account.email, accountId: account.id, success: true, url: linkUrl });
         } else {
           collectedLinks.push({ email: account.email, accountId: account.id, success: false, error: result.error || '获取失败' });
         }
@@ -1965,13 +2051,14 @@ async function handleSingleVerifySuccess(accountId: string, token: string) {
       token
     );
     
-    if (result.success && result.stripe_url) {
+    const linkUrl = result.subscription_url || result.stripe_url;
+    if (result.success && linkUrl) {
       // 添加到结果列表（如果不存在）
       const existingIndex = batchTrialLinksData.value.findIndex(l => l.accountId === accountId);
       if (existingIndex === -1) {
-        batchTrialLinksData.value.push({ email: account.email, accountId, success: true, url: result.stripe_url });
+        batchTrialLinksData.value.push({ email: account.email, accountId, success: true, url: linkUrl });
       } else {
-        batchTrialLinksData.value[existingIndex] = { email: account.email, accountId, success: true, url: result.stripe_url };
+        batchTrialLinksData.value[existingIndex] = { email: account.email, accountId, success: true, url: linkUrl };
       }
     } else {
       const existingIndex = batchTrialLinksData.value.findIndex(l => l.accountId === accountId);

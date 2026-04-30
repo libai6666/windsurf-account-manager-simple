@@ -33,6 +33,9 @@ export async function validateCardNumber(cardNumber: string): Promise<boolean> {
 
 /**
  * 获取试用支付链接（增强版）
+ *
+ * @param accountSource 账号来源：'windsurf'（默认）或 'devin'
+ * @param auth1Token Devin 账号的 auth1 token（即 account.refresh_token），仅在 accountSource = 'devin' 时使用
  */
 export async function getTrialPaymentLink(
   accountName: string,
@@ -42,7 +45,10 @@ export async function getTrialPaymentLink(
   paymentPeriod: number,
   teamName?: string,
   seatCount?: number,
-  turnstileToken?: string
+  turnstileToken?: string,
+  accountSource?: 'windsurf' | 'devin',
+  auth1Token?: string,
+  accountId?: string
 ): Promise<any> {
   return await invoke('get_trial_payment_link_enhanced', {
     accountName,
@@ -52,7 +58,10 @@ export async function getTrialPaymentLink(
     paymentPeriod,
     teamName,
     seatCount,
-    turnstileToken
+    turnstileToken,
+    accountSource,
+    auth1Token,
+    accountId
   });
 }
 

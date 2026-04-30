@@ -13,6 +13,7 @@ pub async fn add_account(
     nickname: String,
     tags: Vec<String>,
     group: Option<String>,
+    account_source: Option<String>,
     store: State<'_, Arc<DataStore>>,
 ) -> Result<Account, String> {
     let mut account = store.add_account(email.clone(), password, nickname, group)
@@ -21,6 +22,13 @@ pub async fn add_account(
     
     // 设置标签和分组
     account.tags = tags;
+    // 设置账号来源（windsurf / devin），未提供则保持 None（视为 windsurf）
+    if let Some(src) = account_source {
+        let trimmed = src.trim();
+        if !trimmed.is_empty() {
+            account.account_source = Some(trimmed.to_string());
+        }
+    }
     
     store.update_account(account.clone())
         .await
@@ -47,6 +55,7 @@ pub async fn add_account_by_refresh_token(
     nickname: Option<String>,
     tags: Vec<String>,
     group: Option<String>,
+    account_source: Option<String>,
     store: State<'_, Arc<DataStore>>,
 ) -> Result<serde_json::Value, String> {
     let auth_service = AuthService::new();
@@ -86,6 +95,13 @@ pub async fn add_account_by_refresh_token(
     account.refresh_token = Some(new_refresh_token);
     account.status = crate::models::account::AccountStatus::Active;
     account.last_login_at = Some(chrono::Utc::now());
+    // 设置账号来源（windsurf / devin），未提供则保持 None（视为 windsurf）
+    if let Some(src) = account_source {
+        let trimmed = src.trim();
+        if !trimmed.is_empty() {
+            account.account_source = Some(trimmed.to_string());
+        }
+    }
     
     // 获取账号详细信息（套餐、积分等）
     let windsurf_service = WindsurfService::new();
@@ -249,6 +265,16 @@ pub async fn update_account(
     // 更新 Windsurf API Key
     if let Some(windsurf_api_key) = account.get("windsurf_api_key").and_then(|v| v.as_str()) {
         existing_account.windsurf_api_key = Some(windsurf_api_key.to_string());
+    }
+
+    // 更新账号来源（windsurf / devin），允许 null 清空
+    if let Some(src_value) = account.get("account_source").or_else(|| account.get("accountSource")) {
+        if src_value.is_null() {
+            existing_account.account_source = None;
+        } else if let Some(src) = src_value.as_str() {
+            let trimmed = src.trim();
+            existing_account.account_source = if trimmed.is_empty() { None } else { Some(trimmed.to_string()) };
+        }
     }
 
     // 更新 Token（如果有）

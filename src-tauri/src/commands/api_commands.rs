@@ -2,7 +2,7 @@ use crate::models::{Account, AccountStatus, OperationLog, OperationType, Operati
 
 use crate::repository::DataStore;
 
-use crate::services::{AuthService, WindsurfService, UpdateSeatsResult};
+use crate::services::{AuthService, WindsurfService, UpdateSeatsResult, DevinService};
 
 use crate::utils::AppError;
 
@@ -3413,16 +3413,10 @@ pub async fn batch_refresh_tokens(
 
     
 
-    // 读取用户设置的并发配置
-
     let max_concurrent = if settings.unlimited_concurrent_refresh {
-
-        ids.len() // 全量并发
-
+        ids.len().max(1)
     } else {
-
-        settings.concurrent_limit.max(1) // 至少 1 个并发
-
+        settings.concurrent_limit.max(1)
     };
 
     
@@ -3989,11 +3983,145 @@ pub async fn get_trial_payment_link(
 
 
 
+    // === Devin 平台账号：走 app.devin.ai/api/billing/checkout ===
+
+    if account.is_devin() {
+
+        let auth1 = account.refresh_token.clone()
+
+            .ok_or_else(|| "Devin 账号缺少 auth1 token (refresh_token)，请先登录".to_string())?;
+
+        let devin = DevinService::new();
+
+        let result = match devin.get_trial_checkout_url(&auth1).await {
+
+            Ok((stripe_url, org_id, org_name)) => {
+
+                let session_id = WindsurfService::extract_checkout_session_id(&stripe_url);
+
+                if let Some(sid) = session_id.clone() {
+
+                    account.stripe_checkout_session_id = Some(sid);
+
+                    if let Err(e) = store.update_account(account.clone()).await {
+
+                        log::warn!("[get_trial_payment_link/devin] 保存 stripe_checkout_session_id 失败: {}", e);
+
+                    }
+
+                }
+
+                let log = OperationLog::new(
+
+                    OperationType::GetAccountInfo,
+
+                    OperationStatus::Success,
+
+                    format!("获取 Devin 试用绑卡链接成功: {}", account.email),
+
+                )
+
+                .with_account(uuid, account.email.clone())
+
+                .with_details(json!({
+
+                    "account_source": "devin",
+
+                    "plan_id": "pro",
+
+                    "is_trial": true,
+
+                    "stripe_url": stripe_url,
+
+                    "subscription_url": stripe_url,
+
+                    "stripe_session_id": session_id,
+
+                }));
+
+                let _ = store.add_log(log).await;
+
+                json!({
+
+                    "success": true,
+
+                    "stripe_url": stripe_url,
+
+                    "subscription_url": stripe_url,
+
+                    "org_id": org_id,
+
+                    "org_name": org_name,
+
+                    "stripe_session_id": session_id,
+
+                    "teams_tier": 2,
+
+                    "payment_period": 1,
+
+                    "status_code": 200,
+
+                    "account_source": "devin",
+
+                    "timestamp": chrono::Utc::now().to_rfc3339(),
+
+                })
+
+            }
+
+            Err(e) => {
+
+                let err_msg = e.to_string();
+
+                let log = OperationLog::new(
+
+                    OperationType::GetAccountInfo,
+
+                    OperationStatus::Failed,
+
+                    format!("获取 Devin 试用绑卡链接失败: {} - {}", account.email, err_msg),
+
+                )
+
+                .with_account(uuid, account.email.clone())
+
+                .with_details(json!({
+
+                    "account_source": "devin",
+
+                    "error": err_msg,
+
+                }));
+
+                let _ = store.add_log(log).await;
+
+                json!({
+
+                    "success": false,
+
+                    "error": err_msg,
+
+                    "account_source": "devin",
+
+                    "timestamp": chrono::Utc::now().to_rfc3339(),
+
+                })
+
+            }
+
+        };
+
+        return Ok(result);
+
+    }
+
+
+
     // 确保有有效的Token
 
-    // 新账号 (auth1_) 强制刷新，SubscribeToPlan 需要新鲜的 session_token
+    // 不因 auth1_ 无条件强制刷新；token 仍有效时沿用现有 session，避免网络抖动导致获取支付链接失败
 
-    let force = account.refresh_token.as_ref().map_or(false, |rt| rt.starts_with("auth1_"));
+    let force = false;
 
     ensure_valid_token_with_force(&store, &mut account, uuid, force).await?;
 

@@ -18,6 +18,13 @@
       />
       <div class="account-info">
         <div class="email" :title="'点击复制: ' + account.email" @click.stop="copyEmail">{{ displayEmail }}</div>
+        <span
+          class="source-badge"
+          :class="isDevinAccount ? 'source-badge-devin' : 'source-badge-windsurf'"
+          :title="isDevinAccount ? '账号来源：app.devin.ai' : '账号来源：windsurf.com'"
+        >
+          {{ isDevinAccount ? 'Devin' : 'Windsurf' }}
+        </span>
         <el-tag 
           v-if="account.nickname"
           type="warning"
@@ -479,6 +486,9 @@ const displayEmail = computed(() => {
   }
   return props.account.email;
 });
+
+// 是否为 Devin 平台账号（在 app.devin.ai 注册）
+const isDevinAccount = computed(() => props.account.account_source === 'devin');
 
 // 获取标签颜色（优先使用全局标签颜色）
 function getTagColor(tagName: string): string | null {
@@ -1316,7 +1326,10 @@ async function handleTurnstileSuccess(turnstileToken: string) {
         paymentPeriod,
         teamName,
         teamsTier === 1 ? seatCount : undefined, // Teams 需要席位
-        turnstileToken || undefined // Pro 需要 Turnstile token
+        turnstileToken || undefined, // Pro 需要 Turnstile token
+        account.account_source, // 账号来源：windsurf | devin
+        account.refresh_token, // Devin 在后端需要 auth1 token
+        account.id
       );
       
       if (result.success && result.window_opened) {
@@ -1382,11 +1395,15 @@ async function handleTurnstileSuccess(turnstileToken: string) {
         turnstileToken || undefined
       );
 
-      if (result.success && result.stripe_url) {
+      const paymentUrl = result.subscription_url || result.stripe_url;
+      const isDevinLink = result.account_source === 'devin';
+      const linkLabel = isDevinLink ? 'Devin绑卡链接' : 'Stripe支付链接';
+
+      if (result.success && paymentUrl) {
         // 复制链接到剪贴板
         try {
-          await navigator.clipboard.writeText(result.stripe_url);
-          ElMessage.success('Stripe支付链接已复制到剪贴板');
+          await navigator.clipboard.writeText(paymentUrl);
+          ElMessage.success(`${linkLabel}已复制到剪贴板`);
 
           // 获取设置
           const autoOpen = settingsStore.settings?.autoOpenBrowser ?? true;
@@ -1399,7 +1416,7 @@ async function handleTurnstileSuccess(turnstileToken: string) {
           if (autoOpen) {
             // 自动打开浏览器
             try {
-              await invoke(openCommand, { url: result.stripe_url, browserPath });
+              await invoke(openCommand, { url: paymentUrl, browserPath });
               ElMessage.success(`已在浏览器${modeText}中打开`);
             } catch (err) {
               ElMessage.error('打开浏览器失败，请手动打开链接');
@@ -1417,7 +1434,7 @@ async function handleTurnstileSuccess(turnstileToken: string) {
               }
             ).then(async () => {
               try {
-                await invoke(openCommand, { url: result.stripe_url, browserPath });
+                await invoke(openCommand, { url: paymentUrl, browserPath });
                 ElMessage.success(`已在浏览器${modeText}中打开`);
               } catch (err) {
                 ElMessage.error('打开浏览器失败，请手动打开链接');
@@ -1436,15 +1453,15 @@ async function handleTurnstileSuccess(turnstileToken: string) {
           const browserPath2 = settingsStore.settings?.customBrowserPath || undefined;
           
           ElMessageBox.alert(
-            `<div style="word-break: break-all;">${result.stripe_url}</div>`,
-            'Stripe支付链接',
+            `<div style="word-break: break-all;">${paymentUrl}</div>`,
+            linkLabel,
             {
               dangerouslyUseHTMLString: true,
               confirmButtonText: `在${modeText}中打开`,
             }
           ).then(async () => {
             try {
-              await invoke(openCommand, { url: result.stripe_url, browserPath: browserPath2 });
+              await invoke(openCommand, { url: paymentUrl, browserPath: browserPath2 });
               ElMessage.success(`已在浏览器${modeText}中打开`);
             } catch (err) {
               ElMessage.error('打开浏览器失败，请手动打开链接');
@@ -1765,6 +1782,30 @@ async function handleSwitchAccount() {
 
 .email:hover {
   color: #3b82f6;
+}
+
+.source-badge {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 8px;
+  border-radius: 9px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  color: #fff;
+  user-select: none;
+  white-space: nowrap;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+}
+
+.source-badge-windsurf {
+  background: linear-gradient(135deg, #2196f3, #1976d2);
+}
+
+.source-badge-devin {
+  background: linear-gradient(135deg, #9b6cf3, #7245d7);
 }
 
 .nickname-tag {
