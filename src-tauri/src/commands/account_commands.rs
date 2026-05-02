@@ -16,7 +16,7 @@ pub async fn add_account(
     account_source: Option<String>,
     store: State<'_, Arc<DataStore>>,
 ) -> Result<Account, String> {
-    let mut account = store.add_account(email.clone(), password, nickname, group)
+    let mut account = store.add_account(email.clone(), password, nickname, group, account_source.clone())
         .await
         .map_err(|e| e.to_string())?;
     
@@ -84,7 +84,7 @@ pub async fn add_account_by_refresh_token(
     // Step 3: 创建账号（使用空密码，因为我们有 refresh_token）
     let final_nickname = nickname.unwrap_or_else(|| email.split('@').next().unwrap_or(&email).to_string());
     
-    let mut account = store.add_account(email.clone(), String::new(), final_nickname, group)
+    let mut account = store.add_account(email.clone(), String::new(), final_nickname, group, account_source.clone())
         .await
         .map_err(|e| e.to_string())?;
     

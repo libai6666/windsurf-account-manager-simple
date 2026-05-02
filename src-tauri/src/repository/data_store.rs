@@ -199,7 +199,14 @@ impl DataStore {
     }
 
     // 账号管理方法
-    pub async fn add_account(&self, email: String, password: String, nickname: String, group: Option<String>) -> AppResult<Account> {
+    pub async fn add_account(
+        &self,
+        email: String,
+        password: String,
+        nickname: String,
+        group: Option<String>,
+        account_source: Option<String>,
+    ) -> AppResult<Account> {
         let mut config = self.config.write().await;
         
         // 检查邮箱是否已存在
@@ -225,6 +232,12 @@ impl DataStore {
         // 直接保存密码，不加密，初始化标签为空
         let mut account = Account::new(email, password, nickname, Vec::new());
         account.group = Some(final_group);
+        if let Some(src) = account_source {
+            let trimmed = src.trim();
+            if !trimmed.is_empty() {
+                account.account_source = Some(trimmed.to_string());
+            }
+        }
         
         config.accounts.push(account.clone());
         drop(config); // 释放写锁

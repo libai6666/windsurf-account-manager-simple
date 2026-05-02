@@ -1413,6 +1413,7 @@ async function handleBatchImportConfirm(
   const modeLabel = mode === 'refresh_token' ? 'Refresh Token' : '邮箱密码';
   const targetGroup = group.trim() || '默认分组';
   const shouldApplyTags = tags.length > 0;
+  const selectedAccountSource = accountSource;
   const retryTimes = Math.max(settingsStore.settings?.retry_times ?? 2, 0);
   
   // 过滤已存在的账号（邮箱密码模式按邮箱过滤，Refresh Token模式按token过滤）
@@ -1472,14 +1473,16 @@ async function handleBatchImportConfirm(
     const mergedTags = buildMergedTags(account.tags);
     const groupChanged = account.group !== targetGroup;
     const tagsChanged = shouldApplyTags && mergedTags.length !== account.tags.length;
-    if (!groupChanged && !tagsChanged) {
+    const sourceChanged = account.account_source !== selectedAccountSource;
+    if (!groupChanged && !tagsChanged && !sourceChanged) {
       return { updatedAccount: account, changed: false };
     }
     return {
       updatedAccount: {
         ...account,
         group: groupChanged ? targetGroup : account.group,
-        tags: tagsChanged ? mergedTags : account.tags
+        tags: tagsChanged ? mergedTags : account.tags,
+        account_source: selectedAccountSource
       },
       changed: true
     };
@@ -1502,7 +1505,7 @@ async function handleBatchImportConfirm(
             nickname: item.remark || undefined,
             tags: shouldApplyTags ? [...tags] : [],
             group: targetGroup,
-            accountSource
+            accountSource: selectedAccountSource
           });
           
           if (result.success) {
@@ -1517,7 +1520,7 @@ async function handleBatchImportConfirm(
             nickname: item.remark || item.email.split('@')[0],
             tags: shouldApplyTags ? [...tags] : [],
             group: targetGroup,
-            account_source: accountSource
+            account_source: selectedAccountSource
           });
           return { email: item.email, success: true, accountId: newAccount.id };
         }
