@@ -5,9 +5,13 @@ use crate::repository::DataStore;
 use crate::services::{AuthService, WindsurfService, UpdateSeatsResult, DevinService};
 
 use crate::utils::AppError;
+<<<<<<< HEAD
 
 use log::info;
 
+=======
+use log::info;
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
 use serde_json::json;
 
 use std::sync::Arc;
@@ -80,6 +84,7 @@ pub fn is_401_error(result: &serde_json::Value) -> bool {
 
 }
 
+<<<<<<< HEAD
 
 
 fn find_stripe_session_id_from_logs(logs: &[OperationLog], account_id: Uuid) -> Option<String> {
@@ -210,6 +215,51 @@ async fn refresh_token_or_relogin(
 
 
 
+=======
+/// 按 refresh_token 类型选择刷新方式，失败时才回退到密码登录。
+/// - `auth1_` 开头: 调 `WindsurfPostAuth`（新版 Windsurf 2.0 账号，无需密码）
+/// - 其他: 调 Firebase `securetoken` 端点（老版 Firebase 账号）
+/// - 两者都失败或没有 refresh_token 时，才调 `sign_in_compat` 走密码登录
+///
+/// 这样可以避免批量刷新时，因为 Firebase 端点对 auth1 token 的必然失败，
+/// 导致 20+ 并发同时打 `_devin-auth/password/login` 触发 429 Rate Limit。
+async fn refresh_token_or_relogin(
+    auth_service: &AuthService,
+    store: &Arc<DataStore>,
+    uuid: Uuid,
+    email: &str,
+    refresh_token: Option<&str>,
+) -> Result<(String, String, chrono::DateTime<chrono::Utc>), String> {
+    if let Some(rt) = refresh_token {
+        let refresh_result = if rt.starts_with("auth1_") {
+            auth_service.refresh_session_with_auth1(rt).await
+        } else {
+            auth_service.refresh_token(rt).await
+        };
+
+        match refresh_result {
+            Ok(result) => return Ok(result),
+            Err(e) => {
+                log::warn!(
+                    "[refresh_token_or_relogin] {} refresh 失败 ({})，回退到密码登录",
+                    email, e
+                );
+            }
+        }
+    }
+
+    // 回退：调 _devin-auth/password/login 重新登录
+    let password = store
+        .get_decrypted_password(uuid)
+        .await
+        .map_err(|e| e.to_string())?;
+    auth_service
+        .sign_in_compat(email, &password)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
 /// 确保账户有有效的Token（支持强制刷新）
 
 /// force_refresh: 强制刷新token，用于处理服务器端使token失效的情况（如401错误）
@@ -253,6 +303,7 @@ pub async fn ensure_valid_token_with_force(
     let auth_service = AuthService::new();
 
     
+<<<<<<< HEAD
 
     // 优先尝试使用refresh token（按 auth1_ 前缀路由，避免新账号走 Firebase 端点然后无谓地回退到密码登录）
 
@@ -270,6 +321,16 @@ pub async fn ensure_valid_token_with_force(
 
     ).await?;
 
+=======
+    // 优先尝试使用refresh token（按 auth1_ 前缀路由，避免新账号走 Firebase 端点然后无谓地回退到密码登录）
+    let (token, refresh_token_new, expires_at) = refresh_token_or_relogin(
+        &auth_service,
+        store,
+        uuid,
+        &account.email,
+        account.refresh_token.as_deref(),
+    ).await?;
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
     
 
     // 更新token到数据库
@@ -331,6 +392,7 @@ pub async fn login_account(
         .map_err(|e| e.to_string())?;
 
     
+<<<<<<< HEAD
 
     // 登录获取Token：先尝试 Windsurf 2.0 (devin-auth)，失败则回退到 Firebase
 
@@ -344,6 +406,83 @@ pub async fn login_account(
 
             (auth_result.session_token, auth_result.auth1_token, chrono::Utc::now() + chrono::Duration::hours(1))
 
+=======
+    // 登录获取Token：先尝试 Windsurf 2.0 (devin-auth)，失败则回退到 Firebase
+    let auth_service = AuthService::new();
+    let (token, refresh_token, expires_at) = match auth_service.sign_in_v2_session(&account.email, &password).await {
+        Ok(auth_result) => {
+            info!("[login_account] sign_in_v2_session 成功: {}", account.email);
+            (auth_result.session_token, auth_result.auth1_token, chrono::Utc::now() + chrono::Duration::hours(1))
+        }
+        Err(e) => {
+            info!("[login_account] sign_in_v2_session 失败({}), 回退到 Firebase: {}", e, account.email);
+            auth_service.sign_in(&account.email, &password)
+                .await
+                .map_err(|e| e.to_string())?
+        }
+    };
+    
+    // 更新Token和Refresh Token
+    store.update_account_tokens(uuid, token.clone(), refresh_token, expires_at)
+        .await
+        .map_err(|e| e.to_string())?;
+    
+    // 获取最新的配额信息
+    let windsurf_service = WindsurfService::new();
+    let mut updated_account = store.get_account(uuid).await.map_err(|e| e.to_string())?;
+    
+    // 读取设置，判断使用哪个 API
+    let settings = store.get_settings().await.map_err(|e| e.to_string())?;
+    println!("[login_account] use_lightweight_api = {}", settings.use_lightweight_api);
+    
+    if settings.use_lightweight_api {
+        // 使用轻量级 GetPlanStatus API
+        if let Ok(result) = windsurf_service.get_plan_status(&token).await {
+            if result.get("success").and_then(|v| v.as_bool()).unwrap_or(false) {
+                if let Some(plan_status) = result.get("plan_status") {
+                    // 更新套餐名称
+                    if let Some(plan_name) = plan_status.get("plan_name").and_then(|v| v.as_str()) {
+                        updated_account.plan_name = Some(plan_name.to_string());
+                    }
+                    
+                    // 更新已用配额 (used_prompt_credits + used_flex_credits)
+                    // 注意：不是 used_flow_credits，而是 used_flex_credits (int_7)
+                    let used_prompt = plan_status.get("used_prompt_credits").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let used_flex = plan_status.get("used_flex_credits").and_then(|v| v.as_i64()).unwrap_or(0);
+                    updated_account.used_quota = Some((used_prompt + used_flex) as i32);
+                    
+                    // 更新总配额 (available_flex_credits + available_prompt_credits)
+                    let available_flex = plan_status.get("available_flex_credits").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let available_prompt = plan_status.get("available_prompt_credits").and_then(|v| v.as_i64()).unwrap_or(0);
+                    if available_flex > 0 || available_prompt > 0 {
+                        updated_account.total_quota = Some((available_flex + available_prompt) as i32);
+                    }
+                    
+                    // 更新订阅到期时间 (plan_end)
+                    if let Some(plan_end) = plan_status.get("plan_end").and_then(|v| v.as_i64()) {
+                        updated_account.subscription_expires_at = chrono::DateTime::from_timestamp(plan_end, 0);
+                    }
+                    
+                    // 更新每日/每周配额信息（新配额系统）
+                    if let Some(v) = plan_status.get("daily_quota_remaining").and_then(|v| v.as_i64()) {
+                        updated_account.daily_quota_remaining = Some(v as i32);
+                    }
+                    if let Some(v) = plan_status.get("weekly_quota_remaining").and_then(|v| v.as_i64()) {
+                        updated_account.weekly_quota_remaining = Some(v as i32);
+                    }
+                    if let Some(v) = plan_status.get("daily_quota_reset").and_then(|v| v.as_i64()) {
+                        updated_account.daily_quota_reset = Some(v);
+                    }
+                    if let Some(v) = plan_status.get("weekly_quota_reset").and_then(|v| v.as_i64()) {
+                        updated_account.weekly_quota_reset = Some(v);
+                    }
+                    
+                    updated_account.last_quota_update = Some(chrono::Utc::now());
+                    store.update_account(updated_account.clone()).await
+                        .map_err(|e| format!("保存账户信息失败: {}", e))?;
+                }
+            }
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
         }
 
         Err(e) => {
@@ -582,6 +721,7 @@ pub async fn login_account(
 
                 updated_account.is_team_owner = Some(is_root_admin);
 
+<<<<<<< HEAD
 
 
                 // 补充调用 GetPlanStatus 获取每日/每周配额信息
@@ -620,6 +760,29 @@ pub async fn login_account(
 
 
 
+=======
+                // 补充调用 GetPlanStatus 获取每日/每周配额信息（新配额系统）
+                // 注意：daily_quota_remaining / weekly_quota_remaining 等字段只在 GetPlanStatus 接口返回，
+                // GetCurrentUser 不带。否则前端会因 daily_quota_remaining 为 None 而显示旧的 "Trial 0/100" 卡片，
+                // 用户必须手动刷新一次才能看到新版日/周额度 UI。
+                if let Ok(plan_result) = windsurf_service.get_plan_status(&token).await {
+                    if let Some(plan_status) = plan_result.get("plan_status") {
+                        if let Some(v) = plan_status.get("daily_quota_remaining").and_then(|v| v.as_i64()) {
+                            updated_account.daily_quota_remaining = Some(v as i32);
+                        }
+                        if let Some(v) = plan_status.get("weekly_quota_remaining").and_then(|v| v.as_i64()) {
+                            updated_account.weekly_quota_remaining = Some(v as i32);
+                        }
+                        if let Some(v) = plan_status.get("daily_quota_reset").and_then(|v| v.as_i64()) {
+                            updated_account.daily_quota_reset = Some(v);
+                        }
+                        if let Some(v) = plan_status.get("weekly_quota_reset").and_then(|v| v.as_i64()) {
+                            updated_account.weekly_quota_reset = Some(v);
+                        }
+                    }
+                }
+
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
                 updated_account.last_quota_update = Some(chrono::Utc::now());
 
                 store.update_account(updated_account.clone()).await
@@ -731,6 +894,7 @@ pub async fn refresh_token(
     let auth_service = AuthService::new();
 
     
+<<<<<<< HEAD
 
     // 优先尝试使用refresh token（按 auth1_ 前缀路由，避免新账号走 Firebase 端点然后无谓地回退到密码登录）
 
@@ -748,6 +912,16 @@ pub async fn refresh_token(
 
     ).await?;
 
+=======
+    // 优先尝试使用refresh token（按 auth1_ 前缀路由，避免新账号走 Firebase 端点然后无谓地回退到密码登录）
+    let (token, refresh_token_new, expires_at) = refresh_token_or_relogin(
+        &auth_service,
+        &store,
+        uuid,
+        &account.email,
+        account.refresh_token.as_deref(),
+    ).await?;
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
     
 
     // 更新Token和Refresh Token
@@ -842,6 +1016,20 @@ pub async fn refresh_token(
 
                         updated_account.subscription_expires_at = chrono::DateTime::from_timestamp(plan_end, 0);
 
+                    }
+                    
+                    // 提取每日/每周配额信息（新配额系统）
+                    if let Some(v) = plan_status.get("daily_quota_remaining").and_then(|v| v.as_i64()) {
+                        updated_account.daily_quota_remaining = Some(v as i32);
+                    }
+                    if let Some(v) = plan_status.get("weekly_quota_remaining").and_then(|v| v.as_i64()) {
+                        updated_account.weekly_quota_remaining = Some(v as i32);
+                    }
+                    if let Some(v) = plan_status.get("daily_quota_reset").and_then(|v| v.as_i64()) {
+                        updated_account.daily_quota_reset = Some(v);
+                    }
+                    if let Some(v) = plan_status.get("weekly_quota_reset").and_then(|v| v.as_i64()) {
+                        updated_account.weekly_quota_reset = Some(v);
                     }
 
                     
@@ -994,6 +1182,7 @@ pub async fn refresh_token(
 
                 updated_account.is_team_owner = Some(is_root_admin);
 
+<<<<<<< HEAD
 
 
                 // 补充调用 GetPlanStatus 获取每日/每周配额信息
@@ -1032,6 +1221,26 @@ pub async fn refresh_token(
 
 
 
+=======
+                // 补充调用 GetPlanStatus 获取每日/每周配额信息
+                if let Ok(plan_result) = windsurf_service.get_plan_status(&token).await {
+                    if let Some(ps) = plan_result.get("plan_status") {
+                        if let Some(v) = ps.get("daily_quota_remaining").and_then(|v| v.as_i64()) {
+                            updated_account.daily_quota_remaining = Some(v as i32);
+                        }
+                        if let Some(v) = ps.get("weekly_quota_remaining").and_then(|v| v.as_i64()) {
+                            updated_account.weekly_quota_remaining = Some(v as i32);
+                        }
+                        if let Some(v) = ps.get("daily_quota_reset").and_then(|v| v.as_i64()) {
+                            updated_account.daily_quota_reset = Some(v);
+                        }
+                        if let Some(v) = ps.get("weekly_quota_reset").and_then(|v| v.as_i64()) {
+                            updated_account.weekly_quota_reset = Some(v);
+                        }
+                    }
+                }
+
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
                 updated_account.last_quota_update = Some(chrono::Utc::now());
 
                 // 检查免费试用资格
@@ -1117,6 +1326,7 @@ pub async fn refresh_token(
         "is_team_owner": updated_account.is_team_owner,
 
         "windsurf_api_key": updated_account.windsurf_api_key,
+<<<<<<< HEAD
 
         "last_quota_update": updated_account.last_quota_update.map(|t| t.to_rfc3339()),
 
@@ -1132,6 +1342,13 @@ pub async fn refresh_token(
 
         "trial_eligible": updated_account.trial_eligible
 
+=======
+        "last_quota_update": updated_account.last_quota_update.map(|t| t.to_rfc3339()),
+        "daily_quota_remaining": updated_account.daily_quota_remaining,
+        "weekly_quota_remaining": updated_account.weekly_quota_remaining,
+        "daily_quota_reset": updated_account.daily_quota_reset,
+        "weekly_quota_reset": updated_account.weekly_quota_reset
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
     }))
 
 }
@@ -2772,6 +2989,20 @@ fn get_current_user_internal<'a>(
                     updated_account.subscription_expires_at = chrono::DateTime::from_timestamp(plan_end, 0);
 
                 }
+                
+                // 更新每日/每周配额信息（新配额系统）
+                if let Some(v) = plan_status.get("daily_quota_remaining").and_then(|v| v.as_i64()) {
+                    updated_account.daily_quota_remaining = Some(v as i32);
+                }
+                if let Some(v) = plan_status.get("weekly_quota_remaining").and_then(|v| v.as_i64()) {
+                    updated_account.weekly_quota_remaining = Some(v as i32);
+                }
+                if let Some(v) = plan_status.get("daily_quota_reset").and_then(|v| v.as_i64()) {
+                    updated_account.daily_quota_reset = Some(v);
+                }
+                if let Some(v) = plan_status.get("weekly_quota_reset").and_then(|v| v.as_i64()) {
+                    updated_account.weekly_quota_reset = Some(v);
+                }
 
                 
 
@@ -2804,11 +3035,16 @@ fn get_current_user_internal<'a>(
 
 
                 updated_account.last_quota_update = Some(chrono::Utc::now());
+<<<<<<< HEAD
 
                 // API 调通说明账号有效，把 status 重置为 Active（防止被历史 Error 状态卡住前端 UI）
 
                 updated_account.status = AccountStatus::Active;
 
+=======
+                // API 调通说明账号有效，把 status 重置为 Active（防止被历史 Error 状态卡住前端 UI）
+                updated_account.status = crate::models::AccountStatus::Active;
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
                 store.update_account(updated_account).await
 
                     .map_err(|e| format!("保存账户信息失败: {}", e))?;
@@ -2987,6 +3223,7 @@ fn get_current_user_internal<'a>(
 
             updated_account.is_team_owner = Some(is_root_admin);
 
+<<<<<<< HEAD
 
 
             // 补充调用 GetPlanStatus 获取每日/每周配额信息
@@ -3025,7 +3262,29 @@ fn get_current_user_internal<'a>(
 
 
 
+=======
+            // 补充调用 GetPlanStatus 获取每日/每周配额信息
+            if let Ok(plan_result) = windsurf_service.get_plan_status(&token).await {
+                if let Some(plan_status) = plan_result.get("plan_status") {
+                    if let Some(v) = plan_status.get("daily_quota_remaining").and_then(|v| v.as_i64()) {
+                        updated_account.daily_quota_remaining = Some(v as i32);
+                    }
+                    if let Some(v) = plan_status.get("weekly_quota_remaining").and_then(|v| v.as_i64()) {
+                        updated_account.weekly_quota_remaining = Some(v as i32);
+                    }
+                    if let Some(v) = plan_status.get("daily_quota_reset").and_then(|v| v.as_i64()) {
+                        updated_account.daily_quota_reset = Some(v);
+                    }
+                    if let Some(v) = plan_status.get("weekly_quota_reset").and_then(|v| v.as_i64()) {
+                        updated_account.weekly_quota_reset = Some(v);
+                    }
+                }
+            }
+
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
             updated_account.last_quota_update = Some(chrono::Utc::now());
+            // API 调通说明账号有效，把 status 重置为 Active（防止被历史 Error 状态卡住前端 UI）
+            updated_account.status = crate::models::AccountStatus::Active;
 
             // API 调通说明账号有效，把 status 重置为 Active（防止被历史 Error 状态卡住前端 UI）
 
@@ -3548,6 +3807,7 @@ async fn refresh_token_internal(
     let auth_service = AuthService::new();
 
     
+<<<<<<< HEAD
 
     // 刷新 token：auth1_ 前缀走 WindsurfPostAuth，其他走 Firebase，两者失败才 fallback 到密码登录
 
@@ -3567,6 +3827,17 @@ async fn refresh_token_internal(
 
     ).await?;
 
+=======
+    // 刷新 token：auth1_ 前缀走 WindsurfPostAuth，其他走 Firebase，两者失败才 fallback 到密码登录
+    // 避免批量刷新时 20+ 并发同时打 _devin-auth/password/login 导致 429
+    let (token, refresh_token_new, expires_at) = refresh_token_or_relogin(
+        &auth_service,
+        store,
+        uuid,
+        &account.email,
+        account.refresh_token.as_deref(),
+    ).await?;
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
     
 
     // 使用延迟保存的方法更新 token
@@ -3636,6 +3907,7 @@ async fn refresh_token_internal(
                         updated_account.subscription_expires_at = chrono::DateTime::from_timestamp(plan_end, 0);
 
                     }
+<<<<<<< HEAD
 
                     
 
@@ -3665,6 +3937,23 @@ async fn refresh_token_internal(
 
                     }
 
+=======
+                    
+                    // 提取每日/每周配额信息（新配额系统）
+                    if let Some(v) = plan_status.get("daily_quota_remaining").and_then(|v| v.as_i64()) {
+                        updated_account.daily_quota_remaining = Some(v as i32);
+                    }
+                    if let Some(v) = plan_status.get("weekly_quota_remaining").and_then(|v| v.as_i64()) {
+                        updated_account.weekly_quota_remaining = Some(v as i32);
+                    }
+                    if let Some(v) = plan_status.get("daily_quota_reset").and_then(|v| v.as_i64()) {
+                        updated_account.daily_quota_reset = Some(v);
+                    }
+                    if let Some(v) = plan_status.get("weekly_quota_reset").and_then(|v| v.as_i64()) {
+                        updated_account.weekly_quota_reset = Some(v);
+                    }
+                    
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
                     updated_account.last_quota_update = Some(chrono::Utc::now());
 
                     // 轻量级API路径也检查免费试用资格
@@ -3779,6 +4068,7 @@ async fn refresh_token_internal(
 
                 updated_account.is_team_owner = Some(is_root_admin);
 
+<<<<<<< HEAD
 
 
                 // 补充调用 GetPlanStatus 获取每日/每周配额信息
@@ -3817,6 +4107,26 @@ async fn refresh_token_internal(
 
 
 
+=======
+                // 补充调用 GetPlanStatus 获取每日/每周配额信息
+                if let Ok(plan_result) = windsurf_service.get_plan_status(&token).await {
+                    if let Some(plan_status) = plan_result.get("plan_status") {
+                        if let Some(v) = plan_status.get("daily_quota_remaining").and_then(|v| v.as_i64()) {
+                            updated_account.daily_quota_remaining = Some(v as i32);
+                        }
+                        if let Some(v) = plan_status.get("weekly_quota_remaining").and_then(|v| v.as_i64()) {
+                            updated_account.weekly_quota_remaining = Some(v as i32);
+                        }
+                        if let Some(v) = plan_status.get("daily_quota_reset").and_then(|v| v.as_i64()) {
+                            updated_account.daily_quota_reset = Some(v);
+                        }
+                        if let Some(v) = plan_status.get("weekly_quota_reset").and_then(|v| v.as_i64()) {
+                            updated_account.weekly_quota_reset = Some(v);
+                        }
+                    }
+                }
+
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
                 updated_account.last_quota_update = Some(chrono::Utc::now());
 
                 // 检查免费试用资格
@@ -3906,6 +4216,7 @@ async fn refresh_token_internal(
         "subscription_expires_at": updated_account.subscription_expires_at.map(|t| t.to_rfc3339()),
 
         "subscription_active": updated_account.subscription_active,
+<<<<<<< HEAD
 
         "last_quota_update": updated_account.last_quota_update.map(|t| t.to_rfc3339()),
 
@@ -3919,6 +4230,13 @@ async fn refresh_token_internal(
 
         "trial_eligible": updated_account.trial_eligible
 
+=======
+        "last_quota_update": updated_account.last_quota_update.map(|t| t.to_rfc3339()),
+        "daily_quota_remaining": updated_account.daily_quota_remaining,
+        "weekly_quota_remaining": updated_account.weekly_quota_remaining,
+        "daily_quota_reset": updated_account.daily_quota_reset,
+        "weekly_quota_reset": updated_account.weekly_quota_reset
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
     }))
 
 }
@@ -3981,6 +4299,7 @@ pub async fn get_trial_payment_link(
 
         .map_err(|e| e.to_string())?;
 
+<<<<<<< HEAD
 
 
     // === Devin 平台账号：走 app.devin.ai/api/billing/checkout ===
@@ -4132,6 +4451,15 @@ pub async fn get_trial_payment_link(
     let refresh_token = account.refresh_token.clone();
 
 
+=======
+    // 确保有有效的Token
+    // 新账号 (auth1_) 强制刷新，SubscribeToPlan 需要新鲜的 session_token
+    let force = account.refresh_token.as_ref().map_or(false, |rt| rt.starts_with("auth1_"));
+    ensure_valid_token_with_force(&store, &mut account, uuid, force).await?;
+
+    let token = account.token.ok_or("No token available")?;
+    let refresh_token = account.refresh_token.clone();
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
 
     // 默认值
 
@@ -4142,6 +4470,7 @@ pub async fn get_trial_payment_link(
 
 
     // 调用Windsurf API获取支付链接
+<<<<<<< HEAD
 
     // 如果 refresh_token 是 auth1_ 开头，传给 subscribe_to_plan 做 Bearer 认证
 
@@ -4155,6 +4484,14 @@ pub async fn get_trial_payment_link(
 
         auth1,
 
+=======
+    // 如果 refresh_token 是 auth1_ 开头，传给 subscribe_to_plan 做 Bearer 认证
+    let auth1 = refresh_token.as_deref().filter(|t| t.starts_with("auth1_"));
+    let windsurf_service = WindsurfService::new();
+    let result = windsurf_service.subscribe_to_plan(
+        &token,
+        auth1,
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
         final_teams_tier,
 
         final_payment_period,

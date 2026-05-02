@@ -941,6 +941,7 @@ pub async fn get_trial_payment_link_enhanced(
     team_name: Option<String>,
     seat_count: Option<i32>,
     turnstile_token: Option<String>,
+<<<<<<< HEAD
     account_source: Option<String>,
     auth1_token: Option<String>,
     account_id: Option<String>,
@@ -1080,6 +1081,39 @@ pub async fn get_trial_payment_link_enhanced(
         }
         result
     };
+=======
+    account_id: Option<String>,
+) -> Result<serde_json::Value, String> {
+    // 如果提供了 account_id，先刷新 token 确保有效，并获取 auth1_token
+    let (effective_token, auth1_token) = if let Some(ref id) = account_id {
+        let uuid = Uuid::parse_str(id).map_err(|e| e.to_string())?;
+        let mut account = data_store.get_account(uuid).await.map_err(|e| e.to_string())?;
+        // 新账号 (auth1_) 强制刷新 token，确保 session_token 是最新的
+        let force = account.refresh_token.as_ref().map_or(false, |rt| rt.starts_with("auth1_"));
+        crate::commands::api_commands::ensure_valid_token_with_force(&data_store, &mut account, uuid, force).await?;
+        let t = account.token.unwrap_or(token);
+        let a1 = account.refresh_token.filter(|rt| rt.starts_with("auth1_"));
+        (t, a1)
+    } else {
+        (token, None)
+    };
+
+    // 获取WindsurfService实例
+    let service = crate::services::windsurf_service::WindsurfService::new();
+    
+    // 调用subscribe_to_plan方法获取支付链接
+    let result = service.subscribe_to_plan(
+        &effective_token,
+        auth1_token.as_deref(),
+        teams_tier,
+        payment_period,
+        team_name.as_deref(),
+        seat_count,
+        turnstile_token.as_deref()
+    )
+        .await
+        .map_err(|e| e.to_string())?;
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
     
     // 检查是否成功
     let success = result.get("success")

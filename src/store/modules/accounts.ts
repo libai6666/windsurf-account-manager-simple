@@ -547,6 +547,7 @@ export const useAccountsStore = defineStore('accounts', () => {
         if (result.is_team_owner !== undefined) {
           updatedAccount.is_team_owner = result.is_team_owner;
         }
+<<<<<<< HEAD
         // 更新免费试用使用状态
         if (result.used_trial !== undefined) {
           updatedAccount.used_trial = result.used_trial;
@@ -554,6 +555,8 @@ export const useAccountsStore = defineStore('accounts', () => {
         if (result.trial_eligible !== undefined) {
           updatedAccount.trial_eligible = result.trial_eligible;
         }
+=======
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
         // 更新每日/每周配额信息
         if (result.daily_quota_remaining !== undefined && result.daily_quota_remaining !== null) {
           updatedAccount.daily_quota_remaining = result.daily_quota_remaining;
@@ -667,6 +670,10 @@ export const useAccountsStore = defineStore('accounts', () => {
               }
             }
             if (item.data.last_quota_update) updatedAcc.last_quota_update = item.data.last_quota_update;
+            if (item.data.daily_quota_remaining !== undefined && item.data.daily_quota_remaining !== null) updatedAcc.daily_quota_remaining = item.data.daily_quota_remaining;
+            if (item.data.weekly_quota_remaining !== undefined && item.data.weekly_quota_remaining !== null) updatedAcc.weekly_quota_remaining = item.data.weekly_quota_remaining;
+            if (item.data.daily_quota_reset !== undefined && item.data.daily_quota_reset !== null) updatedAcc.daily_quota_reset = item.data.daily_quota_reset;
+            if (item.data.weekly_quota_reset !== undefined && item.data.weekly_quota_reset !== null) updatedAcc.weekly_quota_reset = item.data.weekly_quota_reset;
             updatedAcc.status = 'active';
             accounts.value.splice(idx, 1, updatedAcc);
             

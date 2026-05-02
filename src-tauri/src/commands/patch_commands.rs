@@ -2,7 +2,7 @@ use tauri::command;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use regex::Regex;
+use regex::bytes::Regex;
 use chrono::Local;
 use std::sync::Arc;
 use tauri::State;
@@ -155,6 +155,11 @@ fn resolve_shortcut(_lnk_path: &Path) -> Result<PathBuf, String> {
 }
 
 /// 应用无感换号补丁
+///
+/// 参数：
+/// - `windsurf_path`：Windsurf 安装目录
+/// - `force`：是否强制重新打补丁。为 true 时会先尝试用最干净的备份还原 extension.js，再重新应用补丁，
+///   用于覆盖已损坏/旧版本补丁的场景。
 #[command]
 pub async fn apply_seamless_patch(
     windsurf_path: String,
@@ -170,6 +175,10 @@ pub async fn apply_seamless_patch(
     let force = force.unwrap_or(false);
     let mut restored_from_backup: Option<String> = None;
     
+<<<<<<< HEAD
+=======
+    // force 模式：先用最干净的备份覆盖当前文件，再走正常的打补丁流程
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
     if force && is_file_patched(&extension_file) {
         let extension_dir = extension_file.parent()
             .ok_or("无法获取扩展目录")?
@@ -187,6 +196,7 @@ pub async fn apply_seamless_patch(
     }
     
     // 1. 先读取文件内容，检查是否已打补丁
+<<<<<<< HEAD
     let content = fs::read_to_string(&extension_file)
         .map_err(|e| format!("读取文件失败: {}", e))?;
     
@@ -205,14 +215,82 @@ pub async fn apply_seamless_patch(
         
         // 检查两个变量名是否相同
         if var_name1 == var_name2 {
+=======
+    //    注意：必须按字节读取，extension.js 是大型 webpack bundle，
+    //    个别 Windsurf 版本 / 用户机器上文件中可能含有非 UTF-8 字节
+    //    （比如被其他工具改写过、自动更新被截断等）。
+    //    用 fs::read_to_string 会立即报 "stream did not contain valid UTF-8" 而失败。
+    let content: Vec<u8> = fs::read(&extension_file)
+        .map_err(|e| format!("读取文件失败: {}", e))?;
+    
+    let mut modified_content: Vec<u8> = content.clone();
+    let mut modifications = vec![];
+    
+    // 2. 应用修改1: 添加全局 OAuth 回调处理器
+    // 新版 Windsurf（三元表达式 + maybeHandleUriWithToken 分支）：
+    //   this._uriHandler.event(A=>{"/refresh-authentication-session"===A.path?(0,m.refreshAuthenticationSession)():this._loginInProgress||this.maybeHandleUriWithToken(A)})
+    let pattern1_new_str = r#"this\._uriHandler\.event\((\w+)=>\{"/refresh-authentication-session"===(\w+)\.path\?\(0,(\w+)\.refreshAuthenticationSession\)\(\):this\._loginInProgress\|\|this\.maybeHandleUriWithToken\((\w+)\)\}\)"#;
+    // 旧版 Windsurf（&& 短路写法）：
+    //   this._uriHandler.event(A=>{"/refresh-authentication-session"===A.path&&(0,m.refreshAuthenticationSession)()})
+    let pattern1_old_str = r#"this\._uriHandler\.event\((\w+)=>\{"/refresh-authentication-session"===(\w+)\.path&&\(0,(\w+)\.refreshAuthenticationSession\)\(\)\}\)"#;
+
+    let pattern1_new = Regex::new(pattern1_new_str)
+        .map_err(|e| format!("正则表达式错误(新): {}", e))?;
+    let pattern1_old = Regex::new(pattern1_old_str)
+        .map_err(|e| format!("正则表达式错误(旧): {}", e))?;
+
+    // 先尝试新版格式，再回退到旧版
+    let pattern1_match = pattern1_new
+        .captures(&modified_content)
+        .map(|c| ("new", c))
+        .or_else(|| pattern1_old.captures(&modified_content).map(|c| ("old", c)));
+
+    if let Some((variant, captures)) = pattern1_match {
+        // 注意：变量名按 \w+ 捕获，必然是 ASCII（合法 JS 标识符），
+        // 因此从字节切片转 str 一定成功，这里用 from_utf8 严格转换更安全。
+        let var_name1 = captures.get(1)
+            .and_then(|m| std::str::from_utf8(m.as_bytes()).ok())
+            .unwrap_or("")
+            .to_string();
+        let var_name2 = captures.get(2)
+            .and_then(|m| std::str::from_utf8(m.as_bytes()).ok())
+            .unwrap_or("")
+            .to_string();
+        let module_name = captures.get(3)
+            .and_then(|m| std::str::from_utf8(m.as_bytes()).ok())
+            .unwrap_or("")
+            .to_string();
+        // 新版有第4个捕获组（maybeHandleUriWithToken 的参数名），旧版无
+        let var_name4 = captures.get(4)
+            .and_then(|m| std::str::from_utf8(m.as_bytes()).ok())
+            .map(|s| s.to_string());
+
+        // 所有捕获到的变量名必须一致，避免误替换
+        let vars_consistent = var_name1 == var_name2
+            && var_name4.as_deref().map(|v| v == var_name1).unwrap_or(true);
+
+        if vars_consistent && !var_name1.is_empty() && !module_name.is_empty() {
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
             let replacement = format!(
                 r#"this._uriHandler.event(async {}=>{{if("/refresh-authentication-session"==={}.path){{(0,{}.refreshAuthenticationSession)()}}else{{try{{const t=new URLSearchParams({}.fragment).get("access_token");if(null===t)throw new Error("No token");await this.handleAuthToken(t)}}catch(e){{console.error("[Windsurf] Failed to handle OAuth callback:",e)}}}}}})"#,
                 var_name1, var_name1, module_name, var_name1
             );
+<<<<<<< HEAD
             
             let full_match = captures.get(0).unwrap().as_str();
             modified_content = modified_content.replace(full_match, &replacement);
             modifications.push("OAuth回调处理器");
+=======
+
+            // 字节级替换：取整段匹配的字节切片，构造新的 Vec<u8>
+            let full_match: Vec<u8> = captures.get(0).unwrap().as_bytes().to_vec();
+            modified_content = replace_bytes(&modified_content, &full_match, replacement.as_bytes());
+            modifications.push(if variant == "new" {
+                "OAuth回调处理器(新版格式)"
+            } else {
+                "OAuth回调处理器"
+            });
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
         }
     }
     
@@ -222,6 +300,7 @@ pub async fn apply_seamless_patch(
         .map_err(|e| format!("正则表达式错误2: {}", e))?;
     
     if let Some(captures) = pattern2.captures(&modified_content) {
+<<<<<<< HEAD
         let reject_var1 = &captures[2];  // 第二个参数
         let reject_var2 = &captures[3];  // setTimeout中的变量
         
@@ -229,11 +308,29 @@ pub async fn apply_seamless_patch(
         if reject_var1 == reject_var2 {
             let full_match = captures.get(0).unwrap().as_str();
             modified_content = modified_content.replace(full_match, "");
+=======
+        // 第二个参数 vs setTimeout 中的变量，都是 ASCII 标识符
+        let reject_var1 = captures[2].to_vec();
+        let reject_var2 = captures[3].to_vec();
+        
+        // 检查是否是同一个reject变量
+        if reject_var1 == reject_var2 {
+            let full_match: Vec<u8> = captures.get(0).unwrap().as_bytes().to_vec();
+            modified_content = replace_bytes(&modified_content, &full_match, b"");
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
             modifications.push("移除超时限制");
         }
     }
     
+<<<<<<< HEAD
     // 4. 验证是否需要修改（如果内容没变化，说明已打过补丁，直接返回，不创建备份）
+=======
+    // 4. 验证是否需要修改
+    // 如果内容没变化，要进一步区分两种情况：
+    //   a) 文件确实已经打过补丁（包含补丁特征 "Failed to handle OAuth callback"）
+    //   b) 正则表达式未能匹配当前 Windsurf 版本（常见于首次安装最新版 Windsurf 的新用户，
+    //      之前这里被错误地当作 "已打过补丁" 从而陷入死循环）
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
     if modified_content == content {
         if is_file_patched(&extension_file) {
             return Ok(serde_json::json!({
@@ -241,9 +338,19 @@ pub async fn apply_seamless_patch(
                 "already_patched": true,
                 "message": "补丁已经应用过了"
             }));
+<<<<<<< HEAD
         }
         
         return Err("补丁规则未能匹配当前 Windsurf 版本的 extension.js（首次使用/Windsurf 升级后常见）。请确认 Windsurf 版本，或点击\"重新打补丁\"按钮尝试从备份还原后再应用。".to_string());
+=======
+        } else {
+            return Err(
+                "补丁规则未能匹配当前 Windsurf 版本的 extension.js（首次使用/Windsurf 升级后常见）。\
+                请确认 Windsurf 版本，或点击\"重新打补丁\"按钮尝试从备份还原后再应用。"
+                    .to_string(),
+            );
+        }
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
     }
     
     // 5. 确认需要打补丁后，才管理和创建备份文件
@@ -302,7 +409,11 @@ pub async fn apply_seamless_patch(
     settings.patch_backup_path = Some(backup_file.to_string_lossy().to_string());
     data_store.update_settings(settings).await.map_err(|e| e.to_string())?;
     
+<<<<<<< HEAD
     // 8. 重启Windsurf（使用保存的路径）
+=======
+    // 8. 重启Windsurf
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
     restart_windsurf(Some(&windsurf_path)).await?;
     
     Ok(serde_json::json!({
@@ -358,10 +469,49 @@ pub async fn restore_seamless_patch(
     }))
 }
 
+<<<<<<< HEAD
 /// 检查文件是否包含补丁特征（是否已打过补丁）
 fn is_file_patched(file_path: &Path) -> bool {
     if let Ok(content) = fs::read_to_string(file_path) {
         content.contains("Failed to handle OAuth callback")
+=======
+/// 字节级 contains：在 haystack 中查找 needle 子序列
+fn bytes_contains(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    if haystack.len() < needle.len() {
+        return false;
+    }
+    haystack.windows(needle.len()).any(|w| w == needle)
+}
+
+/// 字节级 replace：把 haystack 中第一次出现的 needle 替换为 replacement
+fn replace_bytes(haystack: &[u8], needle: &[u8], replacement: &[u8]) -> Vec<u8> {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return haystack.to_vec();
+    }
+    if let Some(pos) = haystack
+        .windows(needle.len())
+        .position(|w| w == needle)
+    {
+        let mut out = Vec::with_capacity(haystack.len() - needle.len() + replacement.len());
+        out.extend_from_slice(&haystack[..pos]);
+        out.extend_from_slice(replacement);
+        out.extend_from_slice(&haystack[pos + needle.len()..]);
+        out
+    } else {
+        haystack.to_vec()
+    }
+}
+
+/// 检查文件是否包含补丁特征（是否已打过补丁）
+fn is_file_patched(file_path: &Path) -> bool {
+    // 按字节读取，避免 UTF-8 校验失败导致这里直接判定为"未打补丁"，
+    // 进而错误地把一个其实已经打过补丁的文件当成"干净的备份"返回。
+    if let Ok(content) = fs::read(file_path) {
+        bytes_contains(&content, b"Failed to handle OAuth callback")
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
     } else {
         false
     }
@@ -433,12 +583,13 @@ pub async fn check_patch_status(
         }));
     }
     
-    let content = fs::read_to_string(&extension_file)
+    // 按字节读取，避免 extension.js 含有非 UTF-8 字节时整个状态检查接口直接报错
+    let content = fs::read(&extension_file)
         .map_err(|e| format!("读取文件失败: {}", e))?;
     
-    // 检查是否包含补丁标识
-    let has_oauth_handler = content.contains("Failed to handle OAuth callback");
-    let has_timeout_removed = !content.contains("18e4");
+    // 检查是否包含补丁标识（字节级 contains）
+    let has_oauth_handler = bytes_contains(&content, b"Failed to handle OAuth callback");
+    let has_timeout_removed = !bytes_contains(&content, b"18e4");
     
     Ok(serde_json::json!({
         "installed": has_oauth_handler,
@@ -577,7 +728,11 @@ async fn restart_windsurf(windsurf_path: Option<&str>) -> Result<(), String> {
     Err("不支持的操作系统".to_string())
 }
 
+<<<<<<< HEAD
 /// 获取快捷方式搜索目录列表
+=======
+/// 获取快捷方式搜索目录列表 (Windows)
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
 #[cfg(target_os = "windows")]
 fn get_shortcut_search_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
@@ -607,7 +762,11 @@ fn get_shortcut_search_dirs() -> Vec<PathBuf> {
     dirs
 }
 
+<<<<<<< HEAD
 /// 在指定目录中查找 Windsurf 快捷方式
+=======
+/// 在指定目录中查找 Windsurf 快捷方式 (Windows)
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
 #[cfg(target_os = "windows")]
 fn find_windsurf_shortcut(dir: &Path) -> Result<PathBuf, String> {
     if !dir.exists() {
@@ -634,6 +793,7 @@ fn find_windsurf_shortcut(dir: &Path) -> Result<PathBuf, String> {
     
     Err(format!("在 {:?} 中未找到 Windsurf 快捷方式", dir))
 }
+<<<<<<< HEAD
 
 /// 获取 Windsurf 数据目录列表（跨平台）
 fn get_windsurf_data_dirs() -> Vec<PathBuf> {
@@ -747,3 +907,5 @@ pub async fn reset_windsurf() -> Result<serde_json::Value, String> {
         }))
     }
 }
+=======
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca

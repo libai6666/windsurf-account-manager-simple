@@ -1,7 +1,11 @@
 {
   "name": "windsurf-account-manager",
   "private": true,
+<<<<<<< HEAD
   "version": "2.0.1",
+=======
+  "version": "1.7.7",
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
   "type": "module",
   "license": "AGPL-3.0",
   "scripts": {

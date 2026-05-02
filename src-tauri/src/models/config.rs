@@ -143,8 +143,11 @@ pub struct Settings {
     pub auto_switch_current_account_id: Option<String>,  // 当前正在使用的账号ID（自动跟踪）
     #[serde(default = "default_true", rename = "resetMachineIdOnSwitch")]
     pub reset_machine_id_on_switch: bool,  // 切号时是否重置机器设备码（默认开启）
+<<<<<<< HEAD
     #[serde(default, rename = "customBrowserPath")]
     pub custom_browser_path: Option<String>,  // 自定义浏览器可执行文件路径（为空则使用默认Chrome）
+=======
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
 }
 
 fn default_browser_mode() -> String {
@@ -224,7 +227,10 @@ impl Default for Settings {
             auto_switch_check_interval: 300,  // 默认5分钟
             auto_switch_current_account_id: None,
             reset_machine_id_on_switch: true,  // 默认开启切号时重置设备码
+<<<<<<< HEAD
             custom_browser_path: None,  // 默认不设置自定义浏览器
+=======
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
         }
     }
 }

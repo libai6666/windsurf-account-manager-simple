@@ -483,7 +483,12 @@
               />
             </el-select>
             <div style="margin-top: 5px; color: #909399; font-size: 12px;">
+<<<<<<< HEAD
               当前在 Windsurf 中使用的账号，手动切号时会自动更新
+=======
+              <span v-if="editorCurrentEmail">编辑器当前登录: <b>{{ editorCurrentEmail }}</b>（自动检测）</span>
+              <span v-else>手动切号时会自动更新，自动换号时基于编辑器实际登录状态判断</span>
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
             </div>
           </el-form-item>
           
@@ -527,6 +532,7 @@
                 <p>⚠️ 注意：开启/关闭时会自动重启 Windsurf</p>
                 <p>🔄 自动换号：定时检测当前账号每日配额和每周配额，日配额低于阈值或周配额为0时自动切换</p>
                 <p>💡 候选账号需同时满足：日配额>阈值 且 周配额>0%，否则暂停切换并通知</p>
+<<<<<<< HEAD
               </div>
             </template>
           </el-alert>
@@ -558,6 +564,8 @@
                 <p>� 初始化将清除 Windsurf 的所有配置文件、缓存和用户数据</p>
                 <p>⚠️ 初始化后如需使用无感换号功能，需要重新开启</p>
                 <p>⚠️ 初始化前请确保 Windsurf 已关闭</p>
+=======
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
               </div>
             </template>
           </el-alert>
@@ -577,7 +585,11 @@
 <script setup lang="ts">
 import { ref, reactive, watch, onMounted, computed } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
+<<<<<<< HEAD
 import { Connection, RefreshRight } from '@element-plus/icons-vue';
+=======
+import { Connection } from '@element-plus/icons-vue';
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
 import { useSettingsStore, useUIStore, useAccountsStore } from '@/store';
 import { invoke } from '@tauri-apps/api/core';
 import { systemApi, apiService } from '@/api';
@@ -586,17 +598,32 @@ const settingsStore = useSettingsStore();
 const uiStore = useUIStore();
 const accountsStore = useAccountsStore();
 
+<<<<<<< HEAD
 // 当前分组内的账号列表（用于自动换号的当前账号选择）
+=======
+// 编辑器当前登录的邮箱
+const editorCurrentEmail = ref<string | null>(null);
+
+// 当前分组内的账号列表（用于手动切号选择）
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
 const groupAccounts = computed(() => {
   const group = settings.autoSwitchGroup;
   if (!group) return [];
   const inGroup = accountsStore.accounts.filter(a => a.group === group);
+<<<<<<< HEAD
   // 如果当前选中的账号不在分组内（被移走了），也加入列表以避免显示原始UUID
   const currentId = settings.autoSwitchCurrentAccountId;
   if (currentId && !inGroup.some(a => a.id === currentId)) {
     const currentAcc = accountsStore.accounts.find(a => a.id === currentId);
     if (currentAcc) {
       return [...inGroup, currentAcc];
+=======
+  const trackingId = settings.autoSwitchCurrentAccountId;
+  if (trackingId && !inGroup.some(a => a.id === trackingId)) {
+    const trackedAccount = accountsStore.accounts.find(a => a.id === trackingId);
+    if (trackedAccount) {
+      return [...inGroup, trackedAccount];
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
     }
   }
   return inGroup;
@@ -604,7 +631,11 @@ const groupAccounts = computed(() => {
 
 const loading = ref(false);
 const activeTab = ref('basic');  // 当前激活的标签页
+<<<<<<< HEAD
 const originalAutoSwitchAccountId = ref<string | null>(null);  // 对话框打开时记录的原始当前账号ID
+=======
+const originalAutoSwitchAccountId = ref<string | null>(null);
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
 const seatCountOptionsInput = ref('18, 19, 20');  // 座位数选项输入框
 const resettingHttp = ref(false);  // HTTP客户端重置中
 
@@ -663,7 +694,10 @@ const settings = reactive<{
   autoSwitchThreshold: number;
   autoSwitchCheckInterval: number;
   autoSwitchCurrentAccountId: string | null;
+<<<<<<< HEAD
   customBrowserPath: string | null;
+=======
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
 }>({
   auto_refresh_token: true,
   seat_count_options: [18, 19, 20],
@@ -696,7 +730,10 @@ const settings = reactive<{
   autoSwitchThreshold: 10,  // 默认10%
   autoSwitchCheckInterval: 300,  // 默认5分钟
   autoSwitchCurrentAccountId: null,
+<<<<<<< HEAD
   customBrowserPath: null,  // 默认不设置自定义浏览器路径
+=======
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
 });
 
 // 成功BIN池相关
@@ -775,8 +812,11 @@ const patchStatus = reactive({
   error: '',
 });
 
+<<<<<<< HEAD
 // 初始化 Windsurf 相关
 const resettingWindsurf = ref(false);
+=======
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
 
 watch(() => uiStore.showSettingsDialog, async (show) => {
   if (show && settingsStore.settings) {
@@ -786,11 +826,20 @@ watch(() => uiStore.showSettingsDialog, async (show) => {
     // 加载编辑器当前登录状态，并自动匹配选中对应账号
     try {
       const info = await invoke<{ email?: string; is_active: boolean }>('get_current_windsurf_info');
+<<<<<<< HEAD
+=======
+      editorCurrentEmail.value = info.email || null;
+      // 根据编辑器登录邮箱自动匹配账号，同步分组和选中
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
       if (info.email) {
         const matched = accountsStore.accounts.find(
           a => a.email.toLowerCase() === info.email!.toLowerCase()
         );
         if (matched) {
+<<<<<<< HEAD
+=======
+          // 同步换号分组为该账号所在的分组
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
           if (matched.group) {
             settings.autoSwitchGroup = matched.group;
           }
@@ -799,7 +848,11 @@ watch(() => uiStore.showSettingsDialog, async (show) => {
         }
       }
     } catch {
+<<<<<<< HEAD
       // 忽略获取失败
+=======
+      editorCurrentEmail.value = null;
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
     }
     // 同步座位数选项到输入框
     if (settings.seat_count_options && settings.seat_count_options.length > 0) {
@@ -809,6 +862,7 @@ watch(() => uiStore.showSettingsDialog, async (show) => {
     if (windsurfPath.value) {
       await checkPatchStatus();
     }
+<<<<<<< HEAD
     // 加载已安装浏览器列表并同步选中状态
     await loadInstalledBrowsers();
     const currentBrowserPath = settings.customBrowserPath;
@@ -825,6 +879,8 @@ watch(() => uiStore.showSettingsDialog, async (show) => {
       selectedBrowserKey.value = '';
       showCustomBrowserInput.value = false;
     }
+=======
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
     // 加载成功BIN池数量和测试模式进度
     await loadSuccessBinCount();
     await loadTestModeProgress();
@@ -862,6 +918,7 @@ async function handleSave() {
     uiStore.setTheme(settings.theme as 'light' | 'dark');
     ElMessage.success('设置保存成功');
     
+<<<<<<< HEAD
     // 实际切号：成功后才更新当前账号ID
     if (needSwitch) {
       try {
@@ -873,12 +930,28 @@ async function handleSave() {
             ElMessage.success(`已切换到账号: ${selectedAccount.email}`);
             // 切号成功，现在才更新store中的当前账号ID（触发高亮更新）
             await settingsStore.loadSettings();
+=======
+    // 手动切号：仅当用户实际更换了当前账号选择时才执行切号
+    if (settings.autoSwitchEnabled && settings.seamlessSwitchEnabled && settings.autoSwitchCurrentAccountId
+        && originalAutoSwitchAccountId.value !== settings.autoSwitchCurrentAccountId) {
+      try {
+        const selectedAccount = groupAccounts.value.find(a => a.id === settings.autoSwitchCurrentAccountId);
+        if (selectedAccount) {
+          ElMessage.info('正在切换到选中的账号...');
+          const result = await apiService.switchAccount(selectedAccount.id);
+          if (result.success) {
+            ElMessage.success(`已切换到账号: ${selectedAccount.email}`);
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
           } else {
             ElMessage.warning(`切号失败: ${result.error || '未知错误'}`);
           }
         }
       } catch (switchError) {
+<<<<<<< HEAD
         console.error('自动切号检查失败:', switchError);
+=======
+        console.error('手动切号失败:', switchError);
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
       }
     }
     
@@ -1158,12 +1231,20 @@ async function handleSeamlessSwitch(value: boolean) {
   }
 }
 
+<<<<<<< HEAD
+=======
+// 强制重新打补丁（覆盖）
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
 async function forceReapplyPatch() {
   if (!windsurfPath.value) {
     ElMessage.error('请先检测或设置Windsurf路径');
     return;
   }
+<<<<<<< HEAD
   
+=======
+
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
   try {
     await ElMessageBox.confirm(
       '将尝试从最干净的备份还原 extension.js 并重新应用补丁，随后会重启 Windsurf。是否继续？',
@@ -1177,14 +1258,22 @@ async function forceReapplyPatch() {
   } catch {
     return;
   }
+<<<<<<< HEAD
   
+=======
+
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
   patchLoading.value = true;
   try {
     const result = await invoke<any>('apply_seamless_patch', {
       windsurfPath: windsurfPath.value,
       force: true,
     });
+<<<<<<< HEAD
     
+=======
+
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
     if (result.success) {
       if (result.already_patched) {
         ElMessage.info('补丁已经应用过了');
@@ -1222,6 +1311,7 @@ async function handleResetHttpClient() {
   }
 }
 
+<<<<<<< HEAD
 // 初始化 Windsurf
 async function handleResetWindsurf() {
   try {
@@ -1275,6 +1365,8 @@ async function handleResetWindsurf() {
     resettingWindsurf.value = false;
   }
 }
+=======
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
 
 // simple 版本已禁用的功能
 void parseSeatCountOptions;

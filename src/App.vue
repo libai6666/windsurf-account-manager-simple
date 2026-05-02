@@ -4,18 +4,22 @@ import { ElConfigProvider } from 'element-plus';
 import zhCn from 'element-plus/dist/locale/zh-cn.mjs';
 import { useAccountsStore, useSettingsStore, useUIStore } from './store';
 import MainLayout from './views/MainLayout.vue';
-import WelcomeDialog from './components/WelcomeDialog.vue';
 import { invoke } from '@tauri-apps/api/core';
 import { apiService } from './api';
 import { ElNotification } from 'element-plus';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { apiService } from './api';
+import { ElNotification } from 'element-plus';
 
 const accountsStore = useAccountsStore();
 const settingsStore = useSettingsStore();
 const uiStore = useUIStore();
 
+<<<<<<< HEAD
 const showWelcomeDialog = ref(false);
 
+=======
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
 // 事件监听取消函数
 let tokenRefreshedUnlisten: UnlistenFn | null = null;
 
@@ -204,7 +208,6 @@ onUnmounted(() => {
 <template>
   <el-config-provider :locale="zhCn" :namespace="elNamespace">
     <MainLayout />
-    <WelcomeDialog v-model="showWelcomeDialog" />
   </el-config-provider>
 </template>
 

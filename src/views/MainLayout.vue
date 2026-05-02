@@ -17,6 +17,11 @@
         class="sidebar-menu"
         :collapse-transition="false"
       >
+        <el-menu-item index="overview" @click="setActiveMenu('overview')">
+          <el-icon><Monitor /></el-icon>
+          <template #title>概览</template>
+        </el-menu-item>
+        
         <el-menu-item index="accounts" @click="setActiveMenu('accounts')">
           <el-icon><User /></el-icon>
           <template #title>账号管理</template>
@@ -32,9 +37,10 @@
             :key="group"
             :index="`group-${group}`"
             class="group-item"
+            @click="filterByGroup(group)"
           >
             <div class="group-item-content">
-              <span @click="filterByGroup(group)" class="group-name">{{ group }}</span>
+              <span class="group-name">{{ group }}</span>
               <div class="group-actions" v-if="group !== '默认分组'">
                 <el-icon @click.stop="showRenameGroupDialog(group)" class="group-action-icon">
                   <Edit />
@@ -61,6 +67,7 @@
           <template #title>统计信息</template>
         </el-menu-item>
         
+<<<<<<< HEAD
         <el-menu-item index="auto-reset" @click="showAutoResetDialog = true">
           <el-icon><Timer /></el-icon>
           <template #title>自动重置</template>
@@ -81,6 +88,8 @@
           <template #title>关于</template>
         </el-menu-item>
         
+=======
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
         <el-menu-item index="settings" @click="uiStore.openSettingsDialog">
           <el-icon><Setting /></el-icon>
           <template #title>设置</template>
@@ -98,8 +107,13 @@
 
     <!-- 主内容区 -->
     <el-container>
+<<<<<<< HEAD
       <!-- 顶部操作栏 -->
       <el-header :class="['header', { 'header-compact': accountsStore.selectedAccounts.size > 0 }]">
+=======
+      <!-- 顶部操作栏（非概览时显示） -->
+      <el-header v-show="activeMenu !== 'overview'" class="header">
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
         <div class="header-left">
           <el-input
             v-model="searchQuery"
@@ -363,8 +377,13 @@
         </div>
       </el-header>
 
-      <!-- 账号卡片区域 -->
+      <!-- 主内容区域 -->
       <el-main class="main-content">
+        <!-- 概览面板 -->
+        <DeviceManagerPanel v-if="activeMenu === 'overview'" @switch-to-group="handleSwitchToGroup" />
+
+        <!-- 账号管理内容 -->
+        <template v-else>
         <!-- 筛选面板 -->
         <transition name="filter-slide">
           <div v-if="showFilterPanel" class="filter-panel">
@@ -480,6 +499,7 @@
             />
           </div>
         </div>
+        </template>
       </el-main>
     </el-container>
 
@@ -496,6 +516,7 @@
     <StatsDialog />
     <AccountInfoDialog />
     
+<<<<<<< HEAD
     <!-- 关于对话框 -->
     <AboutDialog 
       v-model="showAbout"
@@ -511,6 +532,8 @@
     <!-- 协议绑卡对话框 -->
     <StripeBindDialog v-model="showStripeBindDialog" />
     
+=======
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
     <!-- 批量试用链接人机验证对话框 -->
     <TurnstileDialog
       v-model:visible="showBatchTurnstileDialog"
@@ -696,7 +719,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
+import { ref, computed, watch, onMounted } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { invoke } from '@tauri-apps/api/core';
 import {
@@ -715,7 +738,6 @@ import {
   Connection,
   Loading,
   DataAnalysis,
-  InfoFilled,
   Select,
   Download,
   Upload,
@@ -724,11 +746,11 @@ import {
   Close,
   PriceTag,
   DocumentChecked,
-  Timer,
   Switch,
   SortUp,
   SortDown,
   Link,
+<<<<<<< HEAD
   CircleClose,
   Ticket,
   Avatar,
@@ -736,6 +758,9 @@ import {
   Remove,
   Warning,
   Stamp
+=======
+  Monitor
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
 } from '@element-plus/icons-vue';
 import { useAccountsStore, useSettingsStore, useUIStore } from '@/store';
 import { apiService, settingsApi, accountApi } from '@/api';
@@ -750,16 +775,21 @@ import LogsDialog from '@/components/LogsDialog.vue';
 import StatsDialog from '@/components/StatsDialog.vue';
 import BillingDialog from '@/components/BillingDialog.vue';
 import AccountInfoDialog from '@/components/AccountInfoDialog.vue';
-import AboutDialog from '@/components/AboutDialog.vue';
 import BatchUpdatePlanDialog from '@/components/BatchUpdatePlanDialog.vue';
 import BatchCancelSubscriptionDialog from '@/components/BatchCancelSubscriptionDialog.vue';
 import TagManageDialog from '@/components/TagManageDialog.vue';
+<<<<<<< HEAD
 import AutoResetDialog from '@/components/AutoResetDialog.vue';
 import CardGeneratorDialog from '@/components/CardGeneratorDialog.vue';
 import StripeBindDialog from '@/components/StripeBindDialog.vue';
 import TurnstileDialog from '@/components/TurnstileDialog.vue';
 import BatchTrialLinksDialog from '@/components/BatchTrialLinksDialog.vue';
 import ConcurrentTurnstileDialog from '@/components/ConcurrentTurnstileDialog.vue';
+=======
+import TurnstileDialog from '@/components/TurnstileDialog.vue';
+import BatchTrialLinksDialog from '@/components/BatchTrialLinksDialog.vue';
+import DeviceManagerPanel from '@/components/DeviceManagerPanel.vue';
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
 import type { TrialLinkItem } from '@/components/BatchTrialLinksDialog.vue';
 import logger from '@/utils/logger';
 
@@ -767,15 +797,18 @@ const accountsStore = useAccountsStore();
 const settingsStore = useSettingsStore();
 const uiStore = useUIStore();
 
-const activeMenu = ref('accounts');
+const activeMenu = ref('overview');
 const searchQuery = ref('');
 const currentBillingData = ref<any>(null);
 const billingLoading = ref(false);
 const currentWindsurfEmail = ref<string>('');
 const windsurfVersion = ref<string>('');
 const showBatchUpdatePlanDialog = ref(false);
+<<<<<<< HEAD
 const showBatchCancelSubscriptionDialog = ref(false);
 const showAbout = ref(false);
+=======
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
 const showTagManageDialog = ref(false);
 const showBatchImportDialog = ref(false);
 const batchImportDialogRef = ref<InstanceType<typeof BatchImportDialog> | null>(null);
@@ -783,9 +816,12 @@ const appVersion = ref<string>('');  // 版本号从后端动态获取
 const showBatchGroupDialog = ref(false);
 const batchGroupTarget = ref('');
 const isBatchUpdatingGroup = ref(false);
+<<<<<<< HEAD
 const showAutoResetDialog = ref(false);
 const showCardGeneratorDialog = ref(false);
 const showStripeBindDialog = ref(false);
+=======
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
 const isBatchGettingTrialLinks = ref(false);
 const showBatchTurnstileDialog = ref(false);
 const pendingBatchTurnstileResolve = ref<((token: string) => void) | null>(null);
@@ -901,62 +937,6 @@ const parsedTransferEmails = computed(() => {
     .filter(e => e && e.includes('@'));
 });
 
-// 自动重置定时器
-interface AutoResetConfig {
-  id: string;
-  targetType: string;
-  targetId: string;
-  enabled: boolean;
-  checkInterval: number;
-  usageThreshold: number;
-  remainingThreshold: number;
-}
-const autoResetTimerMap = ref<Map<string, ReturnType<typeof setInterval>>>(new Map());
-
-// 初始化自动重置定时器
-async function initAutoResetTimers() {
-  try {
-    const configs = await invoke<AutoResetConfig[]>('get_auto_reset_configs');
-    
-    // 清除现有定时器
-    autoResetTimerMap.value.forEach(timer => clearInterval(timer));
-    autoResetTimerMap.value.clear();
-    
-    // 为每个启用的配置设置定时器
-    configs.filter(c => c.enabled).forEach(config => {
-      // 立即执行一次检查
-      executeAutoResetCheck(config.id);
-      
-      // 设置定时器
-      const timer = setInterval(() => {
-        executeAutoResetCheck(config.id);
-      }, config.checkInterval * 60 * 1000);
-      
-      autoResetTimerMap.value.set(config.id, timer);
-    });
-    
-    if (configs.filter(c => c.enabled).length > 0) {
-      console.log(`[AutoReset] 已启动 ${configs.filter(c => c.enabled).length} 个自动重置定时器`);
-    }
-  } catch (error) {
-    console.error('[AutoReset] 初始化定时器失败:', error);
-  }
-}
-
-// 执行自动重置检查
-async function executeAutoResetCheck(configId: string) {
-  try {
-    const result = await invoke<any>('check_and_auto_reset', { configId });
-    
-    if (result.reset_count > 0) {
-      ElMessage.success(`自动重置: 重置了 ${result.reset_count} 个账号的积分`);
-      await accountsStore.loadAccounts();
-    }
-  } catch (error) {
-    console.error('[AutoReset] 检查失败:', error);
-  }
-}
-
 // 筛选面板状态
 const showFilterPanel = ref(false);
 // 状态选项
@@ -1008,6 +988,12 @@ function setActiveMenu(menu: string) {
 }
 
 function filterByGroup(group: string) {
+  activeMenu.value = 'accounts';
+  accountsStore.setFilter({ group });
+}
+
+function handleSwitchToGroup(group: string) {
+  activeMenu.value = 'accounts';
   accountsStore.setFilter({ group });
 }
 
@@ -2495,10 +2481,6 @@ async function handleBatchUpdateGroup() {
   }
 }
 
-// 显示关于对话框
-function showAboutDialog() {
-  showAbout.value = true;
-}
 
 // 切号后自动刷新高亮（用账号列表匹配）
 watch(
@@ -2532,15 +2514,8 @@ onMounted(async () => {
   // 初始化排序配置
   initSortConfig();
   
-  // 初始化自动重置定时器
-  initAutoResetTimers();
 });
 
-// 组件卸载时清除自动重置定时器
-onUnmounted(() => {
-  autoResetTimerMap.value.forEach(timer => clearInterval(timer));
-  autoResetTimerMap.value.clear();
-});
 </script>
 
 <style scoped>

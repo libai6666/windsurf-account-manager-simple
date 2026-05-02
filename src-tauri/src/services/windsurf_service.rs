@@ -1,6 +1,10 @@
 use crate::utils::{AppError, AppResult};
 use base64::{Engine, engine::general_purpose};
+<<<<<<< HEAD
 use log::{info, warn};
+=======
+use log::info;
+>>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
 use reqwest;
 use reqwest::header::{HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
@@ -1320,8 +1324,8 @@ impl WindsurfService {
         let status_code = response.status().as_u16();
         let response_body = response.bytes().await?;
         
-        println!("[GetPlanStatus] Status code: {}", status_code);
-        println!("[GetPlanStatus] Response size: {} bytes", response_body.len());
+        info!("[GetPlanStatus] Status code: {}, token_prefix={}..., response_size={} bytes", 
+            status_code, &token[..std::cmp::min(token.len(), 25)], response_body.len());
         
         if status_code == 200 {
             // 使用proto_parser解析响应
