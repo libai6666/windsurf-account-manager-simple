@@ -946,7 +946,7 @@ pub async fn get_trial_payment_link_enhanced(
     account_id: Option<String>,
 ) -> Result<serde_json::Value, String> {
     // === Devin 平台账号：走 app.devin.ai/api/billing/checkout ===
-    let stored_account = if let Some(account_id) = account_id.as_deref().filter(|s| !s.trim().is_empty()) {
+    let mut stored_account = if let Some(account_id) = account_id.as_deref().filter(|s| !s.trim().is_empty()) {
         match Uuid::parse_str(account_id) {
             Ok(uuid) => data_store.get_account(uuid).await.ok(),
             Err(e) => {
@@ -1008,9 +1008,34 @@ pub async fn get_trial_payment_link_enhanced(
     } else {
         // === Windsurf 平台账号：保持原有 SubscribeToPlan 流程 ===
         let service = crate::services::windsurf_service::WindsurfService::new();
+        let effective_token = if let (Some(account_id_value), Some(account)) = (
+            account_id.as_deref().filter(|s| !s.trim().is_empty()),
+            stored_account.as_mut(),
+        ) {
+            if let Ok(uuid) = Uuid::parse_str(account_id_value) {
+                let force = account
+                    .refresh_token
+                    .as_ref()
+                    .map_or(false, |rt| rt.starts_with("auth1_"));
+                crate::commands::api_commands::ensure_valid_token_with_force(
+                    &data_store,
+                    account,
+                    uuid,
+                    force,
+                )
+                    .await?;
+            }
+            account.token.clone().unwrap_or_else(|| token.clone())
+        } else {
+            token.clone()
+        };
+        let effective_auth1_token = stored_account
+            .as_ref()
+            .and_then(|account| account.refresh_token.clone())
+            .or(effective_auth1_token);
         let windsurf_auth1 = effective_auth1_token.as_deref().filter(|t| t.starts_with("auth1_"));
-        service.subscribe_to_plan(
-            &token,
+        let mut result = service.subscribe_to_plan(
+            &effective_token,
             windsurf_auth1,
             teams_tier,
             payment_period,
@@ -1019,7 +1044,41 @@ pub async fn get_trial_payment_link_enhanced(
             turnstile_token.as_deref()
         )
             .await
-            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?;
+        let windsurf_success = result.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
+        if !windsurf_success && teams_tier == 2 {
+            if let Some(auth1) = windsurf_auth1 {
+                log::info!("[get_trial_payment_link_enhanced] Windsurf SubscribeToPlan 失败，尝试 Devin checkout fallback");
+                let devin = crate::services::DevinService::new();
+                match devin.get_trial_checkout_url(auth1).await {
+                    Ok((stripe_url, org_id, org_name)) => {
+                        let session_id = crate::services::WindsurfService::extract_checkout_session_id(&stripe_url);
+                        result = json!({
+                            "success": true,
+                            "stripe_url": stripe_url,
+                            "subscription_url": stripe_url,
+                            "stripe_session_id": session_id,
+                            "org_id": org_id,
+                            "org_name": org_name,
+                            "teams_tier": 2,
+                            "payment_period": 1,
+                            "status_code": 200,
+                            "account_source": "windsurf",
+                            "checkout_source": "devin_fallback",
+                            "timestamp": chrono::Utc::now().to_rfc3339(),
+                        });
+                    }
+                    Err(e) => {
+                        log::warn!("[get_trial_payment_link_enhanced] Devin checkout fallback 失败: {}", e);
+                        if let Some(obj) = result.as_object_mut() {
+                            obj.insert("checkout_fallback".to_string(), json!("devin_failed"));
+                            obj.insert("fallback_error".to_string(), json!(e.to_string()));
+                        }
+                    }
+                }
+            }
+        }
+        result
     };
     
     // 检查是否成功

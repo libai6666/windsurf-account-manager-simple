@@ -336,11 +336,11 @@ pub async fn login_account(
 
     let auth_service = AuthService::new();
 
-    let (token, refresh_token, expires_at) = match auth_service.sign_in_v2(&account.email, &password).await {
+    let (token, refresh_token, expires_at) = match auth_service.sign_in_v2_session(&account.email, &password).await {
 
         Ok(auth_result) => {
 
-            info!("[login_account] sign_in_v2 成功: {}", account.email);
+            info!("[login_account] sign_in_v2_session 成功: {}", account.email);
 
             (auth_result.session_token, auth_result.auth1_token, chrono::Utc::now() + chrono::Duration::hours(1))
 
@@ -348,7 +348,7 @@ pub async fn login_account(
 
         Err(e) => {
 
-            info!("[login_account] sign_in_v2 失败({}), 回退到 Firebase: {}", e, account.email);
+            info!("[login_account] sign_in_v2_session 失败({}), 回退到 Firebase: {}", e, account.email);
 
             auth_service.sign_in(&account.email, &password)
 
@@ -4166,13 +4166,46 @@ pub async fn get_trial_payment_link(
         turnstile_token.as_deref()
 
     )
-
         .await
-
         .map_err(|e: AppError| e.to_string())?;
 
+    let first_success = result.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
+    let is_auth_fail = !first_success && (
+        is_401_error(&result)
+            || result.get("status_code").and_then(|v| v.as_u64()).map_or(false, |code| code == 403)
+            || result.get("error_details")
+                .and_then(|v| v.as_str())
+                .map_or(false, |e| {
+                    e.contains("unauthenticated")
+                        || e.contains("invalid token")
+                        || e.contains("invalid_token")
+                })
+    );
+
+    if is_auth_fail {
+        log::info!("[get_trial_payment_link] 认证失败，强制刷新 session 后重试: {}", account.email);
+        ensure_valid_token_with_force(&store, &mut account, uuid, true).await?;
+        let retry_token = account.token.clone().ok_or("No token available after refresh")?;
+        let retry_refresh_token = account.refresh_token.clone();
+        let retry_auth1 = retry_refresh_token.as_deref().filter(|t| t.starts_with("auth1_"));
+        result = windsurf_service.subscribe_to_plan(
+            &retry_token,
+            retry_auth1,
+            final_teams_tier,
+            final_payment_period,
+            team_name.as_deref(),
+            seat_count,
+            turnstile_token.as_deref()
+        )
+            .await
+            .map_err(|e: AppError| e.to_string())?;
+        log::info!("[get_trial_payment_link] 强制刷新后重试结果: success={}", result.get("success").and_then(|v| v.as_bool()).unwrap_or(false));
+    }
+
     // 如果返回 failed_precondition，可能是批量导入时 auth 状态不一致
+
     // 尝试完整重新登录后再试一次
+
     let first_success = result.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
     let is_precondition_fail = !first_success && result.get("error_details")
         .and_then(|v| v.as_str())
@@ -4206,6 +4239,40 @@ pub async fn get_trial_payment_link(
             }
             Err(e) => {
                 log::warn!("[get_trial_payment_link] 重新登录失败，返回原始错误: {}", e);
+            }
+        }
+    }
+
+    let windsurf_success = result.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
+    if !windsurf_success && final_teams_tier == 2 {
+        if let Some(auth1) = account.refresh_token.as_deref().filter(|t| t.starts_with("auth1_")) {
+            log::info!("[get_trial_payment_link] Windsurf SubscribeToPlan 失败，尝试 Devin checkout fallback: {}", account.email);
+            let devin = DevinService::new();
+            match devin.get_trial_checkout_url(auth1).await {
+                Ok((stripe_url, org_id, org_name)) => {
+                    let session_id = WindsurfService::extract_checkout_session_id(&stripe_url);
+                    result = json!({
+                        "success": true,
+                        "stripe_url": stripe_url,
+                        "subscription_url": stripe_url,
+                        "stripe_session_id": session_id,
+                        "org_id": org_id,
+                        "org_name": org_name,
+                        "teams_tier": 2,
+                        "payment_period": 1,
+                        "status_code": 200,
+                        "account_source": "windsurf",
+                        "checkout_source": "devin_fallback",
+                        "timestamp": chrono::Utc::now().to_rfc3339(),
+                    });
+                }
+                Err(e) => {
+                    log::warn!("[get_trial_payment_link] Devin checkout fallback 失败: {}", e);
+                    if let Some(obj) = result.as_object_mut() {
+                        obj.insert("checkout_fallback".to_string(), json!("devin_failed"));
+                        obj.insert("fallback_error".to_string(), json!(e.to_string()));
+                    }
+                }
             }
         }
     }

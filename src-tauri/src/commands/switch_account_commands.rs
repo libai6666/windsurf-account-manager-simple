@@ -442,6 +442,37 @@ async fn call_register_user(id_token: &str) -> AppResult<RegisterUserResult> {
 
 
 
+struct SwitchAuthResult {
+    register_result: RegisterUserResult,
+    callback_token: String,
+    access_token: String,
+    refresh_token: Option<String>,
+    expires_in: String,
+}
+
+async fn get_auth_token_from_auth_result(
+    auth_service: &crate::services::auth_service::AuthService,
+    auth_result: crate::services::auth_service::WindsurfAuthResult,
+) -> AppResult<SwitchAuthResult> {
+    let register_result = call_register_user(&auth_result.ott).await?;
+    info!("RegisterUser SUCCESS (via devin-auth): apiKey={}..., name={}, server={}",
+        &register_result.api_key[..std::cmp::min(register_result.api_key.len(), 20)],
+        register_result.name,
+        register_result.api_server_url);
+
+    let callback_ott = auth_service
+        .get_fresh_ott(&auth_result.session_token, Some(&auth_result.auth1_token))
+        .await?;
+
+    Ok(SwitchAuthResult {
+        register_result,
+        callback_token: callback_ott,
+        access_token: auth_result.session_token,
+        refresh_token: Some(auth_result.auth1_token),
+        expires_in: "3600".to_string(),
+    })
+}
+
 /// 获取 auth token 并调用 RegisterUser
 
 /// 支持两种 refresh_token 类型：
@@ -450,9 +481,7 @@ async fn call_register_user(id_token: &str) -> AppResult<RegisterUserResult> {
 
 /// - 其他 : Firebase refresh token → securetoken refresh → RegisterUser
 
-/// 返回 (RegisterUserResult, id_token, access_token, expires_in)
-
-async fn get_auth_token(refresh_token: &str) -> AppResult<(RegisterUserResult, String, String, String)> {
+async fn get_auth_token(refresh_token: &str) -> AppResult<SwitchAuthResult> {
 
     if refresh_token.starts_with("auth1_") {
 
@@ -464,29 +493,7 @@ async fn get_auth_token(refresh_token: &str) -> AppResult<(RegisterUserResult, S
 
         let auth_result = auth_service.refresh_ott(refresh_token).await?;
 
-        
-
-        // 用第一个 OTT 调用 RegisterUser（会消耗该 OTT）
-
-        let register_result = call_register_user(&auth_result.ott).await?;
-
-        info!("RegisterUser SUCCESS (via devin-auth): apiKey={}..., name={}, server={}", 
-
-            &register_result.api_key[..std::cmp::min(register_result.api_key.len(), 20)],
-
-            register_result.name,
-
-            register_result.api_server_url);
-
-        
-
-        // 获取第二个 OTT 用于编辑器回调（OTT 是一次性的，第一个已被 RegisterUser 消耗）
-
-        let callback_ott = auth_service.get_fresh_ott(&auth_result.session_token).await?;
-
-        
-
-        Ok((register_result, callback_ott, auth_result.session_token, "3600".to_string()))
+        get_auth_token_from_auth_result(&auth_service, auth_result).await
 
     } else {
 
@@ -510,10 +517,35 @@ async fn get_auth_token(refresh_token: &str) -> AppResult<(RegisterUserResult, S
 
         
 
-        Ok((register_result, token_response.id_token, token_response.access_token, token_response.expires_in))
+        Ok(SwitchAuthResult {
+            register_result,
+            callback_token: token_response.id_token,
+            access_token: token_response.access_token,
+            refresh_token: Some(token_response.refresh_token),
+            expires_in: token_response.expires_in,
+        })
 
     }
 
+}
+
+async fn get_auth_token_for_account(
+    store: &Arc<DataStore>,
+    account_id: Uuid,
+    email: &str,
+    refresh_token: &str,
+) -> AppResult<SwitchAuthResult> {
+    match get_auth_token(refresh_token).await {
+        Ok(result) => Ok(result),
+        Err(e) if refresh_token.starts_with("auth1_") => {
+            warn!("auth1 refresh failed for {}, retrying with password login: {}", email, e);
+            let password = store.get_decrypted_password(account_id).await?;
+            let auth_service = crate::services::auth_service::AuthService::new();
+            let auth_result = auth_service.sign_in_v2(email, &password).await?;
+            get_auth_token_from_auth_result(&auth_service, auth_result).await
+        }
+        Err(e) => Err(e),
+    }
 }
 
 
@@ -1260,7 +1292,7 @@ pub async fn switch_account(
 
     info!("Getting auth token via Firebase refresh...");
 
-    let (register_result, id_token, access_token, expires_in) = match get_auth_token(&refresh_token).await {
+    let auth = match get_auth_token_for_account(&data_store, account_id, &account.email, &refresh_token).await {
 
         Ok(result) => result,
 
@@ -1346,7 +1378,7 @@ pub async fn switch_account(
 
     info!("Triggering seamless account switch via callback URL...");
 
-    if let Err(e) = trigger_windsurf_callback(&app, &id_token).await {
+    if let Err(e) = trigger_windsurf_callback(&app, &auth.callback_token).await {
 
         error!("Callback failed: {}", e);
 
@@ -1364,17 +1396,14 @@ pub async fn switch_account(
 
     // 更新账号的token信息
 
-    let expires_at = Utc::now() + chrono::Duration::seconds(expires_in.parse::<i64>().unwrap_or(3600));
+    let expires_at = Utc::now() + chrono::Duration::seconds(auth.expires_in.parse::<i64>().unwrap_or(3600));
 
-    if let Err(e) = data_store.update_account_token(
-
-        account_id,
-
-        access_token.clone(),
-
-        expires_at
-
-    ).await {
+    let update_result = if let Some(refresh_token_new) = auth.refresh_token.clone() {
+        data_store.update_account_tokens(account_id, auth.access_token.clone(), refresh_token_new, expires_at).await
+    } else {
+        data_store.update_account_token(account_id, auth.access_token.clone(), expires_at).await
+    };
+    if let Err(e) = update_result {
 
         error!("Failed to update account token: {:?}", e);
 
@@ -1382,7 +1411,7 @@ pub async fn switch_account(
 
     
 
-    info!("Successfully switched Windsurf account to: {}", register_result.name);
+    info!("Successfully switched Windsurf account to: {}", auth.register_result.name);
 
     
 
@@ -1412,7 +1441,7 @@ pub async fn switch_account(
 
         },
 
-        "api_key": register_result.api_key,
+        "api_key": auth.register_result.api_key,
 
         "machine_id_reset": machine_id_reset
 
@@ -2230,7 +2259,7 @@ pub async fn check_auto_switch(
 
             };
 
-            let (register_result, id_token, access_token, expires_in) = match get_auth_token(&refresh_token).await {
+            let auth = match get_auth_token_for_account(&data_store, target_id, &target_email, &refresh_token).await {
 
                 Ok(r) => r,
 
@@ -2246,11 +2275,16 @@ pub async fn check_auto_switch(
 
             }
 
-            let _ = trigger_windsurf_callback(&app, &id_token).await;
+            let _ = trigger_windsurf_callback(&app, &auth.callback_token).await;
 
-            let expires_at = Utc::now() + chrono::Duration::seconds(expires_in.parse::<i64>().unwrap_or(3600));
+            let expires_at = Utc::now() + chrono::Duration::seconds(auth.expires_in.parse::<i64>().unwrap_or(3600));
 
-            let _ = data_store.update_account_token(target_id, access_token, expires_at).await;
+            let update_result = if let Some(refresh_token_new) = auth.refresh_token.clone() {
+                data_store.update_account_tokens(target_id, auth.access_token.clone(), refresh_token_new, expires_at).await
+            } else {
+                data_store.update_account_token(target_id, auth.access_token.clone(), expires_at).await
+            };
+            let _ = update_result;
 
             let mut new_settings = settings.clone();
 
@@ -2714,7 +2748,7 @@ pub async fn check_auto_switch(
 
     // 获取 auth_token (Windsurf 2.0+: RegisterUser获取apiKey)
 
-    let (register_result, id_token, access_token, expires_in) = match get_auth_token(&refresh_token).await {
+    let auth = match get_auth_token_for_account(&data_store, target_id, &target_email, &refresh_token).await {
 
         Ok(r) => r,
 
@@ -2758,15 +2792,20 @@ pub async fn check_auto_switch(
 
     // 无感切号：通过回调URL触发
 
-    let _ = trigger_windsurf_callback(&app, &id_token).await;
+    let _ = trigger_windsurf_callback(&app, &auth.callback_token).await;
 
     
 
     // 更新目标账号的token信息
 
-    let expires_at = Utc::now() + chrono::Duration::seconds(expires_in.parse::<i64>().unwrap_or(3600));
+    let expires_at = Utc::now() + chrono::Duration::seconds(auth.expires_in.parse::<i64>().unwrap_or(3600));
 
-    let _ = data_store.update_account_token(target_id, access_token, expires_at).await;
+    let update_result = if let Some(refresh_token_new) = auth.refresh_token.clone() {
+        data_store.update_account_tokens(target_id, auth.access_token.clone(), refresh_token_new, expires_at).await
+    } else {
+        data_store.update_account_token(target_id, auth.access_token.clone(), expires_at).await
+    };
+    let _ = update_result;
 
     
 
