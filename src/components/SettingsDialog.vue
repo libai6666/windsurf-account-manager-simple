@@ -52,12 +52,12 @@
             <el-input-number
               v-model="settings.concurrent_limit"
               :min="1"
-              :max="10"
+              :max="30"
               :step="1"
               :disabled="settings.unlimitedConcurrentRefresh"
             />
             <div style="margin-top: 5px; color: #909399; font-size: 12px;">
-              {{ settings.unlimitedConcurrentRefresh ? '已开启全量并发刷新，此设置不影响自动刷新' : '批量操作时的最大并发数' }}
+              {{ settings.unlimitedConcurrentRefresh ? '已开启全量并发刷新，此设置不影响自动刷新' : '批量操作时的最大并发数，最多 30 个' }}
             </div>
           </el-form-item>
           
