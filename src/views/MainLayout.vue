@@ -799,8 +799,8 @@ const defaultConcurrencyCount = ref(4);
 const pendingApiCalls = ref(0);
 
 const BULK_IMPORT_MAX_CONCURRENCY = 4;
-const BULK_REFRESH_CHUNK_SIZE = 10;
-const BULK_REFRESH_FALLBACK_CONCURRENCY = 3;
+const BULK_REFRESH_CHUNK_SIZE = 30;
+const BULK_REFRESH_FALLBACK_CONCURRENCY = 30;
 
 function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -1823,9 +1823,7 @@ async function handleBatchRefresh() {
         }
       } catch (error) {
         console.error('批量刷新批次失败，降级为单账号刷新:', error);
-        const fallbackConcurrency = settingsStore.settings?.unlimitedConcurrentRefresh
-          ? chunk.length
-          : BULK_REFRESH_FALLBACK_CONCURRENCY;
+        const fallbackConcurrency = getBatchConcurrency(chunk.length, BULK_REFRESH_FALLBACK_CONCURRENCY);
         chunkResults = await runInChunks(
           chunk,
           fallbackConcurrency,
