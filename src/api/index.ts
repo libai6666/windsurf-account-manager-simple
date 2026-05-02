@@ -97,8 +97,8 @@ export const apiService = {
     return await invoke('batch_reset_credits', { ids, seatCount });
   },
 
-  async batchRefreshTokens(ids: string[]): Promise<BatchResult> {
-    return await invoke('batch_refresh_tokens', { ids });
+  async batchRefreshTokens(ids: string[], concurrentLimit?: number): Promise<BatchResult> {
+    return await invoke('batch_refresh_tokens', { ids, concurrentLimit });
   },
 
   /**

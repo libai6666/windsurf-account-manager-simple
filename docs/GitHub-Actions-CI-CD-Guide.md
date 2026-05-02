@@ -133,7 +133,6 @@ build-macos-arm64:
 
 - **`tauri-apps/tauri-action@v0`** — Tauri 官方 Action，自动执行前端构建 + Rust 编译 + 打包
 - **`swatinem/rust-cache@v2`** — 缓存 Rust 编译产物，首次构建约 20 分钟，后续约 5-10 分钟
-- **`cunzhi` 平台文件** — `build.rs` 会根据目标平台自动从 `src-tauri/cunzhi/` 复制对应文件到 `cunzhi-bundle/`
 - **产物路径** — macOS 的 `.dmg` 和 `.app` 位于 `src-tauri/target/<target>/release/bundle/`
 
 ---

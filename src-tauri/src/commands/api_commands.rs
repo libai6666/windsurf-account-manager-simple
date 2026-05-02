@@ -1460,6 +1460,7 @@ pub async fn batch_reset_credits(
 #[tauri::command]
 pub async fn batch_refresh_tokens(
     ids: Vec<String>,
+    concurrent_limit: Option<usize>,
     store: State<'_, Arc<DataStore>>,
 ) -> Result<serde_json::Value, String> {
     use futures::stream::{self, StreamExt};
@@ -1472,7 +1473,7 @@ pub async fn batch_refresh_tokens(
     let max_concurrent = if settings.unlimited_concurrent_refresh {
         ids.len() // 全量并发
     } else {
-        settings.concurrent_limit.max(1) // 至少 1 个并发
+        concurrent_limit.unwrap_or(settings.concurrent_limit).max(1) // 至少 1 个并发
     };
     
     let results: Vec<serde_json::Value> = stream::iter(ids.into_iter())

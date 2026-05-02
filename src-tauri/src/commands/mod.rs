@@ -11,7 +11,6 @@ pub mod app_info;
 pub mod analytics_commands;
 pub mod team_commands;
 pub mod auto_reset_commands;
-pub mod cunzhi_commands;
 pub mod machine_id_commands;
 
 pub use account_commands::*;
@@ -27,5 +26,4 @@ pub use app_info::*;
 pub use analytics_commands::*;
 pub use team_commands::*;
 pub use auto_reset_commands::*;
-pub use cunzhi_commands::*;
 pub use machine_id_commands::*;

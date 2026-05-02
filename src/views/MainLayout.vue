@@ -1438,16 +1438,19 @@ async function handleBatchRefresh() {
   }
   
   const totalCount = selectedIds.length;
+  const concurrentLimit = settingsStore.settings?.unlimitedConcurrentRefresh
+    ? totalCount
+    : Math.max(1, settingsStore.settings?.concurrent_limit || 5);
   
   const progressLoading = ElMessage({
-    message: `正在批量刷新 ${totalCount} 个账号状态...`,
+    message: `正在批量刷新 ${totalCount} 个账号状态（并发 ${concurrentLimit}）...`,
     duration: 0,
     icon: Loading
   });
   
   try {
     // 使用优化的批量刷新 API（后端只保存一次）
-    const result = await apiService.batchRefreshTokens(selectedIds);
+    const result = await apiService.batchRefreshTokens(selectedIds, concurrentLimit);
     
     progressLoading.close();
     
