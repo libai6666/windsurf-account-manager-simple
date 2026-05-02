@@ -52,16 +52,40 @@ pub async fn add_account_by_refresh_token(
     let auth_service = AuthService::new();
     
     // Step 1: 使用 refresh_token 获取 access_token
-    let (token, new_refresh_token, expires_at) = auth_service.refresh_token(&refresh_token)
-        .await
-        .map_err(|e| format!("刷新Token失败: {}", e))?;
-    
-    // Step 2: 使用 token 获取用户信息
-    let account_info = auth_service.get_account_info(&token)
-        .await
-        .map_err(|e| format!("获取用户信息失败: {}", e))?;
-    
-    let email = account_info.email.clone();
+    let (token, new_refresh_token, expires_at, email) = if refresh_token.starts_with("auth1_") {
+        let (token, new_refresh_token, expires_at) = auth_service.refresh_session_with_auth1(&refresh_token)
+            .await
+            .map_err(|e| format!("刷新Token失败: {}", e))?;
+
+        let windsurf_service = WindsurfService::new();
+        let user_info_result = windsurf_service.get_current_user(&token)
+            .await
+            .map_err(|e| format!("获取用户信息失败: {}", e))?;
+        let email = user_info_result
+            .get("user_info")
+            .and_then(|v| v.get("user"))
+            .and_then(|v| v.get("email"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        if email.is_empty() {
+            return Err("获取用户信息失败: 未找到邮箱".to_string());
+        }
+
+        (token, new_refresh_token, expires_at, email)
+    } else {
+        let (token, new_refresh_token, expires_at) = auth_service.refresh_token(&refresh_token)
+            .await
+            .map_err(|e| format!("刷新Token失败: {}", e))?;
+        
+        // Step 2: 使用 token 获取用户信息
+        let account_info = auth_service.get_account_info(&token)
+            .await
+            .map_err(|e| format!("获取用户信息失败: {}", e))?;
+        
+        (token, new_refresh_token, expires_at, account_info.email.clone())
+    };
     
     // 检查账号是否已存在
     let existing_accounts = store.get_all_accounts()

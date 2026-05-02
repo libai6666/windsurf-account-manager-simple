@@ -146,13 +146,13 @@ pub async fn login_account(
     
     // 登录获取Token：先尝试 Windsurf 2.0 (devin-auth)，失败则回退到 Firebase
     let auth_service = AuthService::new();
-    let (token, refresh_token, expires_at) = match auth_service.sign_in_v2(&account.email, &password).await {
+    let (token, refresh_token, expires_at) = match auth_service.sign_in_v2_session(&account.email, &password).await {
         Ok(auth_result) => {
-            info!("[login_account] sign_in_v2 成功: {}", account.email);
+            info!("[login_account] sign_in_v2_session 成功: {}", account.email);
             (auth_result.session_token, auth_result.auth1_token, chrono::Utc::now() + chrono::Duration::hours(1))
         }
         Err(e) => {
-            info!("[login_account] sign_in_v2 失败({}), 回退到 Firebase: {}", e, account.email);
+            info!("[login_account] sign_in_v2_session 失败({}), 回退到 Firebase: {}", e, account.email);
             auth_service.sign_in(&account.email, &password)
                 .await
                 .map_err(|e| e.to_string())?

@@ -135,6 +135,141 @@ impl AuthService {
         self.client = super::get_google_api_client();
     }
 
+    fn is_invalid_devin_token_error(status: reqwest::StatusCode, error_text: &str) -> bool {
+        status.as_u16() == 401
+            || error_text.contains("unauthenticated")
+            || error_text.contains("invalid token")
+            || error_text.contains("invalid_token")
+    }
+
+    async fn get_one_time_auth_token(
+        &self,
+        session_token: &str,
+        auth1_token: Option<&str>,
+        error_prefix: &str,
+    ) -> AppResult<String> {
+        struct OttRequestVariant<'a> {
+            name: &'static str,
+            url: &'static str,
+            body_token: &'a str,
+            devin_headers: bool,
+            x_auth_token: bool,
+            bearer_auth1: bool,
+            session_cookie: bool,
+        }
+
+        let backend_url = "https://windsurf.com/_backend/exa.seat_management_pb.SeatManagementService/GetOneTimeAuthToken";
+        let web_backend_url = "https://web-backend.windsurf.com/exa.seat_management_pb.SeatManagementService/GetOneTimeAuthToken";
+        let auth1 = auth1_token.filter(|token| !token.is_empty());
+        let mut variants = Vec::new();
+
+        if let Some(auth1_value) = auth1 {
+            variants.push(OttRequestVariant { name: "web_backend_session_x_auth", url: web_backend_url, body_token: session_token, devin_headers: false, x_auth_token: true, bearer_auth1: false, session_cookie: false });
+            variants.push(OttRequestVariant { name: "backend_session_x_auth", url: backend_url, body_token: session_token, devin_headers: false, x_auth_token: true, bearer_auth1: false, session_cookie: false });
+            variants.push(OttRequestVariant { name: "backend_session_cookie", url: backend_url, body_token: session_token, devin_headers: false, x_auth_token: false, bearer_auth1: false, session_cookie: true });
+            variants.push(OttRequestVariant { name: "backend_session_devin_headers", url: backend_url, body_token: session_token, devin_headers: true, x_auth_token: false, bearer_auth1: false, session_cookie: false });
+            variants.push(OttRequestVariant { name: "backend_auth1_devin_headers", url: backend_url, body_token: auth1_value, devin_headers: true, x_auth_token: false, bearer_auth1: false, session_cookie: false });
+            variants.push(OttRequestVariant { name: "web_backend_auth1_bearer", url: web_backend_url, body_token: auth1_value, devin_headers: false, x_auth_token: false, bearer_auth1: true, session_cookie: false });
+            variants.push(OttRequestVariant { name: "backend_auth1_bearer", url: backend_url, body_token: auth1_value, devin_headers: false, x_auth_token: false, bearer_auth1: true, session_cookie: false });
+            variants.push(OttRequestVariant { name: "backend_auth1_no_auth", url: backend_url, body_token: auth1_value, devin_headers: false, x_auth_token: false, bearer_auth1: false, session_cookie: false });
+            variants.push(OttRequestVariant { name: "backend_session_no_auth", url: backend_url, body_token: session_token, devin_headers: false, x_auth_token: false, bearer_auth1: false, session_cookie: false });
+        } else {
+            variants.push(OttRequestVariant { name: "backend_session_no_auth", url: backend_url, body_token: session_token, devin_headers: false, x_auth_token: false, bearer_auth1: false, session_cookie: false });
+            variants.push(OttRequestVariant { name: "web_backend_session_x_auth", url: web_backend_url, body_token: session_token, devin_headers: false, x_auth_token: true, bearer_auth1: false, session_cookie: false });
+            variants.push(OttRequestVariant { name: "backend_session_x_auth", url: backend_url, body_token: session_token, devin_headers: false, x_auth_token: true, bearer_auth1: false, session_cookie: false });
+        }
+
+        let mut last_error_message = None;
+        let mut saw_invalid_token = false;
+
+        for variant in variants {
+            info!(
+                "[{}] Trying GetOneTimeAuthToken variant={} body_prefix={}...",
+                error_prefix,
+                variant.name,
+                &variant.body_token[..std::cmp::min(variant.body_token.len(), 20)]
+            );
+
+            let ott_body = encode_protobuf_string(1, variant.body_token);
+            let mut request = self.client
+                .post(variant.url)
+                .header("Content-Type", "application/proto")
+                .header("Accept", "application/proto")
+                .header("Connect-Protocol-Version", "1")
+                .header("User-Agent", "connect-es/1.6.1")
+                .header("Origin", "https://windsurf.com")
+                .header("Referer", "https://windsurf.com/")
+                .body(ott_body);
+
+            if variant.devin_headers {
+                if let Some(auth1_value) = auth1 {
+                    request = request
+                        .header("X-Devin-Auth1-Token", auth1_value)
+                        .header("X-Devin-Session-Token", session_token);
+                }
+            }
+            if variant.x_auth_token {
+                request = request.header("x-auth-token", session_token);
+            }
+            if variant.bearer_auth1 {
+                if let Some(auth1_value) = auth1 {
+                    request = request.header("Authorization", format!("Bearer {}", auth1_value));
+                }
+            }
+            if variant.session_cookie {
+                let cookie_token = session_token
+                    .strip_prefix("devin-session-token$")
+                    .unwrap_or(session_token);
+                request = request.header("Cookie", format!("devin-session-token={}", cookie_token));
+            }
+
+            let ott_resp = match request.send().await {
+                Ok(resp) => resp,
+                Err(e) => {
+                    warn!("[{}] variant={} request failed: {}", error_prefix, variant.name, e);
+                    last_error_message = Some(format!("{} failed: {}", variant.name, e));
+                    continue;
+                }
+            };
+
+            let status = ott_resp.status();
+            if !status.is_success() {
+                let error_text = ott_resp.text().await.unwrap_or_default();
+                if Self::is_invalid_devin_token_error(status, &error_text) {
+                    saw_invalid_token = true;
+                }
+                warn!("[{}] variant={} failed ({}): {}", error_prefix, variant.name, status, error_text);
+                last_error_message = Some(format!("{} error ({}): {}", variant.name, status, error_text));
+                continue;
+            }
+
+            let ott_bytes = match ott_resp.bytes().await {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    last_error_message = Some(format!("{} read failed: {}", variant.name, e));
+                    continue;
+                }
+            };
+            let ott_fields = parse_protobuf_fields(&ott_bytes);
+            if let Some(ott) = ott_fields.get(&1).cloned().filter(|token| !token.is_empty()) {
+                info!("[{}] variant={} succeeded", error_prefix, variant.name);
+                return Ok(ott);
+            }
+
+            last_error_message = Some(format!("{}: missing auth_token (field 1)", variant.name));
+        }
+
+        if saw_invalid_token {
+            Err(AppError::TokenExpired)
+        } else {
+            Err(AppError::Api(format!(
+                "{} failed: {}",
+                error_prefix,
+                last_error_message.unwrap_or_else(|| "no request variants attempted".to_string())
+            )))
+        }
+    }
+
     pub async fn sign_in(&self, email: &str, password: &str) -> AppResult<(String, String, DateTime<Utc>)> {
         let url = format!(
             "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={}",
@@ -331,13 +466,13 @@ impl AuthService {
     /// 兼容登录：先尝试 Windsurf 2.0 (devin-auth)，失败则回退到 Firebase
     /// 返回与旧 sign_in 相同的 (token, refresh_token, expires_at) 格式
     pub async fn sign_in_compat(&self, email: &str, password: &str) -> AppResult<(String, String, DateTime<Utc>)> {
-        match self.sign_in_v2(email, password).await {
+        match self.sign_in_v2_session(email, password).await {
             Ok(result) => {
                 let expires_at = Utc::now() + Duration::hours(1);
                 Ok((result.session_token, result.auth1_token, expires_at))
             }
             Err(e) => {
-                info!("[sign_in_compat] sign_in_v2 失败({}), 回退到 Firebase: {}", e, email);
+                info!("[sign_in_compat] sign_in_v2_session 失败({}), 回退到 Firebase: {}", e, email);
                 self.sign_in(email, password).await
             }
         }
@@ -345,11 +480,8 @@ impl AuthService {
 
     // ============= Windsurf 2.0 新认证方法 =============
 
-    /// Windsurf 2.0 登录：通过 devin-auth + WindsurfPostAuth + GetOneTimeAuthToken
-    /// 返回 WindsurfAuthResult，包含 OTT（用于 handleAuthToken 回调）
-    pub async fn sign_in_v2(&self, email: &str, password: &str) -> AppResult<WindsurfAuthResult> {
-        // Step 1: _devin-auth/password/login
-        info!("[sign_in_v2] Step 1: Calling _devin-auth/password/login for {}", email);
+    pub async fn sign_in_v2_session(&self, email: &str, password: &str) -> AppResult<WindsurfAuthResult> {
+        info!("[sign_in_v2_session] Step 1: Calling _devin-auth/password/login for {}", email);
         let login_resp = match self.client
             .post("https://windsurf.com/_devin-auth/password/login")
             .json(&DevinLoginRequest {
@@ -384,15 +516,17 @@ impl AuthService {
 
         let login_data: DevinLoginResponse = login_resp.json().await
             .map_err(|e| AppError::Api(format!("Failed to parse login response: {}", e)))?;
-        info!("[sign_in_v2] Step 1 OK: user_id={}, email={}", login_data.user_id, login_data.email);
+        info!("[sign_in_v2_session] Step 1 OK: user_id={}, email={}", login_data.user_id, login_data.email);
 
-        // Step 2: WindsurfPostAuth (protobuf)
-        info!("[sign_in_v2] Step 2: Calling WindsurfPostAuth...");
+        info!("[sign_in_v2_session] Step 2: Calling WindsurfPostAuth...");
         let post_auth_body = encode_protobuf_string(1, &login_data.token);
         let post_auth_resp = match self.client
             .post("https://windsurf.com/_backend/exa.seat_management_pb.SeatManagementService/WindsurfPostAuth")
             .header("Content-Type", "application/proto")
+            .header("Accept", "application/proto")
             .header("Connect-Protocol-Version", "1")
+            .header("User-Agent", "connect-es/1.6.1")
+            .header("X-Devin-Auth1-Token", &login_data.token)
             .body(post_auth_body)
             .send()
             .await
@@ -413,42 +547,16 @@ impl AuthService {
         let session_token = post_auth_fields.get(&1)
             .ok_or_else(|| AppError::Api("WindsurfPostAuth: missing session_token (field 1)".to_string()))?
             .clone();
-        let refreshed_auth1 = post_auth_fields.get(&3).cloned().unwrap_or_default();
+        let refreshed_auth1 = post_auth_fields.get(&3)
+            .cloned()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| login_data.token.clone());
         let account_id = post_auth_fields.get(&4).cloned().unwrap_or_default();
         let org_id = post_auth_fields.get(&5).cloned().unwrap_or_default();
-        info!("[sign_in_v2] Step 2 OK: account_id={}, org_id={}", account_id, org_id);
-
-        // Step 3: GetOneTimeAuthToken (protobuf)
-        info!("[sign_in_v2] Step 3: Calling GetOneTimeAuthToken...");
-        let ott_body = encode_protobuf_string(1, &session_token);
-        let ott_resp = match self.client
-            .post("https://windsurf.com/_backend/exa.seat_management_pb.SeatManagementService/GetOneTimeAuthToken")
-            .header("Content-Type", "application/proto")
-            .header("Connect-Protocol-Version", "1")
-            .body(ott_body)
-            .send()
-            .await
-        {
-            Ok(resp) => resp,
-            Err(e) => return Err(AppError::Network(format!("GetOneTimeAuthToken failed: {}", e))),
-        };
-
-        if !ott_resp.status().is_success() {
-            let error_text = ott_resp.text().await.unwrap_or_default();
-            return Err(AppError::Api(format!("GetOneTimeAuthToken error: {}", error_text)));
-        }
-
-        let ott_bytes = ott_resp.bytes().await
-            .map_err(|e| AppError::Api(format!("Failed to read OTT response: {}", e)))?;
-        let ott_fields = parse_protobuf_fields(&ott_bytes);
-
-        let ott = ott_fields.get(&1)
-            .ok_or_else(|| AppError::Api("GetOneTimeAuthToken: missing auth_token (field 1)".to_string()))?
-            .clone();
-        info!("[sign_in_v2] Step 3 OK: OTT={}...", &ott[..std::cmp::min(ott.len(), 20)]);
+        info!("[sign_in_v2_session] Step 2 OK: account_id={}, org_id={}", account_id, org_id);
 
         Ok(WindsurfAuthResult {
-            ott,
+            ott: String::new(),
             session_token,
             auth1_token: refreshed_auth1,
             account_id,
@@ -456,6 +564,20 @@ impl AuthService {
             user_id: login_data.user_id,
             email: login_data.email,
         })
+    }
+
+    /// Windsurf 2.0 登录：通过 devin-auth + WindsurfPostAuth + GetOneTimeAuthToken
+    /// 返回 WindsurfAuthResult，包含 OTT（用于 handleAuthToken 回调）
+    pub async fn sign_in_v2(&self, email: &str, password: &str) -> AppResult<WindsurfAuthResult> {
+        let mut result = self.sign_in_v2_session(email, password).await?;
+
+        // Step 3: GetOneTimeAuthToken (protobuf)
+        info!("[sign_in_v2] Step 3: Calling GetOneTimeAuthToken...");
+        let ott = self.get_one_time_auth_token(&result.session_token, Some(&result.auth1_token), "GetOneTimeAuthToken").await?;
+        info!("[sign_in_v2] Step 3 OK: OTT={}...", &ott[..std::cmp::min(ott.len(), 20)]);
+
+        result.ott = ott;
+        Ok(result)
     }
 
     /// 使用 auth1_token 刷新 session_token（不获取 OTT）
@@ -467,7 +589,10 @@ impl AuthService {
         let post_auth_resp = match self.client
             .post("https://windsurf.com/_backend/exa.seat_management_pb.SeatManagementService/WindsurfPostAuth")
             .header("Content-Type", "application/proto")
+            .header("Accept", "application/proto")
             .header("Connect-Protocol-Version", "1")
+            .header("User-Agent", "connect-es/1.6.1")
+            .header("X-Devin-Auth1-Token", auth1_token)
             .body(post_auth_body)
             .send()
             .await
@@ -490,10 +615,7 @@ impl AuthService {
             let status = post_auth_resp.status();
             let error_text = post_auth_resp.text().await.unwrap_or_default();
             // auth1 失效 -> TokenExpired，让调用方回退到密码登录
-            if status.as_u16() == 401
-                || error_text.contains("unauthenticated")
-                || error_text.contains("invalid_token")
-            {
+            if Self::is_invalid_devin_token_error(status, &error_text) {
                 warn!("[refresh_session_with_auth1] auth1_token expired: {}", error_text);
                 return Err(AppError::TokenExpired);
             }
@@ -535,14 +657,22 @@ impl AuthService {
         let post_auth_resp = self.client
             .post("https://windsurf.com/_backend/exa.seat_management_pb.SeatManagementService/WindsurfPostAuth")
             .header("Content-Type", "application/proto")
+            .header("Accept", "application/proto")
             .header("Connect-Protocol-Version", "1")
+            .header("User-Agent", "connect-es/1.6.1")
+            .header("X-Devin-Auth1-Token", auth1_token)
             .body(post_auth_body)
             .send()
             .await
             .map_err(|e| AppError::Network(format!("WindsurfPostAuth refresh failed: {}", e)))?;
 
         if !post_auth_resp.status().is_success() {
+            let status = post_auth_resp.status();
             let error_text = post_auth_resp.text().await.unwrap_or_default();
+            if Self::is_invalid_devin_token_error(status, &error_text) {
+                warn!("[refresh_ott] auth1_token expired: {}", error_text);
+                return Err(AppError::TokenExpired);
+            }
             return Err(AppError::Api(format!("WindsurfPostAuth refresh error: {}", error_text)));
         }
 
@@ -553,32 +683,19 @@ impl AuthService {
         let session_token = fields.get(&1)
             .ok_or_else(|| AppError::Api("Missing session_token".to_string()))?
             .clone();
-        let refreshed_auth1 = fields.get(&3).cloned().unwrap_or_default();
+        let refreshed_auth1 = fields.get(&3)
+            .cloned()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| auth1_token.to_string());
         let account_id = fields.get(&4).cloned().unwrap_or_default();
         let org_id = fields.get(&5).cloned().unwrap_or_default();
 
         // GetOneTimeAuthToken
-        let ott_body = encode_protobuf_string(1, &session_token);
-        let ott_resp = self.client
-            .post("https://windsurf.com/_backend/exa.seat_management_pb.SeatManagementService/GetOneTimeAuthToken")
-            .header("Content-Type", "application/proto")
-            .header("Connect-Protocol-Version", "1")
-            .body(ott_body)
-            .send()
-            .await
-            .map_err(|e| AppError::Network(format!("GetOneTimeAuthToken refresh failed: {}", e)))?;
-
-        if !ott_resp.status().is_success() {
-            let error_text = ott_resp.text().await.unwrap_or_default();
-            return Err(AppError::Api(format!("GetOneTimeAuthToken refresh error: {}", error_text)));
-        }
-
-        let ott_bytes = ott_resp.bytes().await
-            .map_err(|e| AppError::Api(format!("Failed to read OTT response: {}", e)))?;
-        let ott_fields = parse_protobuf_fields(&ott_bytes);
-        let ott = ott_fields.get(&1)
-            .ok_or_else(|| AppError::Api("Missing OTT".to_string()))?
-            .clone();
+        let ott = self.get_one_time_auth_token(
+            &session_token,
+            Some(&refreshed_auth1),
+            "GetOneTimeAuthToken refresh",
+        ).await?;
 
         info!("[refresh_ott] OK: OTT={}...", &ott[..std::cmp::min(ott.len(), 20)]);
 
@@ -594,28 +711,12 @@ impl AuthService {
     }
 
     /// 用现有的 session_token 获取一个新的 OTT（一次性令牌）
-    pub async fn get_fresh_ott(&self, session_token: &str) -> AppResult<String> {
-        let ott_body = encode_protobuf_string(1, session_token);
-        let ott_resp = self.client
-            .post("https://windsurf.com/_backend/exa.seat_management_pb.SeatManagementService/GetOneTimeAuthToken")
-            .header("Content-Type", "application/proto")
-            .header("Connect-Protocol-Version", "1")
-            .body(ott_body)
-            .send()
-            .await
-            .map_err(|e| AppError::Network(format!("GetOneTimeAuthToken failed: {}", e)))?;
-
-        if !ott_resp.status().is_success() {
-            let error_text = ott_resp.text().await.unwrap_or_default();
-            return Err(AppError::Api(format!("GetOneTimeAuthToken error: {}", error_text)));
-        }
-
-        let ott_bytes = ott_resp.bytes().await
-            .map_err(|e| AppError::Api(format!("Failed to read OTT response: {}", e)))?;
-        let ott_fields = parse_protobuf_fields(&ott_bytes);
-        let ott = ott_fields.get(&1)
-            .ok_or_else(|| AppError::Api("Missing OTT in response".to_string()))?
-            .clone();
+    pub async fn get_fresh_ott(&self, session_token: &str, auth1_token: Option<&str>) -> AppResult<String> {
+        let ott = self.get_one_time_auth_token(
+            session_token,
+            auth1_token,
+            "GetOneTimeAuthToken",
+        ).await?;
 
         info!("[get_fresh_ott] New OTT={}...", &ott[..std::cmp::min(ott.len(), 20)]);
         Ok(ott)
