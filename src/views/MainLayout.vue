@@ -269,6 +269,14 @@
                   <el-icon><Avatar /></el-icon>
                   团队主号
                 </el-dropdown-item>
+                <el-dropdown-item divided command="source_windsurf">
+                  <el-icon><Connection /></el-icon>
+                  Windsurf 来源
+                </el-dropdown-item>
+                <el-dropdown-item command="source_devin">
+                  <el-icon><Connection /></el-icon>
+                  Devin 来源
+                </el-dropdown-item>
                 <el-dropdown-item divided command="normal">
                   <el-icon style="color:#67c23a"><CircleCheck /></el-icon>
                   正常状态
@@ -1354,6 +1362,14 @@ function handleSelectPageCommand(command: string) {
     case 'team_owner':
       matched = pageAccounts.filter(acc => acc.is_team_owner === true);
       label = '团队主号';
+      break;
+    case 'source_windsurf':
+      matched = pageAccounts.filter(acc => !acc.account_source || acc.account_source === 'windsurf');
+      label = 'Windsurf 来源';
+      break;
+    case 'source_devin':
+      matched = pageAccounts.filter(acc => acc.account_source === 'devin');
+      label = 'Devin 来源';
       break;
     case 'normal':
       matched = pageAccounts.filter(acc => {
