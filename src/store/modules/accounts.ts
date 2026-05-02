@@ -184,9 +184,8 @@ export const useAccountsStore = defineStore('accounts', () => {
     if (currentFilter.value.freeNoTrial) {
       result = result.filter(acc => {
         const plan = acc.plan_name?.toLowerCase();
-        const isFree = !plan || plan === 'free';
-        // trial_eligible 明确为 false 才视为无资格
-        const noTrial = acc.trial_eligible === false;
+        const isFree = plan === 'free';
+        const noTrial = acc.used_trial === true;
         return isFree && noTrial;
       });
     }
