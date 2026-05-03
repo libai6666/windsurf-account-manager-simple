@@ -11,12 +11,8 @@ pub mod app_info;
 pub mod analytics_commands;
 pub mod team_commands;
 pub mod auto_reset_commands;
-pub mod cunzhi_commands;
-<<<<<<< HEAD
-pub mod stripe_bind_commands;
-=======
->>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
 pub mod machine_id_commands;
+pub mod stripe_bind_commands;
 
 pub use account_commands::*;
 pub use api_commands::*;
@@ -31,9 +27,5 @@ pub use app_info::*;
 pub use analytics_commands::*;
 pub use team_commands::*;
 pub use auto_reset_commands::*;
-pub use cunzhi_commands::*;
-<<<<<<< HEAD
-pub use stripe_bind_commands::*;
-=======
->>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
 pub use machine_id_commands::*;
+pub use stripe_bind_commands::*;

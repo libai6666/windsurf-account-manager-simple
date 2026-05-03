@@ -351,11 +351,8 @@ export interface Settings {
   autoSwitchThreshold?: number;  // 每日配额阈值百分比，低于此值触发换号
   autoSwitchCheckInterval?: number;  // 自动检测间隔（秒）
   autoSwitchCurrentAccountId?: string | null;  // 当前正在使用的账号ID（自动跟踪）
-<<<<<<< HEAD
   customBrowserPath?: string | null;  // 自定义浏览器可执行文件路径（为空则使用默认Chrome）
-=======
   resetMachineIdOnSwitch?: boolean;  // 切号时是否重置机器设备码（默认开启）
->>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
 }
 
 /**

@@ -1,10 +1,6 @@
 use crate::utils::{AppError, AppResult};
 use base64::{Engine, engine::general_purpose};
-<<<<<<< HEAD
 use log::{info, warn};
-=======
-use log::info;
->>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
 use reqwest;
 use reqwest::header::{HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};

@@ -473,12 +473,6 @@ const accountsStore = useAccountsStore();
 const uiStore = useUIStore();
 const settingsStore = useSettingsStore();
 
-<<<<<<< HEAD
-// 是否为当前激活账号（基于编辑器实际登录邮箱判断）
-const isCurrent = computed(() => {
-  if (!props.currentEmail) return false;
-  return props.account.email.toLowerCase() === props.currentEmail.toLowerCase();
-=======
 // 是否为当前激活账号（通过Windsurf信息或自动换号跟踪ID判断）
 const isCurrent = computed(() => {
   // 优先通过自动换号跟踪的账号ID判断
@@ -489,7 +483,6 @@ const isCurrent = computed(() => {
   }
   // 兜底：仅在没有跟踪ID时，通过Windsurf当前登录邮箱判断
   return props.currentEmail && props.account.email === props.currentEmail;
->>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
 });
 
 // 显示的邮箱（根据隐私模式）
@@ -722,7 +715,6 @@ function formatResetTime(timestamp: number | undefined): string {
 }
 
 const dailyResetText = computed(() => {
-<<<<<<< HEAD
   const text = formatResetTime(props.account.daily_quota_reset);
   if (!text && props.account.daily_quota_remaining === 0) return '等待重置';
   return text;
@@ -732,13 +724,6 @@ const weeklyResetText = computed(() => {
   const text = formatResetTime(props.account.weekly_quota_reset);
   if (!text && props.account.weekly_quota_remaining === 0) return '等待重置';
   return text;
-=======
-  return formatResetTime(props.account.daily_quota_reset);
-});
-
-const weeklyResetText = computed(() => {
-  return formatResetTime(props.account.weekly_quota_reset);
->>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
 });
 
 // 刷新按钮提示文本
@@ -969,16 +954,6 @@ async function handleRefreshToken() {
           showClose: true
         });
         
-<<<<<<< HEAD
-        // 后端 get_current_user 已将最新信息（含 daily/weekly 配额）保存到 DB
-        // 从 DB 重新加载账号数据，避免用 props 中的旧值覆盖后端刚保存的新数据
-        const updatedAccount = await accountApi.getAccount(props.account.id);
-        
-        // 补充合并 API 返回中的额外字段（轻量级API返回 plan_status）
-        if (result.plan_status) {
-          if (result.plan_status.daily_quota_remaining !== undefined) {
-            updatedAccount.daily_quota_remaining = result.plan_status.daily_quota_remaining;
-=======
         // 从后端获取最新的账号数据（后端已在 get_current_user_internal 中保存了新配额字段）
         const updatedAccount = await accountApi.getAccount(props.account.id);
         updatedAccount.status = 'active';
@@ -996,7 +971,14 @@ async function handleRefreshToken() {
         if (result.user_info.subscription) {
           if (result.user_info.subscription.used_quota !== undefined) {
             updatedAccount.used_quota = result.user_info.subscription.used_quota;
->>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
+          }
+          if (result.user_info.subscription.subscription_active !== undefined) {
+            updatedAccount.subscription_active = result.user_info.subscription.subscription_active;
+          }
+        }
+        if (result.plan_status) {
+          if (result.plan_status.daily_quota_remaining !== undefined) {
+            updatedAccount.daily_quota_remaining = result.plan_status.daily_quota_remaining;
           }
           if (result.plan_status.weekly_quota_remaining !== undefined) {
             updatedAccount.weekly_quota_remaining = result.plan_status.weekly_quota_remaining;
@@ -1004,21 +986,13 @@ async function handleRefreshToken() {
           if (result.plan_status.daily_quota_reset !== undefined) {
             updatedAccount.daily_quota_reset = result.plan_status.daily_quota_reset;
           }
-<<<<<<< HEAD
           if (result.plan_status.weekly_quota_reset !== undefined) {
             updatedAccount.weekly_quota_reset = result.plan_status.weekly_quota_reset;
           }
         }
         
         // 更新 store 并通知父组件
-=======
-          if (result.user_info.subscription.subscription_active !== undefined) {
-            updatedAccount.subscription_active = result.user_info.subscription.subscription_active;
-          }
-        }
-        
         updatedAccount.last_quota_update = dayjs().toISOString();
->>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
         await accountsStore.updateAccount(updatedAccount);
         emit('update', updatedAccount);
       } else {
@@ -1377,13 +1351,9 @@ async function handleTurnstileSuccess(turnstileToken: string) {
         teamName,
         teamsTier === 1 ? seatCount : undefined, // Teams 需要席位
         turnstileToken || undefined, // Pro 需要 Turnstile token
-<<<<<<< HEAD
         account.account_source, // 账号来源：windsurf | devin
-        account.refresh_token, // Devin 在后端需要 auth1 token
+        account.refresh_token || undefined, // Devin 在后端需要 auth1 token
         account.id
-=======
-        account.id // 传入账号ID，后端会自动刷新token
->>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
       );
       
       if (result.success && result.window_opened) {

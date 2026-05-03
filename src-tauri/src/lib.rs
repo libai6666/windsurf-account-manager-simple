@@ -9,7 +9,6 @@ use commands::{AutoResetStore, ResetRecordStore};
 use std::sync::Arc;
 use tauri::Manager;
 
-<<<<<<< HEAD
 /// Debug构建时初始化日志：同时输出到控制台和exe同级的logs文件夹
 /// Release构建时仅使用env_logger输出到控制台
 fn init_logging() {
@@ -65,99 +64,6 @@ fn init_logging() {
     }
 }
 
-=======
-/// 获取日志目录（跨平台支持）
-/// - Windows Debug: exe同级的logs目录
-/// - Windows Release: exe同级的logs目录
-/// - macOS: ~/Library/Logs/com.chao.windsurf-account-manager/
-/// - Linux: ~/.local/share/com.chao.windsurf-account-manager/logs/
-fn get_log_directory() -> Option<std::path::PathBuf> {
-    #[cfg(debug_assertions)]
-    {
-        // Debug模式：exe同级的logs目录
-        std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|d| d.join("logs")))
-    }
-    
-    #[cfg(not(debug_assertions))]
-    {
-        // Release模式：根据平台选择合适的日志目录
-        #[cfg(target_os = "macos")]
-        {
-            // macOS: ~/Library/Logs/com.chao.windsurf-account-manager/
-            std::env::var("HOME").ok()
-                .map(|h| std::path::PathBuf::from(h).join("Library/Logs/com.chao.windsurf-account-manager"))
-        }
-        
-        #[cfg(target_os = "linux")]
-        {
-            // Linux: ~/.local/share/com.chao.windsurf-account-manager/logs/
-            std::env::var("HOME").ok()
-                .map(|h| std::path::PathBuf::from(h).join(".local/share/com.chao.windsurf-account-manager/logs"))
-        }
-        
-        #[cfg(target_os = "windows")]
-        {
-            // Windows: exe同级的logs目录
-            std::env::current_exe()
-                .ok()
-                .and_then(|p| p.parent().map(|d| d.join("logs")))
-        }
-    }
-}
-
-/// 初始化日志：同时输出到控制台和日志文件
-/// Debug和Release都会写入日志文件，便于问题排查
-fn init_logging() {
-    use std::fs::{self, OpenOptions};
-    use std::io::Write;
-    use std::sync::Mutex;
-
-    let log_dir = get_log_directory();
-
-    let log_file: Option<Arc<Mutex<std::fs::File>>> = log_dir.and_then(|dir| {
-        fs::create_dir_all(&dir).ok()?;
-        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-        #[cfg(debug_assertions)]
-        let path = dir.join(format!("backend_{}.log", today));
-        #[cfg(not(debug_assertions))]
-        let path = dir.join(format!("app_{}.log", today));
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .ok()?;
-        eprintln!("[init_logging] Log file: {}", path.display());
-        Some(Arc::new(Mutex::new(file)))
-    });
-
-    let file_for_logger = log_file.clone();
-    env_logger::Builder::from_default_env()
-        .filter_level(log::LevelFilter::Info)
-        .format(move |buf, record| {
-            use std::io::Write as _;
-            let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
-            let line = format!(
-                "[{}] [{}] [{}] {}\n",
-                ts,
-                record.level(),
-                record.target(),
-                record.args()
-            );
-            // 写入文件
-            if let Some(ref f) = file_for_logger {
-                if let Ok(mut file) = f.lock() {
-                    let _ = file.write_all(line.as_bytes());
-                }
-            }
-            // 同时写入控制台
-            buf.write_all(line.as_bytes())
-        })
-        .init();
-}
-
->>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     init_logging();

@@ -875,13 +875,6 @@ impl ProtobufParser {
         let parsed = parser.parse_message().map_err(|e| format!("Parse error: {}", e))?;
         
         // 解析账单信息
-        let top_keys: Vec<&String> = parsed.as_object().map(|m| m.keys().collect()).unwrap_or_default();
-        log::info!("[GetTeamBilling] parsed top-level keys: {:?}", top_keys);
-        // 诊断: 打印完整 raw 数据和 subMesssage_12 内容
-        if let Some(sm12) = parsed.get("subMesssage_12") {
-            log::info!("[GetTeamBilling] subMesssage_12 = {}", sm12);
-        }
-        log::info!("[GetTeamBilling] full raw = {}", parsed);
         let mut billing_info = json!({
             "success": true,
             "raw_data": parsed.clone()
@@ -1230,11 +1223,7 @@ impl ProtobufParser {
             }
             
             // field 14: daily_quota_remaining (每日配额剩余百分比, 0-100)
-<<<<<<< HEAD
-            // protobuf编码中值为0时字段不出现，因此缺失时默认为0
-=======
             // protobuf编码中值为0时字段不出现，缺失时默认为0
->>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
             result["daily_quota_remaining"] = json!(
                 plan_status.get("int_14").and_then(|v| v.as_i64()).unwrap_or(0)
             );
@@ -1250,17 +1239,6 @@ impl ProtobufParser {
             if let Some(v) = plan_status.get("int_18").and_then(|v| v.as_i64()) {
                 result["weekly_quota_reset"] = json!(v);
             }
-<<<<<<< HEAD
-            
-            // 调试：打印 PlanStatus 所有原始字段，用于排查配额字段映射
-            log::info!("[GetPlanStatus] PlanStatus raw fields: {}", plan_status);
-            log::info!("[GetPlanStatus] Extracted: daily_remaining={:?}, weekly_remaining={:?}, daily_reset={:?}, weekly_reset={:?}",
-                result.get("daily_quota_remaining"),
-                result.get("weekly_quota_remaining"),
-                result.get("daily_quota_reset"),
-                result.get("weekly_quota_reset"));
-=======
->>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
         }
         
         Ok(result)

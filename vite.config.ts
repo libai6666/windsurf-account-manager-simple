@@ -1,9 +1,9 @@
 import { defineConfig } from "vite";
 import vue from "@vitejs/plugin-vue";
-import { resolve } from 'path';
 
 // @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
+const srcPath = new URL('./src', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
 
 // https://vite.dev/config/
 export default defineConfig(async () => ({
@@ -11,8 +11,12 @@ export default defineConfig(async () => ({
   
   resolve: {
     alias: {
-      '@': resolve(__dirname, 'src'),
+      '@': srcPath,
     },
+  },
+
+  build: {
+    emptyOutDir: false,
   },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`

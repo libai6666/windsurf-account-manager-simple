@@ -547,7 +547,6 @@ export const useAccountsStore = defineStore('accounts', () => {
         if (result.is_team_owner !== undefined) {
           updatedAccount.is_team_owner = result.is_team_owner;
         }
-<<<<<<< HEAD
         // 更新免费试用使用状态
         if (result.used_trial !== undefined) {
           updatedAccount.used_trial = result.used_trial;
@@ -555,8 +554,6 @@ export const useAccountsStore = defineStore('accounts', () => {
         if (result.trial_eligible !== undefined) {
           updatedAccount.trial_eligible = result.trial_eligible;
         }
-=======
->>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
         // 更新每日/每周配额信息
         if (result.daily_quota_remaining !== undefined && result.daily_quota_remaining !== null) {
           updatedAccount.daily_quota_remaining = result.daily_quota_remaining;

@@ -175,10 +175,7 @@ pub async fn apply_seamless_patch(
     let force = force.unwrap_or(false);
     let mut restored_from_backup: Option<String> = None;
     
-<<<<<<< HEAD
-=======
     // force 模式：先用最干净的备份覆盖当前文件，再走正常的打补丁流程
->>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
     if force && is_file_patched(&extension_file) {
         let extension_dir = extension_file.parent()
             .ok_or("无法获取扩展目录")?
@@ -196,26 +193,6 @@ pub async fn apply_seamless_patch(
     }
     
     // 1. 先读取文件内容，检查是否已打补丁
-<<<<<<< HEAD
-    let content = fs::read_to_string(&extension_file)
-        .map_err(|e| format!("读取文件失败: {}", e))?;
-    
-    let mut modified_content = content.clone();
-    let mut modifications = vec![];
-    
-    // 2. 应用修改1: 添加全局 OAuth 回调处理器
-    let pattern1_str = r#"this\._uriHandler\.event\((\w+)=>\{"/refresh-authentication-session"===(\w+)\.path&&\(0,(\w+)\.refreshAuthenticationSession\)\(\)\}\)"#;
-    let pattern1 = Regex::new(pattern1_str)
-        .map_err(|e| format!("正则表达式错误: {}", e))?;
-    
-    if let Some(captures) = pattern1.captures(&modified_content) {
-        let var_name1 = &captures[1];
-        let var_name2 = &captures[2];
-        let module_name = &captures[3];
-        
-        // 检查两个变量名是否相同
-        if var_name1 == var_name2 {
-=======
     //    注意：必须按字节读取，extension.js 是大型 webpack bundle，
     //    个别 Windsurf 版本 / 用户机器上文件中可能含有非 UTF-8 字节
     //    （比如被其他工具改写过、自动更新被截断等）。
@@ -270,17 +247,10 @@ pub async fn apply_seamless_patch(
             && var_name4.as_deref().map(|v| v == var_name1).unwrap_or(true);
 
         if vars_consistent && !var_name1.is_empty() && !module_name.is_empty() {
->>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
             let replacement = format!(
                 r#"this._uriHandler.event(async {}=>{{if("/refresh-authentication-session"==={}.path){{(0,{}.refreshAuthenticationSession)()}}else{{try{{const t=new URLSearchParams({}.fragment).get("access_token");if(null===t)throw new Error("No token");await this.handleAuthToken(t)}}catch(e){{console.error("[Windsurf] Failed to handle OAuth callback:",e)}}}}}})"#,
                 var_name1, var_name1, module_name, var_name1
             );
-<<<<<<< HEAD
-            
-            let full_match = captures.get(0).unwrap().as_str();
-            modified_content = modified_content.replace(full_match, &replacement);
-            modifications.push("OAuth回调处理器");
-=======
 
             // 字节级替换：取整段匹配的字节切片，构造新的 Vec<u8>
             let full_match: Vec<u8> = captures.get(0).unwrap().as_bytes().to_vec();
@@ -290,7 +260,6 @@ pub async fn apply_seamless_patch(
             } else {
                 "OAuth回调处理器"
             });
->>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
         }
     }
     
@@ -300,15 +269,6 @@ pub async fn apply_seamless_patch(
         .map_err(|e| format!("正则表达式错误2: {}", e))?;
     
     if let Some(captures) = pattern2.captures(&modified_content) {
-<<<<<<< HEAD
-        let reject_var1 = &captures[2];  // 第二个参数
-        let reject_var2 = &captures[3];  // setTimeout中的变量
-        
-        // 检查是否是同一个reject变量
-        if reject_var1 == reject_var2 {
-            let full_match = captures.get(0).unwrap().as_str();
-            modified_content = modified_content.replace(full_match, "");
-=======
         // 第二个参数 vs setTimeout 中的变量，都是 ASCII 标识符
         let reject_var1 = captures[2].to_vec();
         let reject_var2 = captures[3].to_vec();
@@ -317,20 +277,15 @@ pub async fn apply_seamless_patch(
         if reject_var1 == reject_var2 {
             let full_match: Vec<u8> = captures.get(0).unwrap().as_bytes().to_vec();
             modified_content = replace_bytes(&modified_content, &full_match, b"");
->>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
             modifications.push("移除超时限制");
         }
     }
     
-<<<<<<< HEAD
-    // 4. 验证是否需要修改（如果内容没变化，说明已打过补丁，直接返回，不创建备份）
-=======
     // 4. 验证是否需要修改
     // 如果内容没变化，要进一步区分两种情况：
     //   a) 文件确实已经打过补丁（包含补丁特征 "Failed to handle OAuth callback"）
     //   b) 正则表达式未能匹配当前 Windsurf 版本（常见于首次安装最新版 Windsurf 的新用户，
     //      之前这里被错误地当作 "已打过补丁" 从而陷入死循环）
->>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
     if modified_content == content {
         if is_file_patched(&extension_file) {
             return Ok(serde_json::json!({
@@ -338,11 +293,6 @@ pub async fn apply_seamless_patch(
                 "already_patched": true,
                 "message": "补丁已经应用过了"
             }));
-<<<<<<< HEAD
-        }
-        
-        return Err("补丁规则未能匹配当前 Windsurf 版本的 extension.js（首次使用/Windsurf 升级后常见）。请确认 Windsurf 版本，或点击\"重新打补丁\"按钮尝试从备份还原后再应用。".to_string());
-=======
         } else {
             return Err(
                 "补丁规则未能匹配当前 Windsurf 版本的 extension.js（首次使用/Windsurf 升级后常见）。\
@@ -350,7 +300,6 @@ pub async fn apply_seamless_patch(
                     .to_string(),
             );
         }
->>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
     }
     
     // 5. 确认需要打补丁后，才管理和创建备份文件
@@ -409,11 +358,7 @@ pub async fn apply_seamless_patch(
     settings.patch_backup_path = Some(backup_file.to_string_lossy().to_string());
     data_store.update_settings(settings).await.map_err(|e| e.to_string())?;
     
-<<<<<<< HEAD
-    // 8. 重启Windsurf（使用保存的路径）
-=======
     // 8. 重启Windsurf
->>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
     restart_windsurf(Some(&windsurf_path)).await?;
     
     Ok(serde_json::json!({
@@ -469,12 +414,6 @@ pub async fn restore_seamless_patch(
     }))
 }
 
-<<<<<<< HEAD
-/// 检查文件是否包含补丁特征（是否已打过补丁）
-fn is_file_patched(file_path: &Path) -> bool {
-    if let Ok(content) = fs::read_to_string(file_path) {
-        content.contains("Failed to handle OAuth callback")
-=======
 /// 字节级 contains：在 haystack 中查找 needle 子序列
 fn bytes_contains(haystack: &[u8], needle: &[u8]) -> bool {
     if needle.is_empty() {
@@ -511,7 +450,6 @@ fn is_file_patched(file_path: &Path) -> bool {
     // 进而错误地把一个其实已经打过补丁的文件当成"干净的备份"返回。
     if let Ok(content) = fs::read(file_path) {
         bytes_contains(&content, b"Failed to handle OAuth callback")
->>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
     } else {
         false
     }
@@ -728,11 +666,7 @@ async fn restart_windsurf(windsurf_path: Option<&str>) -> Result<(), String> {
     Err("不支持的操作系统".to_string())
 }
 
-<<<<<<< HEAD
-/// 获取快捷方式搜索目录列表
-=======
 /// 获取快捷方式搜索目录列表 (Windows)
->>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
 #[cfg(target_os = "windows")]
 fn get_shortcut_search_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
@@ -762,11 +696,7 @@ fn get_shortcut_search_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-<<<<<<< HEAD
-/// 在指定目录中查找 Windsurf 快捷方式
-=======
 /// 在指定目录中查找 Windsurf 快捷方式 (Windows)
->>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
 #[cfg(target_os = "windows")]
 fn find_windsurf_shortcut(dir: &Path) -> Result<PathBuf, String> {
     if !dir.exists() {
@@ -793,119 +723,3 @@ fn find_windsurf_shortcut(dir: &Path) -> Result<PathBuf, String> {
     
     Err(format!("在 {:?} 中未找到 Windsurf 快捷方式", dir))
 }
-<<<<<<< HEAD
-
-/// 获取 Windsurf 数据目录列表（跨平台）
-fn get_windsurf_data_dirs() -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-    
-    #[cfg(target_os = "windows")]
-    {
-        // %APPDATA%\Windsurf
-        if let Ok(appdata) = std::env::var("APPDATA") {
-            dirs.push(PathBuf::from(&appdata).join("Windsurf"));
-        }
-        // %USERPROFILE%\.codeium\windsurf
-        if let Ok(userprofile) = std::env::var("USERPROFILE") {
-            dirs.push(PathBuf::from(&userprofile).join(".codeium").join("windsurf"));
-        }
-        // %LOCALAPPDATA%\Windsurf (Electron cache)
-        if let Ok(localappdata) = std::env::var("LOCALAPPDATA") {
-            dirs.push(PathBuf::from(&localappdata).join("Windsurf"));
-        }
-    }
-    
-    #[cfg(target_os = "macos")]
-    {
-        if let Ok(home) = std::env::var("HOME") {
-            // ~/Library/Application Support/Windsurf
-            dirs.push(PathBuf::from(&home).join("Library").join("Application Support").join("Windsurf"));
-            // ~/.codeium/windsurf
-            dirs.push(PathBuf::from(&home).join(".codeium").join("windsurf"));
-            // ~/.config/Windsurf
-            dirs.push(PathBuf::from(&home).join(".config").join("Windsurf"));
-            // ~/Library/Caches/Windsurf
-            dirs.push(PathBuf::from(&home).join("Library").join("Caches").join("Windsurf"));
-        }
-    }
-    
-    #[cfg(target_os = "linux")]
-    {
-        if let Ok(home) = std::env::var("HOME") {
-            // ~/.config/Windsurf
-            dirs.push(PathBuf::from(&home).join(".config").join("Windsurf"));
-            // ~/.codeium/windsurf
-            dirs.push(PathBuf::from(&home).join(".codeium").join("windsurf"));
-            // ~/.local/share/Windsurf
-            dirs.push(PathBuf::from(&home).join(".local").join("share").join("Windsurf"));
-            // ~/.cache/Windsurf
-            dirs.push(PathBuf::from(&home).join(".cache").join("Windsurf"));
-        }
-    }
-    
-    dirs
-}
-
-/// 初始化 Windsurf（清除所有配置、缓存和用户数据）
-#[command]
-pub async fn reset_windsurf() -> Result<serde_json::Value, String> {
-    let dirs = get_windsurf_data_dirs();
-    let mut deleted_dirs: Vec<String> = Vec::new();
-    let mut failed_dirs: Vec<String> = Vec::new();
-    let mut skipped_dirs: Vec<String> = Vec::new();
-    
-    for dir in &dirs {
-        if dir.exists() {
-            match fs::remove_dir_all(dir) {
-                Ok(()) => {
-                    deleted_dirs.push(dir.to_string_lossy().to_string());
-                }
-                Err(e) => {
-                    failed_dirs.push(format!("{}: {}", dir.to_string_lossy(), e));
-                }
-            }
-        } else {
-            skipped_dirs.push(dir.to_string_lossy().to_string());
-        }
-    }
-    
-    if !failed_dirs.is_empty() && deleted_dirs.is_empty() {
-        // 全部失败
-        Ok(serde_json::json!({
-            "success": false,
-            "message": format!("初始化失败，无法删除以下目录:\n{}", failed_dirs.join("\n")),
-            "deleted": deleted_dirs,
-            "failed": failed_dirs,
-            "skipped": skipped_dirs,
-        }))
-    } else if !failed_dirs.is_empty() {
-        // 部分成功
-        Ok(serde_json::json!({
-            "success": true,
-            "message": format!("部分初始化完成，已删除 {} 个目录，{} 个目录删除失败", deleted_dirs.len(), failed_dirs.len()),
-            "deleted": deleted_dirs,
-            "failed": failed_dirs,
-            "skipped": skipped_dirs,
-        }))
-    } else if deleted_dirs.is_empty() {
-        // 没有找到任何数据目录
-        Ok(serde_json::json!({
-            "success": true,
-            "message": "Windsurf 数据目录不存在，无需初始化",
-            "deleted": deleted_dirs,
-            "failed": failed_dirs,
-            "skipped": skipped_dirs,
-        }))
-    } else {
-        // 全部成功
-        Ok(serde_json::json!({
-            "success": true,
-            "message": format!("Windsurf 已初始化，已清除 {} 个数据目录", deleted_dirs.len()),
-            "deleted": deleted_dirs,
-            "failed": failed_dirs,
-            "skipped": skipped_dirs,
-        }))
-    }
-}
-=======
->>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca

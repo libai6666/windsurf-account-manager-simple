@@ -1,11 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
-<<<<<<< HEAD
 
-import type { Account, Settings, OperationLog, UpdateSeatsResult, BillingInfo, BatchResult, GlobalTag, SortField, SortDirection, SortConfig } from '@/types';
-
-=======
 import type { Account, Settings, OperationLog, UpdateSeatsResult, BillingInfo, BatchResult, GlobalTag, SortField, SortDirection, SortConfig, MachineIdRecord } from '@/types';
->>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
 import type { AnalyticsData } from '@/types/analytics';
 
 
@@ -167,7 +162,6 @@ export const apiService = {
     is_disabled?: boolean;
 
     is_team_owner?: boolean;
-<<<<<<< HEAD
 
     daily_quota_remaining?: number;
 
@@ -181,12 +175,6 @@ export const apiService = {
 
     trial_eligible?: boolean;
 
-=======
-    daily_quota_remaining?: number;
-    weekly_quota_remaining?: number;
-    daily_quota_reset?: number;
-    weekly_quota_reset?: number;
->>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
   }> {
 
     return await invoke('refresh_token', { id });
@@ -677,28 +665,6 @@ export const apiService = {
 
   },
 
-<<<<<<< HEAD
-=======
-  /**
-   * 自动换号检测：检查当前账号配额，低于阈值时自动切换
-   */
-  async checkAutoSwitch(): Promise<{
-    action: 'skip' | 'switched' | 'no_candidate' | 'error';
-    reason?: string;
-    from_account?: string;
-    from_daily_remaining?: number;
-    from_weekly_remaining?: number;
-    to_account?: string;
-    to_account_id?: string;
-    to_daily_remaining?: number;
-    to_weekly_remaining?: number;
-    current_account?: string;
-    daily_remaining?: number;
-    weekly_remaining?: number;
-  }> {
-    return await invoke('check_auto_switch');
-  },
->>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
   
 
   /**
@@ -767,9 +733,6 @@ export const apiService = {
 
 };
 
-<<<<<<< HEAD
-
-=======
 // 机器设备码管理API
 export const machineIdApi = {
   /**
@@ -846,7 +809,6 @@ export const machineIdApi = {
     return await invoke('toggle_machine_id_bookmark', { id, bookmarked });
   },
 };
->>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
 
 // 设置管理API
 

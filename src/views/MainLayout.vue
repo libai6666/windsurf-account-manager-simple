@@ -67,7 +67,6 @@
           <template #title>统计信息</template>
         </el-menu-item>
         
-<<<<<<< HEAD
         <el-menu-item index="auto-reset" @click="showAutoResetDialog = true">
           <el-icon><Timer /></el-icon>
           <template #title>自动重置</template>
@@ -83,13 +82,11 @@
           <template #title>协议绑卡</template>
         </el-menu-item>
         
-        <el-menu-item index="about" @click="showAboutDialog">
+        <el-menu-item index="about" @click="showAbout = true">
           <el-icon><InfoFilled /></el-icon>
           <template #title>关于</template>
         </el-menu-item>
         
-=======
->>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
         <el-menu-item index="settings" @click="uiStore.openSettingsDialog">
           <el-icon><Setting /></el-icon>
           <template #title>设置</template>
@@ -107,13 +104,8 @@
 
     <!-- 主内容区 -->
     <el-container>
-<<<<<<< HEAD
-      <!-- 顶部操作栏 -->
-      <el-header :class="['header', { 'header-compact': accountsStore.selectedAccounts.size > 0 }]">
-=======
       <!-- 顶部操作栏（非概览时显示） -->
-      <el-header v-show="activeMenu !== 'overview'" class="header">
->>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
+      <el-header v-show="activeMenu !== 'overview'" :class="['header', { 'header-compact': accountsStore.selectedAccounts.size > 0 }]">
         <div class="header-left">
           <el-input
             v-model="searchQuery"
@@ -516,7 +508,6 @@
     <StatsDialog />
     <AccountInfoDialog />
     
-<<<<<<< HEAD
     <!-- 关于对话框 -->
     <AboutDialog 
       v-model="showAbout"
@@ -532,8 +523,6 @@
     <!-- 协议绑卡对话框 -->
     <StripeBindDialog v-model="showStripeBindDialog" />
     
-=======
->>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
     <!-- 批量试用链接人机验证对话框 -->
     <TurnstileDialog
       v-model:visible="showBatchTurnstileDialog"
@@ -750,17 +739,17 @@ import {
   SortUp,
   SortDown,
   Link,
-<<<<<<< HEAD
   CircleClose,
   Ticket,
   Avatar,
   CircleCheck,
   Remove,
   Warning,
-  Stamp
-=======
-  Monitor
->>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
+  Stamp,
+  Monitor,
+  Timer,
+  CreditCard,
+  InfoFilled
 } from '@element-plus/icons-vue';
 import { useAccountsStore, useSettingsStore, useUIStore } from '@/store';
 import { apiService, settingsApi, accountApi } from '@/api';
@@ -778,18 +767,13 @@ import AccountInfoDialog from '@/components/AccountInfoDialog.vue';
 import BatchUpdatePlanDialog from '@/components/BatchUpdatePlanDialog.vue';
 import BatchCancelSubscriptionDialog from '@/components/BatchCancelSubscriptionDialog.vue';
 import TagManageDialog from '@/components/TagManageDialog.vue';
-<<<<<<< HEAD
 import AutoResetDialog from '@/components/AutoResetDialog.vue';
 import CardGeneratorDialog from '@/components/CardGeneratorDialog.vue';
 import StripeBindDialog from '@/components/StripeBindDialog.vue';
 import TurnstileDialog from '@/components/TurnstileDialog.vue';
 import BatchTrialLinksDialog from '@/components/BatchTrialLinksDialog.vue';
 import ConcurrentTurnstileDialog from '@/components/ConcurrentTurnstileDialog.vue';
-=======
-import TurnstileDialog from '@/components/TurnstileDialog.vue';
-import BatchTrialLinksDialog from '@/components/BatchTrialLinksDialog.vue';
 import DeviceManagerPanel from '@/components/DeviceManagerPanel.vue';
->>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
 import type { TrialLinkItem } from '@/components/BatchTrialLinksDialog.vue';
 import logger from '@/utils/logger';
 
@@ -804,11 +788,8 @@ const billingLoading = ref(false);
 const currentWindsurfEmail = ref<string>('');
 const windsurfVersion = ref<string>('');
 const showBatchUpdatePlanDialog = ref(false);
-<<<<<<< HEAD
 const showBatchCancelSubscriptionDialog = ref(false);
 const showAbout = ref(false);
-=======
->>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
 const showTagManageDialog = ref(false);
 const showBatchImportDialog = ref(false);
 const batchImportDialogRef = ref<InstanceType<typeof BatchImportDialog> | null>(null);
@@ -816,12 +797,9 @@ const appVersion = ref<string>('');  // 版本号从后端动态获取
 const showBatchGroupDialog = ref(false);
 const batchGroupTarget = ref('');
 const isBatchUpdatingGroup = ref(false);
-<<<<<<< HEAD
 const showAutoResetDialog = ref(false);
 const showCardGeneratorDialog = ref(false);
 const showStripeBindDialog = ref(false);
-=======
->>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
 const isBatchGettingTrialLinks = ref(false);
 const showBatchTurnstileDialog = ref(false);
 const pendingBatchTurnstileResolve = ref<((token: string) => void) | null>(null);
@@ -834,7 +812,7 @@ const batchTrialSelectedAccounts = ref<{ id: string; email: string; token?: stri
 const defaultConcurrencyCount = ref(4);
 const pendingApiCalls = ref(0);
 
-const BULK_IMPORT_MAX_CONCURRENCY = 4;
+const BULK_IMPORT_MAX_CONCURRENCY = 30;
 const BULK_REFRESH_CHUNK_SIZE = 30;
 const BULK_REFRESH_FALLBACK_CONCURRENCY = 30;
 
@@ -1660,7 +1638,7 @@ async function handleBatchImportConfirm(
 
       const postImportConcurrency = settingsStore.settings?.unlimitedConcurrentRefresh
         ? addedAccounts.length
-        : Math.min(concurrencyLimit, 3);
+        : concurrencyLimit;
       const postChunkResults = await runInChunks(
         addedAccounts,
         postImportConcurrency,

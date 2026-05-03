@@ -3,6 +3,7 @@ use std::process::Command;
 use std::sync::Arc;
 use crate::utils::card_generator::{CardGenerator, VirtualCard};
 use crate::repository::DataStore;
+use crate::services::{DevinService, WindsurfService};
 use serde_json::json;
 use std::fs;
 use uuid::Uuid;
@@ -13,7 +14,7 @@ pub async fn generate_virtual_card(data_store: State<'_, Arc<DataStore>>) -> Res
     let settings = data_store.get_settings().await.map_err(|e| e.to_string())?;
     let custom_bin = settings.custom_card_bin;
     let bin_range = settings.custom_card_bin_range;
-    
+
     // 使用自定义卡头或卡段范围生成虚拟卡
     Ok(CardGenerator::generate_card_with_bin_or_range(&custom_bin, bin_range.as_deref()))
 }
@@ -26,19 +27,19 @@ pub async fn open_payment_window(
 ) -> Result<String, String> {
     let window_label = format!("payment-{}", chrono::Utc::now().timestamp_millis());
     let window_title = format!("Stripe 支付页面 - {} (隐私模式)", account_name);
-    
+
     // 创建临时的用户数据目录（模拟Chrome的无痕模式）
     let temp_dir = std::env::temp_dir();
     let session_id = Uuid::new_v4().to_string();
     let user_data_dir = temp_dir.join(format!("windsurf_incognito_{}", session_id));
-    
+
     // 确保目录存在
     if !user_data_dir.exists() {
         fs::create_dir_all(&user_data_dir).map_err(|e| e.to_string())?;
     }
-    
+
     println!("[Incognito] 创建临时用户数据目录: {:?}", user_data_dir);
-    
+
     // 创建新的webview窗口（Chrome风格的无痕模式）
     let mut window_builder = WebviewWindowBuilder::new(
         &app,
@@ -53,38 +54,38 @@ pub async fn open_payment_window(
     .center()
     .incognito(true)  // 启用无痕模式
     .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.130 Safari/537.36");  // Chrome 120最新版UA
-    
+
     // 设置更多隐私相关的WebView选项
-    #[cfg(target_os = "windows")]  
+    #[cfg(target_os = "windows")]
     {
         // Windows特定：使用临时用户数据文件夹
         window_builder = window_builder
             .data_directory(user_data_dir.clone());  // 设置独立的数据目录
     }
-    
+
     let window = window_builder.build()
         .map_err(|e: tauri::Error| e.to_string())?;
-    
+
     // 注入Chrome无痕模式风格的隐私保护脚本
     let anti_fingerprint_script = r#"
         // Chrome Incognito Mode Privacy Protection
         (function() {
             'use strict';
-            
+
             console.log('[Chrome Incognito] Privacy protection script loaded');
-            
+
             // 1. 模拟Chrome无痕模式的API行为
             // 禁用本地存储跟踪
             const throwQuotaExceeded = () => {
                 throw new DOMException('The quota has been exceeded.', 'QuotaExceededError');
             };
-            
+
             // 限制localStorage和sessionStorage
             try {
                 window.localStorage.setItem = throwQuotaExceeded;
                 window.sessionStorage.setItem = throwQuotaExceeded;
             } catch (e) {}
-            
+
             // 2. 阻止WebRTC IP泄露
             const noop = () => {};
             const rtcBlocked = {
@@ -97,7 +98,7 @@ pub async fn open_payment_window(
                 getStats: () => Promise.resolve(new Map()),
                 close: noop
             };
-            
+
             if (window.RTCPeerConnection) {
                 window.RTCPeerConnection = function() { return rtcBlocked; };
                 window.RTCPeerConnection.prototype = rtcBlocked;
@@ -105,17 +106,17 @@ pub async fn open_payment_window(
             if (window.webkitRTCPeerConnection) {
                 window.webkitRTCPeerConnection = function() { return rtcBlocked; };
             }
-            
+
             // 3. Canvas指纹防护（Chrome风格）
             const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
             const originalToBlob = HTMLCanvasElement.prototype.toBlob;
             const originalGetImageData = CanvasRenderingContext2D.prototype.getImageData;
-            
+
             const addNoise = (canvas, context) => {
                 const width = canvas.width;
                 const height = canvas.height;
                 const imageData = originalGetImageData.call(context, 0, 0, width, height);
-                
+
                 // 添加极其微小的噪声，不影响视觉效果
                 for (let i = 0; i < imageData.data.length; i += 4) {
                     const noise = (Math.random() - 0.5) * 0.01;
@@ -125,7 +126,7 @@ pub async fn open_payment_window(
                 }
                 return imageData;
             };
-            
+
             HTMLCanvasElement.prototype.toDataURL = function(...args) {
                 const context = this.getContext('2d');
                 if (context) {
@@ -134,7 +135,7 @@ pub async fn open_payment_window(
                 }
                 return originalToDataURL.apply(this, args);
             };
-            
+
             HTMLCanvasElement.prototype.toBlob = function(callback, ...args) {
                 const context = this.getContext('2d');
                 if (context) {
@@ -143,7 +144,7 @@ pub async fn open_payment_window(
                 }
                 return originalToBlob.call(this, callback, ...args);
             };
-            
+
             // 4. 硬件和设备信息伪装（Chrome标准值）
             Object.defineProperties(navigator, {
                 hardwareConcurrency: { get: () => 8 },
@@ -152,28 +153,28 @@ pub async fn open_payment_window(
                 vendor: { get: () => 'Google Inc.' },
                 appVersion: { get: () => '5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.130 Safari/537.36' }
             });
-            
+
             // 5. WebGL指纹防护
             const getParameterProxyHandler = {
                 apply: function(target, thisArg, argumentsList) {
                     const parameter = argumentsList[0];
                     const originalValue = target.apply(thisArg, argumentsList);
-                    
+
                     // 返回通用硬件信息
                     if (parameter === 37445) return 'Intel Inc.'; // UNMASKED_VENDOR_WEBGL
                     if (parameter === 37446) return 'Intel Iris OpenGL Engine'; // UNMASKED_RENDERER_WEBGL
-                    
+
                     return originalValue;
                 }
             };
-            
+
             // 应用WebGL保护
             const hookWebGLGetParameter = (context) => {
                 if (context.getParameter) {
                     context.getParameter = new Proxy(context.getParameter, getParameterProxyHandler);
                 }
             };
-            
+
             // Hook WebGL 上下文创建
             const originalGetContext = HTMLCanvasElement.prototype.getContext;
             HTMLCanvasElement.prototype.getContext = function(type, ...args) {
@@ -183,38 +184,38 @@ pub async fn open_payment_window(
                 }
                 return context;
             };
-            
+
             // 6. 时区和语言伪装
             Object.defineProperty(Date.prototype, 'getTimezoneOffset', {
                 value: function() { return -480; } // UTC+8
             });
-            
+
             Object.defineProperty(navigator, 'language', {
                 get: () => 'zh-CN'
             });
-            
+
             Object.defineProperty(navigator, 'languages', {
                 get: () => ['zh-CN', 'zh', 'en-US', 'en']
             });
-            
+
             // 7. 禁用持久化存储API
             if (navigator.storage && navigator.storage.persist) {
                 navigator.storage.persist = () => Promise.resolve(false);
             }
-            
+
             if (navigator.storage && navigator.storage.estimate) {
                 navigator.storage.estimate = () => Promise.resolve({
                     quota: 1073741824, // 1GB
                     usage: 0
                 });
             }
-            
+
             // 8. 禁用通知API
             if (window.Notification) {
                 window.Notification.permission = 'denied';
                 window.Notification.requestPermission = () => Promise.resolve('denied');
             }
-            
+
             // 9. 添加Chrome无痕模式标识
             Object.defineProperty(window, 'chrome', {
                 get: () => {
@@ -227,16 +228,16 @@ pub async fn open_payment_window(
                     };
                 }
             });
-            
+
             console.log('[Chrome Incognito] All privacy protections activated');
         })();
     "#;
-    
+
     // 立即注入和延迟注入结合
     window.eval(anti_fingerprint_script).unwrap_or_else(|e| {
         println!("[Incognito] 初次注入失败: {}", e);
     });
-    
+
     // 延迟再次注入确保生效
     let window_clone = window.clone();
     let script_clone = anti_fingerprint_script.to_string();
@@ -244,17 +245,17 @@ pub async fn open_payment_window(
         std::thread::sleep(std::time::Duration::from_millis(300));
         let _ = window_clone.eval(&script_clone);
     });
-    
+
     // 添加窗口关闭事件监听，清理临时文件
     let window_label_clone = window_label.clone();
     let user_data_dir_clone = user_data_dir.clone();
     window.once("tauri://close-requested", move |_| {
         println!("[Incognito] 窗口关闭: {}", window_label_clone);
-        
+
         // 异步清理临时目录
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(500)); // 等待窗口完全关闭
-            
+
             if user_data_dir_clone.exists() {
                 match fs::remove_dir_all(&user_data_dir_clone) {
                     Ok(_) => println!("[Incognito] 临时数据已清理: {:?}", user_data_dir_clone),
@@ -263,7 +264,7 @@ pub async fn open_payment_window(
             }
         });
     });
-    
+
     Ok(window_label)
 }
 
@@ -278,14 +279,14 @@ pub async fn inject_card_info(
     let settings = data_store.get_settings().await.map_err(|e| e.to_string())?;
     let custom_bin = settings.custom_card_bin;
     let card_bin_range = settings.custom_card_bin_range;
-    
+
     // 获取本地BIN池
     let local_bin_pool = if settings.use_local_success_bins {
         get_success_bins(app.clone()).await.unwrap_or_default()
     } else {
         vec![]
     };
-    
+
     inject_card_info_internal(app, data_store.inner().clone(), window_label, card_info, card_bin_range, custom_bin, settings.card_bind_retry_times, settings.test_mode_enabled, settings.use_local_success_bins, local_bin_pool).await
 }
 
@@ -306,29 +307,29 @@ async fn inject_card_info_internal(
     // 获取窗口
     let window = app.get_webview_window(&window_label)
         .ok_or("Window not found".to_string())?;
-    
+
     // 稍微等待窗口稳定
     std::thread::sleep(std::time::Duration::from_millis(100));
-    
+
     let js_code = format!(r#"
         (function() {{
             console.log('[AutoFill] 脚本已注入，开始执行...');
-            
+
             // 快速填充 - React兼容版本
             function simulateTyping(element, value) {{
                 if (!element) return;
-                
+
                 // 直接设置值，不做多余日志
                 const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-                
+
                 element.focus();
                 nativeInputValueSetter.call(element, value);
-                
+
                 // 立即触发事件
-                element.dispatchEvent(new Event('input', {{ bubbles: true }})); 
+                element.dispatchEvent(new Event('input', {{ bubbles: true }}));
                 element.dispatchEvent(new Event('change', {{ bubbles: true }}));
             }}
-            
+
             // 设置下拉框的值
             function setSelectValue(element, value) {{
                 if (!element) return;
@@ -336,37 +337,37 @@ async fn inject_card_info_internal(
                 element.value = value;
                 element.dispatchEvent(new Event('change', {{ bubbles: true }}));
             }}
-            
+
             // 等待元素出现 - 快速版本
             function waitForElement(selector, callback, timeout = 10000) {{
                 const startTime = Date.now();
                 const checkElement = () => {{
                     // 尝试多种方式查找元素
                     let element = document.querySelector(selector);
-                    
+
                     // 如果通过ID找不到，尝试通过name属性
                     if (!element && selector.startsWith('#')) {{
                         const name = selector.substring(1);
-                        element = document.querySelector(`input[name="${{name}}"]`) || 
+                        element = document.querySelector(`input[name="${{name}}"]`) ||
                                  document.querySelector(`select[name="${{name}}"]`);
                     }}
-                    
+
                     // 尝试通过placeholder查找
                     if (!element) {{
                         if (selector === '#cardNumber') {{
                             element = document.querySelector('input[placeholder*="1234"]');
                         }} else if (selector === '#cardExpiry') {{
-                            element = document.querySelector('input[placeholder*="/"]') || 
+                            element = document.querySelector('input[placeholder*="/"]') ||
                                      document.querySelector('input[placeholder*="月"]');
                         }} else if (selector === '#cardCvc') {{
-                            element = document.querySelector('input[placeholder*="CVC"]') || 
+                            element = document.querySelector('input[placeholder*="CVC"]') ||
                                      document.querySelector('input[placeholder*="CVV"]');
                         }} else if (selector === '#billingName') {{
-                            element = document.querySelector('input[placeholder*="全名"]') || 
+                            element = document.querySelector('input[placeholder*="全名"]') ||
                                      document.querySelector('input[placeholder*="姓名"]');
                         }}
                     }}
-                    
+
                     if (element) {{
                         console.log('[AutoFill] ✓ 找到元素:', selector);
                         callback(element);
@@ -378,37 +379,37 @@ async fn inject_card_info_internal(
                 }};
                 checkElement();
             }}
-            
+
             // 填充表单的主函数
             function fillForm() {{
                 console.log('[AutoFill] 准备填写表单...');
                 console.log('[AutoFill] 当前URL:', window.location.href);
                 console.log('[AutoFill] 页面语言:', document.documentElement.lang);
-                
+
                 // 并行填写所有卡片信息字段
                 waitForElement('#cardNumber', (element) => {{
                     simulateTyping(element, '{}');
                 }});
-                
+
                 waitForElement('#cardExpiry', (element) => {{
                     simulateTyping(element, '{}');
                 }});
-                
+
                 waitForElement('#cardCvc', (element) => {{
                     simulateTyping(element, '{}');
                 }});
-                
+
                 waitForElement('#billingName', (element) => {{
                     simulateTyping(element, '{}');
                 }});
-                
+
                 // 并行处理地址信息
                 // 先选择国家（这个必须先做）
                 waitForElement('#billingCountry', (element) => {{
                     element.value = '{}';  // 国家代码
                     element.dispatchEvent(new Event('change', {{ bubbles: true }}));
                     console.log('✓ 已选择国家：{}');
-                    
+
                     // 国家选择后立即开始填写其他地址信息
                     setTimeout(() => {{
                         // 填写邮编
@@ -416,7 +417,7 @@ async fn inject_card_info_internal(
                             simulateTyping(element, '{}');
                             console.log('✓ 已填写邮编');
                         }});
-                        
+
                         // 填写省份（中国的省份选项需要等待加载）
                         waitForElement('#billingAdministrativeArea', (element) => {{
                             // 尝试找到匹配的省份选项
@@ -438,13 +439,13 @@ async fn inject_card_info_internal(
                                 element.dispatchEvent(new Event('change', {{ bubbles: true }}));
                             }}
                         }});
-                        
+
                         // 填写城市
                         waitForElement('#billingLocality', (element) => {{
                             simulateTyping(element, '{}');
                             console.log('✓ 已填写城市');
                         }});
-                        
+
                         // 填写地区（中国地址特有）
                         waitForElement('#billingDependentLocality', (element) => {{
                             const district = '{}';
@@ -453,13 +454,13 @@ async fn inject_card_info_internal(
                                 console.log('✓ 已填写地区:', district);
                             }}
                         }});
-                        
+
                         // 填写地址第一行
                         waitForElement('#billingAddressLine1', (element) => {{
                             simulateTyping(element, '{}');
                             console.log('✓ 已填写地址第1行');
                         }});
-                        
+
                         // 填写地址第二行
                         waitForElement('#billingAddressLine2', (element) => {{
                             const line2 = '{}';
@@ -471,12 +472,12 @@ async fn inject_card_info_internal(
                                 console.log('⚠️ 地址第2行为空，跳过填写');
                             }}
                         }});
-                        
+
                         console.log('[AutoFill] 🎉 表单填写完成！');
                     }}, 500); // 等待省份选项加载
                 }});
             }}
-            
+
             // 卡段范围配置（用于重试时生成新卡号）
             const cardBinRange = '{}';  // 格式: "626200-626300" 或空
             const defaultCardBin = '{}';  // 默认卡头
@@ -486,7 +487,7 @@ async fn inject_card_info_internal(
             const localBinPool = {};  // 本地BIN池内容
             let retryCount = 0;
             let currentSequentialBin = '{}';  // 当前顺序BIN（测试模式用）
-            
+
             // Luhn算法生成校验位
             function calculateLuhnCheckDigit(partialNumber) {{
                 let sum = 0;
@@ -502,7 +503,7 @@ async fn inject_card_info_internal(
                 }}
                 return (10 - (sum % 10)) % 10;
             }}
-            
+
             // 顺序获取下一个BIN（测试模式用）
             function getNextSequentialBin() {{
                 if (cardBinRange && cardBinRange.includes('-')) {{
@@ -510,7 +511,7 @@ async fn inject_card_info_internal(
                     const start = parseInt(startStr.trim(), 10);
                     const end = parseInt(endStr.trim(), 10);
                     const current = parseInt(currentSequentialBin, 10);
-                    
+
                     if (!isNaN(start) && !isNaN(end) && !isNaN(current) && end >= start) {{
                         let nextBin = current + 1;
                         if (nextBin > end) {{
@@ -523,7 +524,7 @@ async fn inject_card_info_internal(
                 }}
                 return defaultCardBin;
             }}
-            
+
             // 从卡段范围随机选择BIN
             function getRandomBin() {{
                 if (cardBinRange && cardBinRange.includes('-')) {{
@@ -537,7 +538,7 @@ async fn inject_card_info_internal(
                 }}
                 return defaultCardBin;
             }}
-            
+
             // 从本地BIN池随机选择
             function getRandomBinFromPool() {{
                 if (localBinPool && localBinPool.length > 0) {{
@@ -549,7 +550,7 @@ async fn inject_card_info_internal(
                 console.log('[AutoFill] BIN池为空，使用默认BIN');
                 return defaultCardBin;
             }}
-            
+
             // 获取BIN（根据模式选择）
             function getBin() {{
                 // 测试模式：顺序遍历
@@ -562,7 +563,7 @@ async fn inject_card_info_internal(
                 }}
                 return getRandomBin();
             }}
-            
+
             // 生成卡号（使用指定BIN）
             function generateCardNumberWithBin(bin) {{
                 const binLength = bin.length;
@@ -574,13 +575,13 @@ async fn inject_card_info_internal(
                 cardNumber += calculateLuhnCheckDigit(cardNumber);
                 return cardNumber;
             }}
-            
+
             // 生成随机卡号
             function generateCardNumber() {{
                 const bin = getBin();
                 return generateCardNumberWithBin(bin);
             }}
-            
+
             // 生成随机有效期
             function generateExpiryDate() {{
                 const currentYear = new Date().getFullYear();
@@ -588,28 +589,28 @@ async fn inject_card_info_internal(
                 const month = Math.floor(Math.random() * 12) + 1;
                 return `${{month.toString().padStart(2, '0')}}/${{(year % 100).toString().padStart(2, '0')}}`;
             }}
-            
+
             // 生成随机CVV
             function generateCvv() {{
                 return Math.floor(Math.random() * 900 + 100).toString();
             }}
-            
+
             // 清空并重新填写卡信息
             function clearAndRefillCard() {{
                 retryCount++;
                 console.log(`[AutoFill] 🔄 重试第 ${{retryCount}} 次...`);
-                
+
                 const newCardNumber = generateCardNumber();
                 const newExpiry = generateExpiryDate();
                 const newCvv = generateCvv();
-                
+
                 console.log('[AutoFill] 新卡号:', newCardNumber);
-                
+
                 // 清空并重新填写
                 const cardNumberEl = document.querySelector('#cardNumber') || document.querySelector('input[name="cardNumber"]');
                 const expiryEl = document.querySelector('#cardExpiry') || document.querySelector('input[name="cardExpiry"]');
                 const cvvEl = document.querySelector('#cardCvc') || document.querySelector('input[name="cardCvc"]');
-                
+
                 if (cardNumberEl) {{
                     cardNumberEl.value = '';
                     cardNumberEl.dispatchEvent(new Event('input', {{ bubbles: true }}));
@@ -625,7 +626,7 @@ async fn inject_card_info_internal(
                     cvvEl.dispatchEvent(new Event('input', {{ bubbles: true }}));
                     setTimeout(() => simulateTyping(cvvEl, newCvv), 300);
                 }}
-                
+
                 // 重新提交
                 setTimeout(() => {{
                     const submitBtn = document.querySelector('button[type="submit"]');
@@ -635,39 +636,39 @@ async fn inject_card_info_internal(
                     }}
                 }}, 1000);
             }}
-            
+
             // 监控提交结果（使用轮询方式，更可靠）
             let monitorInterval = null;
-            
+
             function monitorSubmitResult() {{
                 console.log('[AutoFill] 开始轮询监控提交结果...');
-                
+
                 monitorInterval = setInterval(() => {{
                     const submitBtn = document.querySelector('button[type="submit"]');
                     if (!submitBtn) return;
-                    
+
                     // 检查是否绑卡成功（检查按钮类名或勾选图标）
                     const hasSuccessClass = submitBtn.classList.contains('SubmitButton--success');
                     const hasCheckmark = submitBtn.querySelector('.SubmitButton-CheckmarkIcon--current');
-                    
+
                     if (hasSuccessClass || hasCheckmark) {{
                         console.log('[AutoFill] ✅ 绑卡成功！');
                         clearInterval(monitorInterval);
-                        
+
                         // 获取当前卡号的BIN（前6位）
                         let currentBin = '';
                         const cardInput = document.querySelector('#cardNumber') || document.querySelector('input[name="cardNumber"]');
                         if (cardInput && cardInput.value) {{
                             currentBin = cardInput.value.replace(/\D/g, '').substring(0, 6);
                         }}
-                        
+
                         // 通过修改 URL hash 发送成功信号（包含当前BIN）
                         window.location.hash = '#___PAYMENT_SUCCESS___BIN_' + currentBin;
                         document.title = '___PAYMENT_SUCCESS___';
                         console.log('[AutoFill] 已发送成功信号，当前BIN:', currentBin);
                         return;
                     }}
-                    
+
                     // 检查是否有错误提示（卡被拒绝、验证失败等）
                     // 优先检查特定的错误容器
                     let errorEl = document.querySelector('.ConfirmPaymentButton-Error');
@@ -683,19 +684,19 @@ async fn inject_card_info_internal(
                         );
                     }}
                     const errorText = errorEl ? errorEl.textContent.trim() : '';
-                    
+
                     // 调试日志
                     if (errorEl) {{
                         console.log('[AutoFill] 检测到错误元素:', errorEl.className);
                     }}
-                    
+
                     // 当按钮可点击且有错误信息时检查是否需要重试
                     if (errorText && !submitBtn.disabled) {{
                         // 检查是否是新的错误（通过时间戳判断，避免重复触发）
                         const now = Date.now();
                         if (!window.__lastRetryTime || now - window.__lastRetryTime > 3000) {{
                             console.log('[AutoFill] ❌ 绑卡失败，错误信息:', errorText);
-                            
+
                             if (retryCount < maxRetries) {{
                                 window.__lastRetryTime = now;
                                 console.log(`[AutoFill] 准备重试... (${{retryCount + 1}}/${{maxRetries}})`);
@@ -709,7 +710,7 @@ async fn inject_card_info_internal(
                         }}
                     }}
                 }}, 500); // 每500ms检测一次
-                
+
                 // 300秒后停止监控（超时保护）
                 setTimeout(() => {{
                     if (monitorInterval) {{
@@ -718,7 +719,7 @@ async fn inject_card_info_internal(
                     }}
                 }}, 300000);
             }}
-            
+
             // 快速启动填写
             const testElement = document.querySelector('input') || document.querySelector('select');
             if (testElement) {{
@@ -760,22 +761,22 @@ async fn inject_card_info_internal(
         serde_json::to_string(&local_bin_pool).unwrap_or_else(|_| "[]".to_string()),  // 本地BIN池
         custom_bin.clone()  // 当前顺序BIN（初始值）
     );
-    
+
     // 执行JavaScript代码
     window.eval(&js_code).map_err(|e| {
         eprintln!("执行JavaScript失败: {}", e);
         e.to_string()
     })?;
-    
+
     println!("[AutoFill] JavaScript已注入到窗口: {}", window_label);
-    
+
     // 提取当前卡号的 BIN（前6位，需要先移除空格）
     let current_bin = card_info.card_number
         .chars()
         .filter(|c| c.is_ascii_digit())
         .take(6)
         .collect::<String>();
-    
+
     // 启动后台任务监控绑卡结果
     let window_for_monitor = window.clone();
     let window_label_for_log = window_label.clone();
@@ -787,30 +788,30 @@ async fn inject_card_info_internal(
         println!("[AutoFill] 开始监控绑卡结果... (当前BIN: {})", bin_to_save);
         let mut check_count = 0;
         let max_checks = 600; // 最多检测300秒 (600 * 500ms)
-        
+
         // 等待表单填写完成
         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-        
+
         loop {
             tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
             check_count += 1;
-            
+
             if check_count > max_checks {
                 println!("[AutoFill] 监控超时，停止检测");
                 break;
             }
-            
+
             // 检查窗口是否还存在
             if !window_for_monitor.is_visible().unwrap_or(false) {
                 println!("[AutoFill] 窗口已关闭，停止监控");
                 break;
             }
-            
+
             // 直接执行 JS 检查按钮状态并关闭窗口
             let check_and_close_js = r#"
                 (function() {
                     var btn = document.querySelector('button[type="submit"]');
-                    if (btn && (btn.classList.contains('SubmitButton--success') || 
+                    if (btn && (btn.classList.contains('SubmitButton--success') ||
                                 btn.querySelector('.SubmitButton-CheckmarkIcon--current'))) {
                         console.log('[Rust监控] 检测到成功状态！');
                         // 标记成功
@@ -820,20 +821,20 @@ async fn inject_card_info_internal(
                     return false;
                 })();
             "#;
-            
+
             if let Err(e) = window_for_monitor.eval(check_and_close_js) {
                 println!("[AutoFill] 窗口已关闭或执行失败: {}", e);
                 break;
             }
-            
+
             // 检查 URL hash
             if let Ok(url) = window_for_monitor.url() {
                 let url_str = url.to_string();
-                
+
                 // 检测成功信号
                 if url_str.contains("___PAYMENT_SUCCESS___") {
                     println!("[AutoFill] ✅ 从 URL 检测到成功信号！关闭窗口: {}", window_label_for_log);
-                    
+
                     // 如果开启了测试模式，从URL hash中解析BIN并保存
                     if test_mode {
                         // 从 URL 中提取 BIN (格式: #___PAYMENT_SUCCESS___BIN_628296)
@@ -844,7 +845,7 @@ async fn inject_card_info_internal(
                         } else {
                             bin_to_save.clone()
                         };
-                        
+
                         if current_bin.len() == 6 && current_bin.chars().all(|c| c.is_ascii_digit()) {
                             // 保存到成功BIN池
                             if let Err(e) = add_success_bin(app_for_monitor.clone(), current_bin.clone()).await {
@@ -852,7 +853,7 @@ async fn inject_card_info_internal(
                             } else {
                                 println!("[AutoFill] 📝 已保存成功BIN: {}", current_bin);
                             }
-                            
+
                             // 更新进度（保存实际成功的BIN，下次从这个BIN+1开始）
                             if let Ok(mut settings) = data_store_for_monitor.get_settings().await {
                                 settings.test_mode_last_bin = Some(current_bin.clone());
@@ -864,19 +865,19 @@ async fn inject_card_info_internal(
                             }
                         }
                     }
-                    
+
                     tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
                     let _ = window_for_monitor.close();
                     break;
                 }
-                
+
                 // 检测失败信号（重试次数用完）
                 if url_str.contains("___PAYMENT_FAILED___") {
                     // 从 URL 中提取最后尝试的 BIN (格式: #___PAYMENT_FAILED___BIN_628296)
                     if let Some(bin_start) = url_str.find("BIN_") {
                         let bin_part = &url_str[bin_start + 4..];
                         let last_bin: String = bin_part.chars().take(6).collect();
-                        
+
                         if last_bin.len() == 6 && last_bin.chars().all(|c| c.is_ascii_digit()) {
                             println!("[AutoFill] ❌ 重试次数已用完，保存进度BIN: {}", last_bin);
                             // 保存进度
@@ -888,21 +889,21 @@ async fn inject_card_info_internal(
                             }
                         }
                     }
-                    
+
                     println!("[AutoFill] 关闭窗口: {}", window_label_for_log);
                     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
                     let _ = window_for_monitor.close();
                     break;
                 }
             }
-            
+
             // 每 10 次检查输出一次日志
             if check_count % 10 == 0 {
                 println!("[AutoFill] 检测中... ({}/{})", check_count, max_checks);
             }
         }
     });
-    
+
     Ok(())
 }
 
@@ -913,9 +914,9 @@ pub async fn validate_card_number(card_number: String) -> bool {
 
 /// 关闭支付窗口（绑卡成功后由前端调用）
 #[command]
-pub async fn close_payment_window(app: AppHandle) -> Result<(), String> {
+pub async fn close_payment_windows(app: AppHandle) -> Result<(), String> {
     println!("[Payment] 收到关闭窗口请求");
-    
+
     // 查找并关闭所有以 payment_ 开头的窗口
     for window in app.webview_windows().values() {
         let label = window.label();
@@ -924,8 +925,40 @@ pub async fn close_payment_window(app: AppHandle) -> Result<(), String> {
             let _ = window.close();
         }
     }
-    
+
     Ok(())
+}
+
+#[command]
+pub async fn close_payment_window(app: AppHandle) -> Result<(), String> {
+    close_payment_windows(app).await
+}
+
+async fn get_devin_checkout_result(
+    auth1_token: &str,
+    account_source: &str,
+    checkout_source: &str,
+    teams_tier: i32,
+    payment_period: i32,
+) -> Result<serde_json::Value, String> {
+    let devin_service = DevinService::new();
+    let (stripe_url, org_id, org_name) = devin_service
+        .get_trial_checkout_url(auth1_token)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(json!({
+        "success": true,
+        "stripe_url": stripe_url,
+        "stripe_session_id": WindsurfService::extract_checkout_session_id(&stripe_url),
+        "account_source": account_source,
+        "checkout_source": checkout_source,
+        "devin_org_id": org_id,
+        "devin_org_name": org_name,
+        "teams_tier": teams_tier,
+        "payment_period": payment_period,
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+    }))
 }
 
 /// 获取试用绑卡链接并可选地在内置浏览器中打开（增强版）
@@ -941,153 +974,17 @@ pub async fn get_trial_payment_link_enhanced(
     team_name: Option<String>,
     seat_count: Option<i32>,
     turnstile_token: Option<String>,
-<<<<<<< HEAD
     account_source: Option<String>,
     auth1_token: Option<String>,
     account_id: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    // === Devin 平台账号：走 app.devin.ai/api/billing/checkout ===
-    let mut stored_account = if let Some(account_id) = account_id.as_deref().filter(|s| !s.trim().is_empty()) {
-        match Uuid::parse_str(account_id) {
-            Ok(uuid) => data_store.get_account(uuid).await.ok(),
-            Err(e) => {
-                log::warn!("[get_trial_payment_link_enhanced] 无效账号ID {}: {}", account_id, e);
-                None
-            }
-        }
-    } else {
-        None
-    };
-    let effective_account_source = stored_account
-        .as_ref()
-        .and_then(|account| account.account_source.clone())
-        .or(account_source);
-    let effective_auth1_token = stored_account
-        .as_ref()
-        .and_then(|account| account.refresh_token.clone())
-        .or(auth1_token);
-    let is_devin = matches!(effective_account_source.as_deref(), Some("devin"));
-    log::info!(
-        "[get_trial_payment_link_enhanced] account_id={:?}, request_source={:?}, stored_source={:?}, effective_source={:?}, is_devin={}",
-        account_id,
-        effective_account_source.as_deref(),
-        stored_account.as_ref().and_then(|account| account.account_source.as_deref()),
-        effective_account_source.as_deref(),
-        is_devin
-    );
-    let result = if is_devin {
-        let auth1 = effective_auth1_token
-            .filter(|s| !s.is_empty())
-            .ok_or_else(|| "Devin 账号缺少 auth1 token (refresh_token)，请先登录".to_string())?;
-        let devin = crate::services::DevinService::new();
-        match devin.get_trial_checkout_url(auth1.as_str()).await {
-            Ok((stripe_url, org_id, org_name)) => {
-                let session_id = crate::services::WindsurfService::extract_checkout_session_id(&stripe_url);
-                json!({
-                    "success": true,
-                    "stripe_url": stripe_url,
-                    "subscription_url": stripe_url,
-                    "stripe_session_id": session_id,
-                    "org_id": org_id,
-                    "org_name": org_name,
-                    "teams_tier": 2,
-                    "payment_period": 1,
-                    "status_code": 200,
-                    "account_source": "devin",
-                    "timestamp": chrono::Utc::now().to_rfc3339(),
-                })
-            }
-            Err(e) => {
-                json!({
-                    "success": false,
-                    "error": e.to_string(),
-                    "account_source": "devin",
-                    "timestamp": chrono::Utc::now().to_rfc3339(),
-                })
-            }
-        }
-    } else {
-        // === Windsurf 平台账号：保持原有 SubscribeToPlan 流程 ===
-        let service = crate::services::windsurf_service::WindsurfService::new();
-        let effective_token = if let (Some(account_id_value), Some(account)) = (
-            account_id.as_deref().filter(|s| !s.trim().is_empty()),
-            stored_account.as_mut(),
-        ) {
-            if let Ok(uuid) = Uuid::parse_str(account_id_value) {
-                let force = account
-                    .refresh_token
-                    .as_ref()
-                    .map_or(false, |rt| rt.starts_with("auth1_"));
-                crate::commands::api_commands::ensure_valid_token_with_force(
-                    &data_store,
-                    account,
-                    uuid,
-                    force,
-                )
-                    .await?;
-            }
-            account.token.clone().unwrap_or_else(|| token.clone())
-        } else {
-            token.clone()
-        };
-        let effective_auth1_token = stored_account
-            .as_ref()
-            .and_then(|account| account.refresh_token.clone())
-            .or(effective_auth1_token);
-        let windsurf_auth1 = effective_auth1_token.as_deref().filter(|t| t.starts_with("auth1_"));
-        let mut result = service.subscribe_to_plan(
-            &effective_token,
-            windsurf_auth1,
-            teams_tier,
-            payment_period,
-            team_name.as_deref(),
-            seat_count,
-            turnstile_token.as_deref()
-        )
-            .await
-            .map_err(|e| e.to_string())?;
-        let windsurf_success = result.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
-        if !windsurf_success && teams_tier == 2 {
-            if let Some(auth1) = windsurf_auth1 {
-                log::info!("[get_trial_payment_link_enhanced] Windsurf SubscribeToPlan 失败，尝试 Devin checkout fallback");
-                let devin = crate::services::DevinService::new();
-                match devin.get_trial_checkout_url(auth1).await {
-                    Ok((stripe_url, org_id, org_name)) => {
-                        let session_id = crate::services::WindsurfService::extract_checkout_session_id(&stripe_url);
-                        result = json!({
-                            "success": true,
-                            "stripe_url": stripe_url,
-                            "subscription_url": stripe_url,
-                            "stripe_session_id": session_id,
-                            "org_id": org_id,
-                            "org_name": org_name,
-                            "teams_tier": 2,
-                            "payment_period": 1,
-                            "status_code": 200,
-                            "account_source": "windsurf",
-                            "checkout_source": "devin_fallback",
-                            "timestamp": chrono::Utc::now().to_rfc3339(),
-                        });
-                    }
-                    Err(e) => {
-                        log::warn!("[get_trial_payment_link_enhanced] Devin checkout fallback 失败: {}", e);
-                        if let Some(obj) = result.as_object_mut() {
-                            obj.insert("checkout_fallback".to_string(), json!("devin_failed"));
-                            obj.insert("fallback_error".to_string(), json!(e.to_string()));
-                        }
-                    }
-                }
-            }
-        }
-        result
-    };
-=======
-    account_id: Option<String>,
-) -> Result<serde_json::Value, String> {
-    // 如果提供了 account_id，先刷新 token 确保有效，并获取 auth1_token
-    let (effective_token, auth1_token) = if let Some(ref id) = account_id {
+    let mut effective_account_source = account_source.unwrap_or_else(|| "windsurf".to_string());
+    let (effective_token, effective_auth1_token) = if let Some(ref id) = account_id {
         let uuid = Uuid::parse_str(id).map_err(|e| e.to_string())?;
         let mut account = data_store.get_account(uuid).await.map_err(|e| e.to_string())?;
+        if let Some(source) = account.account_source.clone() {
+            effective_account_source = source;
+        }
         // 新账号 (auth1_) 强制刷新 token，确保 session_token 是最新的
         let force = account.refresh_token.as_ref().map_or(false, |rt| rt.starts_with("auth1_"));
         crate::commands::api_commands::ensure_valid_token_with_force(&data_store, &mut account, uuid, force).await?;
@@ -1095,31 +992,60 @@ pub async fn get_trial_payment_link_enhanced(
         let a1 = account.refresh_token.filter(|rt| rt.starts_with("auth1_"));
         (t, a1)
     } else {
-        (token, None)
+        (token, auth1_token.filter(|rt| rt.starts_with("auth1_")))
     };
 
-    // 获取WindsurfService实例
-    let service = crate::services::windsurf_service::WindsurfService::new();
-    
-    // 调用subscribe_to_plan方法获取支付链接
-    let result = service.subscribe_to_plan(
-        &effective_token,
-        auth1_token.as_deref(),
-        teams_tier,
-        payment_period,
-        team_name.as_deref(),
-        seat_count,
-        turnstile_token.as_deref()
-    )
-        .await
-        .map_err(|e| e.to_string())?;
->>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
-    
+    let result = if effective_account_source == "devin" && teams_tier == 2 {
+        if let Some(auth1) = effective_auth1_token.as_deref() {
+            get_devin_checkout_result(auth1, "devin", "devin", teams_tier, payment_period).await?
+        } else {
+            return Err("Devin 账号缺少 auth1 token，无法获取试用链接".to_string());
+        }
+    } else {
+        let service = WindsurfService::new();
+        let result = match service.subscribe_to_plan(
+            &effective_token,
+            effective_auth1_token.as_deref(),
+            teams_tier,
+            payment_period,
+            team_name.as_deref(),
+            seat_count,
+            turnstile_token.as_deref()
+        ).await {
+            Ok(result) => result,
+            Err(e) => {
+                if effective_account_source == "windsurf" && teams_tier == 2 {
+                    if let Some(auth1) = effective_auth1_token.as_deref() {
+                        get_devin_checkout_result(auth1, "windsurf", "devin_fallback", teams_tier, payment_period).await?
+                    } else {
+                        return Err(e.to_string());
+                    }
+                } else {
+                    return Err(e.to_string());
+                }
+            }
+        };
+
+        let success = result.get("success")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        if !success && effective_account_source == "windsurf" && teams_tier == 2 {
+            if let Some(auth1) = effective_auth1_token.as_deref() {
+                get_devin_checkout_result(auth1, "windsurf", "devin_fallback", teams_tier, payment_period).await?
+            } else {
+                result
+            }
+        } else {
+            result
+        }
+    };
+
     // 检查是否成功
     let success = result.get("success")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-        
+
     if !success {
         return Ok(result);
     }
@@ -1131,15 +1057,15 @@ pub async fn get_trial_payment_link_enhanced(
             let window_label = open_payment_window(app.clone(), stripe_url.to_string(), account_name.clone())
                 .await
                 .map_err(|e| e.to_string())?;
-            
+
             // 获取设置中的自定义卡头和卡段范围并生成虚拟卡信息
             let settings = data_store.get_settings().await.map_err(|e| e.to_string())?;
             let custom_bin = settings.custom_card_bin;
             let bin_range = settings.custom_card_bin_range;
             let virtual_card = CardGenerator::generate_card_with_bin_or_range(&custom_bin, bin_range.as_deref());
-            
+
             println!("已在无痕模式下打开支付窗口: {}", window_label);
-            
+
             // 返回包含虚拟卡信息和窗口标签的结果
             return Ok(json!({
                 "success": true,
@@ -1148,33 +1074,21 @@ pub async fn get_trial_payment_link_enhanced(
                 "window_opened": true,
                 "window_label": window_label,
                 "incognito_mode": true,  // 标记使用了无痕模式
-                "teams_tier": if is_devin { 2 } else { teams_tier },
-                "payment_period": if is_devin { 1 } else { payment_period },
+                "teams_tier": teams_tier,
+                "payment_period": payment_period,
                 "account_name": account_name,
-                "account_source": if is_devin { "devin" } else { "windsurf" },
                 "timestamp": chrono::Utc::now().to_rfc3339(),
             }));
         }
     }
-    
+
     // 返回原始结果
     Ok(result)
 }
 
 /// 在系统默认浏览器中打开链接
 #[command]
-pub async fn open_external_link(url: String, browser_path: Option<String>) -> Result<(), String> {
-    // 如果指定了自定义浏览器路径，直接使用该路径打开
-    if let Some(ref path) = browser_path {
-        if !path.trim().is_empty() {
-            Command::new(path)
-                .arg(&url)
-                .spawn()
-                .map_err(|e| format!("打开自定义浏览器失败: {}", e))?;
-            return Ok(());
-        }
-    }
-    
+pub async fn open_external_link(url: String) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         Command::new("cmd")
@@ -1182,7 +1096,7 @@ pub async fn open_external_link(url: String, browser_path: Option<String>) -> Re
             .spawn()
             .map_err(|e| e.to_string())?;
     }
-    
+
     #[cfg(target_os = "macos")]
     {
         Command::new("open")
@@ -1190,7 +1104,7 @@ pub async fn open_external_link(url: String, browser_path: Option<String>) -> Re
             .spawn()
             .map_err(|e| e.to_string())?;
     }
-    
+
     #[cfg(target_os = "linux")]
     {
         Command::new("xdg-open")
@@ -1198,258 +1112,97 @@ pub async fn open_external_link(url: String, browser_path: Option<String>) -> Re
             .spawn()
             .map_err(|e| e.to_string())?;
     }
-    
+
     Ok(())
 }
 
 /// 在浏览器无痕模式中打开链接
 #[command]
-pub async fn open_external_link_incognito(url: String, browser_path: Option<String>) -> Result<(), String> {
-    open_in_incognito_new_window(&url, browser_path.as_deref())
+pub async fn open_external_link_incognito(url: String) -> Result<(), String> {
+    open_in_incognito_new_window(&url)
 }
 
 /// 在浏览器无痕模式的新窗口中打开链接（每个链接独立窗口）
 #[command]
-pub async fn open_external_link_incognito_new_window(url: String, browser_path: Option<String>) -> Result<(), String> {
-    open_in_incognito_new_window(&url, browser_path.as_deref())
+pub async fn open_external_link_incognito_new_window(url: String) -> Result<(), String> {
+    open_in_incognito_new_window(&url)
 }
 
 /// 内部函数：在无痕模式的新窗口中打开链接
-fn open_in_incognito_new_window(url: &str, browser_path: Option<&str>) -> Result<(), String> {
-    // 如果指定了自定义浏览器路径，使用该路径以无痕模式打开
-    if let Some(path) = browser_path {
-        if !path.trim().is_empty() {
-            // 根据浏览器可执行文件名判断无痕参数
-            let path_lower = path.to_lowercase();
-            let incognito_flag = if path_lower.contains("firefox") || path_lower.contains("librewolf") {
-                "-private-window"
-            } else if path_lower.contains("edge") || path_lower.contains("msedge") {
-                "-inprivate"
-            } else {
-                // Chrome、Brave、Vivaldi 等 Chromium 系浏览器
-                "--incognito"
-            };
-            
-            Command::new(path)
-                .args(&[incognito_flag, "--new-window", url])
-                .spawn()
-                .map_err(|e| format!("打开自定义浏览器失败: {}", e))?;
-            return Ok(());
-        }
-    }
-    
+fn open_in_incognito_new_window(url: &str) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         // 尝试使用 Chrome 无痕模式 + 新窗口
         let chrome_result = Command::new("cmd")
             .args(&["/C", "start", "chrome", "--incognito", "--new-window", url])
             .spawn();
-        
+
         if chrome_result.is_ok() {
             return Ok(());
         }
-        
+
         // 如果 Chrome 失败，尝试 Edge 无痕模式 + 新窗口
         let edge_result = Command::new("cmd")
             .args(&["/C", "start", "msedge", "-inprivate", "--new-window", url])
             .spawn();
-        
+
         if edge_result.is_ok() {
             return Ok(());
         }
-        
+
         // 如果都失败，回退到默认浏览器
         Command::new("cmd")
             .args(&["/C", "start", "", url])
             .spawn()
             .map_err(|e| e.to_string())?;
     }
-    
+
     #[cfg(target_os = "macos")]
     {
         // macOS 上尝试使用 Chrome 无痕模式 + 新窗口
         let chrome_result = Command::new("open")
             .args(&["-na", "Google Chrome", "--args", "--incognito", "--new-window", url])
             .spawn();
-        
+
         if chrome_result.is_ok() {
             return Ok(());
         }
-        
+
         // 回退到默认浏览器
         Command::new("open")
             .arg(url)
             .spawn()
             .map_err(|e| e.to_string())?;
     }
-    
+
     #[cfg(target_os = "linux")]
     {
         // Linux 上尝试使用 Chrome 无痕模式 + 新窗口
         let chrome_result = Command::new("google-chrome")
             .args(&["--incognito", "--new-window", url])
             .spawn();
-        
+
         if chrome_result.is_ok() {
             return Ok(());
         }
-        
+
         // 尝试 chromium
         let chromium_result = Command::new("chromium")
             .args(&["--incognito", "--new-window", url])
             .spawn();
-        
+
         if chromium_result.is_ok() {
             return Ok(());
         }
-        
+
         // 回退到默认浏览器
         Command::new("xdg-open")
             .arg(&url)
             .spawn()
             .map_err(|e| e.to_string())?;
     }
-    
-    Ok(())
-}
 
-/// 检测系统已安装的浏览器
-#[command]
-pub async fn detect_installed_browsers() -> Result<Vec<serde_json::Value>, String> {
-    let mut browsers: Vec<serde_json::Value> = Vec::new();
-    
-    #[cfg(target_os = "windows")]
-    {
-        use winreg::enums::*;
-        use winreg::RegKey;
-        
-        // 方法1: 从注册表 StartMenuInternet 读取已注册的浏览器
-        let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
-        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-        
-        let registry_paths = vec![
-            (&hklm, r"SOFTWARE\Clients\StartMenuInternet"),
-            (&hklm, r"SOFTWARE\WOW6432Node\Clients\StartMenuInternet"),
-            (&hkcu, r"SOFTWARE\Clients\StartMenuInternet"),
-        ];
-        
-        let mut found_paths: std::collections::HashSet<String> = std::collections::HashSet::new();
-        
-        for (root_key, reg_path) in &registry_paths {
-            if let Ok(key) = root_key.open_subkey(reg_path) {
-                for browser_name in key.enum_keys().filter_map(|k| k.ok()) {
-                    // 读取浏览器的可执行文件路径
-                    let command_path = format!(r"{}\shell\open\command", browser_name);
-                    if let Ok(cmd_key) = key.open_subkey(&command_path) {
-                        if let Ok(exe_path) = cmd_key.get_value::<String, _>("") {
-                            // 清理路径（可能包含引号和参数）
-                            let clean_path = exe_path.trim_matches('"').to_string();
-                            let clean_path = if let Some(idx) = clean_path.find(".exe") {
-                                clean_path[..idx + 4].to_string()
-                            } else {
-                                clean_path
-                            };
-                            
-                            // 检查文件是否存在且未重复
-                            let path_lower = clean_path.to_lowercase();
-                            if std::path::Path::new(&clean_path).exists() && !found_paths.contains(&path_lower) {
-                                found_paths.insert(path_lower.clone());
-                                
-                                // 根据路径推断浏览器名称
-                                let display_name = if path_lower.contains("chrome") && !path_lower.contains("chromium") {
-                                    "Google Chrome"
-                                } else if path_lower.contains("msedge") || path_lower.contains("edge") {
-                                    "Microsoft Edge"
-                                } else if path_lower.contains("firefox") {
-                                    "Mozilla Firefox"
-                                } else if path_lower.contains("brave") {
-                                    "Brave"
-                                } else if path_lower.contains("vivaldi") {
-                                    "Vivaldi"
-                                } else if path_lower.contains("opera") {
-                                    "Opera"
-                                } else if path_lower.contains("chromium") {
-                                    "Chromium"
-                                } else if path_lower.contains("librewolf") {
-                                    "LibreWolf"
-                                } else {
-                                    &browser_name
-                                };
-                                
-                                browsers.push(json!({
-                                    "name": display_name,
-                                    "path": clean_path
-                                }));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        
-        // 方法2: 补充扫描常见安装路径（注册表可能漏掉的）
-        let common_browsers = vec![
-            ("Google Chrome", vec![
-                r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-                r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-            ]),
-            ("Microsoft Edge", vec![
-                r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
-                r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
-            ]),
-            ("Mozilla Firefox", vec![
-                r"C:\Program Files\Mozilla Firefox\firefox.exe",
-                r"C:\Program Files (x86)\Mozilla Firefox\firefox.exe",
-            ]),
-            ("Brave", vec![
-                r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
-                r"C:\Program Files (x86)\BraveSoftware\Brave-Browser\Application\brave.exe",
-            ]),
-            ("Vivaldi", vec![
-                r"C:\Program Files\Vivaldi\Application\vivaldi.exe",
-                r"C:\Users\*\AppData\Local\Vivaldi\Application\vivaldi.exe",
-            ]),
-            ("Opera", vec![
-                r"C:\Program Files\Opera\launcher.exe",
-                r"C:\Program Files (x86)\Opera\launcher.exe",
-            ]),
-        ];
-        
-        for (name, paths) in common_browsers {
-            for path in paths {
-                if path.contains('*') {
-                    // 通配符路径，跳过（注册表方法已覆盖）
-                    continue;
-                }
-                let path_lower = path.to_lowercase();
-                if !found_paths.contains(&path_lower) && std::path::Path::new(path).exists() {
-                    found_paths.insert(path_lower);
-                    browsers.push(json!({
-                        "name": name,
-                        "path": path
-                    }));
-                }
-            }
-        }
-    }
-    
-    // 按名称排序，Chrome 和 Edge 优先
-    browsers.sort_by(|a, b| {
-        let name_a = a["name"].as_str().unwrap_or("");
-        let name_b = b["name"].as_str().unwrap_or("");
-        let priority = |name: &str| -> i32 {
-            match name {
-                "Google Chrome" => 0,
-                "Microsoft Edge" => 1,
-                "Mozilla Firefox" => 2,
-                "Brave" => 3,
-                _ => 10,
-            }
-        };
-        priority(name_a).cmp(&priority(name_b))
-    });
-    
-    Ok(browsers)
+    Ok(())
 }
 
 /// 自动填写支付表单
@@ -1466,7 +1219,7 @@ pub async fn auto_fill_payment_form(
     let bin_range = settings.custom_card_bin_range.clone();
     let mut use_test_mode_sequential = false;  // 标记是否使用测试模式顺序逻辑
     let mut use_local_bin_pool_mode = false;  // 标记是否使用本地BIN池模式
-    
+
     // 如果开启了使用本地BIN池，尝试从池中获取BIN（独立运行，不需要测试模式）
     if settings.use_local_success_bins {
         if let Ok(Some(success_bin)) = get_random_success_bin(app.clone()).await {
@@ -1484,16 +1237,16 @@ pub async fn auto_fill_payment_form(
         let fresh_settings = data_store.get_settings().await.map_err(|e| e.to_string())?;
         let last_bin = fresh_settings.test_mode_last_bin.as_deref();
         println!("[AutoFill] 测试模式 - 从设置读取的上次BIN: {:?}", last_bin);
-        
+
         let (next_bin, is_end) = CardGenerator::get_next_bin_from_range(
             &custom_bin,
             bin_range.as_deref(),
             last_bin,
         );
-        println!("[AutoFill] 测试模式 - 顺序获取BIN: {} (上次: {:?}, 是否到末尾: {})", 
+        println!("[AutoFill] 测试模式 - 顺序获取BIN: {} (上次: {:?}, 是否到末尾: {})",
             next_bin, last_bin, is_end);
         custom_bin = next_bin.clone();
-        
+
         // 保存当前BIN进度
         let mut new_settings = fresh_settings.clone();
         new_settings.test_mode_last_bin = Some(next_bin);
@@ -1501,7 +1254,7 @@ pub async fn auto_fill_payment_form(
             println!("[AutoFill] 保存BIN进度失败: {}", e);
         }
     }
-    
+
     // 如果没有提供虚拟卡信息，则生成一个新的
     let card = if let Some(card) = virtual_card {
         card
@@ -1520,14 +1273,14 @@ pub async fn auto_fill_payment_form(
     } else {
         CardGenerator::generate_card_with_bin_or_range(&custom_bin, bin_range.as_deref())
     };
-    
+
     // 获取本地BIN池（用于JS重试时随机选择）
     let local_bin_pool = if settings.use_local_success_bins {
         get_success_bins(app.clone()).await.unwrap_or_default()
     } else {
         vec![]
     };
-    
+
     // 注入卡信息（直接调用内部实现）
     // 测试模式下保留原始 bin_range，让 JS 可以计算下一个顺序 BIN
     let original_bin_range = settings.custom_card_bin_range.clone();
@@ -1543,7 +1296,7 @@ pub async fn auto_fill_payment_form(
         settings.use_local_success_bins,
         local_bin_pool,
     ).await?;
-    
+
     Ok(())
 }
 
@@ -1556,34 +1309,34 @@ pub async fn inject_auto_submit_script(
     // 获取窗口
     let window = app.get_webview_window(&window_label)
         .ok_or("Window not found".to_string())?;
-    
+
     // 构建自动提交的JavaScript代码
     let js_code = r#"
         (function() {
             console.log('[AutoSubmit] 自动提交脚本已注入');
-            
+
             // 等待提交按钮变为可点击状态
             function waitForSubmitButtonReady(timeout = 30000) {
                 const startTime = Date.now();
-                
+
                 return new Promise((resolve) => {
                     const checkButton = () => {
                         // 查找提交按钮
                         const submitButton = document.querySelector('button[type="submit"]');
-                        
+
                         if (submitButton) {
                             // 检查按钮是否包含 complete 类名
                             const isComplete = submitButton.classList.contains('SubmitButton--complete');
                             // 检查按钮文字
                             const buttonText = submitButton.querySelector('.SubmitButton-Text--current')?.textContent;
                             const isReady = buttonText?.includes('开始试用') || buttonText?.includes('Start trial');
-                            
+
                             console.log('[AutoSubmit] 按钮状态:', {
                                 isComplete,
                                 buttonText,
                                 disabled: submitButton.disabled
                             });
-                            
+
                             if (isComplete && !submitButton.disabled) {
                                 console.log('[AutoSubmit] ✅ 提交按钮已就绪');
                                 resolve(submitButton);
@@ -1592,7 +1345,7 @@ pub async fn inject_auto_submit_script(
                                 console.log('[AutoSubmit] ⏳ 等待按钮变为complete状态...');
                             }
                         }
-                        
+
                         // 检查是否超时
                         if (Date.now() - startTime > timeout) {
                             console.error('[AutoSubmit] ❌ 等待提交按钮超时');
@@ -1601,28 +1354,28 @@ pub async fn inject_auto_submit_script(
                             setTimeout(checkButton, 1000);
                         }
                     };
-                    
+
                     checkButton();
                 });
             }
-            
+
             // 自动提交流程
             async function autoSubmit() {
                 console.log('[AutoSubmit] 等待5秒后开始自动提交流程...');
                 await new Promise(resolve => setTimeout(resolve, 5000));
-                
+
                 console.log('[AutoSubmit] 🔍 正在等待提交按钮变为可点击状态...');
                 const submitButton = await waitForSubmitButtonReady();
-                
+
                 if (submitButton) {
                     // 滚动到按钮位置
                     submitButton.scrollIntoView({ behavior: 'smooth', block: 'center' });
                     await new Promise(resolve => setTimeout(resolve, 500));
-                    
+
                     // 点击提交按钮
                     console.log('[AutoSubmit] 🖱️ 点击提交按钮');
                     submitButton.click();
-                    
+
                     // 1秒后再次点击以确保提交
                     setTimeout(() => {
                         if (submitButton && !submitButton.disabled) {
@@ -1634,20 +1387,20 @@ pub async fn inject_auto_submit_script(
                     console.error('[AutoSubmit] ❌ 未找到可用的提交按钮');
                 }
             }
-            
+
             // 启动自动提交
             autoSubmit();
         })();
     "#.to_string();
-    
+
     // 执行JavaScript代码
     window.eval(&js_code).map_err(|e| {
         eprintln!("执行自动提交脚本失败: {}", e);
         e.to_string()
     })?;
-    
+
     println!("[AutoSubmit] 自动提交脚本已注入到窗口: {}", window_label);
-    
+
     Ok(())
 }
 
@@ -1668,7 +1421,7 @@ pub async fn get_success_bins(app: AppHandle) -> Result<Vec<String>, String> {
     if !file_path.exists() {
         return Ok(Vec::new());
     }
-    
+
     let content = fs::read_to_string(&file_path).map_err(|e| e.to_string())?;
     let bins: Vec<String> = serde_json::from_str(&content).unwrap_or_default();
     Ok(bins)
@@ -1678,7 +1431,7 @@ pub async fn get_success_bins(app: AppHandle) -> Result<Vec<String>, String> {
 #[command]
 pub async fn add_success_bin(app: AppHandle, bin: String) -> Result<(), String> {
     let file_path = get_success_bins_file_path(&app);
-    
+
     // 读取现有列表
     let mut bins: Vec<String> = if file_path.exists() {
         let content = fs::read_to_string(&file_path).unwrap_or_default();
@@ -1686,23 +1439,23 @@ pub async fn add_success_bin(app: AppHandle, bin: String) -> Result<(), String> 
     } else {
         Vec::new()
     };
-    
+
     // 检查是否已存在
     if !bins.contains(&bin) {
         bins.push(bin.clone());
-        
+
         // 确保目录存在
         if let Some(parent) = file_path.parent() {
             fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
-        
+
         // 保存到文件
         let content = serde_json::to_string_pretty(&bins).map_err(|e| e.to_string())?;
         fs::write(&file_path, content).map_err(|e| e.to_string())?;
-        
+
         println!("[BIN池] 已添加成功BIN: {}", bin);
     }
-    
+
     Ok(())
 }
 
@@ -1724,7 +1477,7 @@ pub async fn get_random_success_bin(app: AppHandle) -> Result<Option<String>, St
     if bins.is_empty() {
         return Ok(None);
     }
-    
+
     use rand::Rng;
     let mut rng = rand::thread_rng();
     let index = rng.gen_range(0..bins.len());
@@ -1741,15 +1494,15 @@ pub async fn reset_test_mode_progress(
     println!("[TestMode] 重置前 last_bin: {:?}", settings.test_mode_last_bin);
     settings.test_mode_last_bin = None;
     data_store.update_settings(settings.clone()).await.map_err(|e| e.to_string())?;
-    
+
     // 验证是否保存成功
     let verify = data_store.get_settings().await.map_err(|e| e.to_string())?;
     println!("[TestMode] 重置后验证 last_bin: {:?}", verify.test_mode_last_bin);
-    
+
     if verify.test_mode_last_bin.is_some() {
         return Err("重置失败：进度未能清除".to_string());
     }
-    
+
     println!("[TestMode] ✓ 已重置BIN遍历进度");
     Ok(())
 }
@@ -1762,38 +1515,3 @@ pub async fn get_test_mode_progress(
     let settings = data_store.get_settings().await.map_err(|e| e.to_string())?;
     Ok(settings.test_mode_last_bin)
 }
-
-/// 从 HTML 中移除 script/style 标签及其内容，只保留可见文本部分
-fn strip_script_tags(html: &str) -> String {
-    let mut result = html.to_string();
-    
-    // 移除 <script>...</script> 标签及内容（不区分大小写）
-    loop {
-        let lower = result.to_lowercase();
-        if let Some(start) = lower.find("<script") {
-            if let Some(end_offset) = lower[start..].find("</script>") {
-                let end = start + end_offset + "</script>".len();
-                result = format!("{}{}", &result[..start], &result[end..]);
-                continue;
-            }
-        }
-        break;
-    }
-    
-    // 同样移除 <style>...</style> 标签
-    loop {
-        let lower = result.to_lowercase();
-        if let Some(start) = lower.find("<style") {
-            if let Some(end_offset) = lower[start..].find("</style>") {
-                let end = start + end_offset + "</style>".len();
-                result = format!("{}{}", &result[..start], &result[end..]);
-                continue;
-            }
-        }
-        break;
-    }
-    
-    result
-}
-
-

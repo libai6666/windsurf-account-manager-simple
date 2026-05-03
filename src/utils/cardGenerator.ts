@@ -46,11 +46,8 @@ export async function getTrialPaymentLink(
   teamName?: string,
   seatCount?: number,
   turnstileToken?: string,
-<<<<<<< HEAD
   accountSource?: 'windsurf' | 'devin',
   auth1Token?: string,
-=======
->>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
   accountId?: string
 ): Promise<any> {
   return await invoke('get_trial_payment_link_enhanced', {
@@ -62,11 +59,8 @@ export async function getTrialPaymentLink(
     teamName,
     seatCount,
     turnstileToken,
-<<<<<<< HEAD
     accountSource,
     auth1Token,
-=======
->>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
     accountId
   });
 }

@@ -27,11 +27,7 @@ impl MachineIdStore {
         fs::create_dir_all(&app_data_dir)?;
         
         let file_path = app_data_dir.join("machine_ids.json");
-<<<<<<< HEAD
-        let records: Vec<MachineIdRecord> = if file_path.exists() {
-=======
         let records = if file_path.exists() {
->>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
             let data = fs::read_to_string(&file_path)?;
             serde_json::from_str(&data).unwrap_or_default()
         } else {

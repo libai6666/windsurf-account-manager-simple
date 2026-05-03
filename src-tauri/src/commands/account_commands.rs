@@ -87,20 +87,12 @@ pub async fn add_account_by_refresh_token(
         let (token, new_refresh_token, expires_at) = auth_service.refresh_token(&refresh_token)
             .await
             .map_err(|e| format!("刷新Token失败: {}", e))?;
-<<<<<<< HEAD
 
-=======
-        
->>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
         // Step 2: 使用 token 获取用户信息
         let account_info = auth_service.get_account_info(&token)
             .await
             .map_err(|e| format!("获取用户信息失败: {}", e))?;
-<<<<<<< HEAD
 
-=======
-        
->>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
         (token, new_refresh_token, expires_at, account_info.email.clone())
     };
     

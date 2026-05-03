@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 const FIREBASE_API_KEY: &str = "AIzaSyDsOl-1XpT5err0Tcnx8FFod1H8gVGIycY";
 
-// ============= Windsurf 2.0 Devin-Auth 登录相关结构 =============
+// ============= Windsurf 2.0 Devin-Auth 鐧诲綍鐩稿叧缁撴瀯 =============
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DevinLoginRequest {
@@ -21,7 +21,7 @@ pub struct DevinLoginResponse {
     pub email: String,
 }
 
-/// Windsurf 2.0 登录结果：包含 OTT（用于编辑器认证）和 session 信息
+/// Windsurf 2.0 鐧诲綍缁撴灉锛氬寘鍚?OTT锛堢敤浜庣紪杈戝櫒璁よ瘉锛夊拰 session 淇℃伅
 #[derive(Debug, Clone)]
 pub struct WindsurfAuthResult {
     pub ott: String,
@@ -124,13 +124,13 @@ pub struct AuthService {
 
 impl AuthService {
     pub fn new() -> Self {
-        // 使用专门用于 googleapis 的 HTTP 客户端（支持代理）
+        // 浣跨敤涓撻棬鐢ㄤ簬 googleapis 鐨?HTTP 瀹㈡埛绔紙鏀寔浠ｇ悊锛?
         Self {
             client: super::get_google_api_client(),
         }
     }
     
-    /// 重新获取客户端（用于代理配置更新后）
+    /// 閲嶆柊鑾峰彇瀹㈡埛绔紙鐢ㄤ簬浠ｇ悊閰嶇疆鏇存柊鍚庯級
     pub fn refresh_client(&mut self) {
         self.client = super::get_google_api_client();
     }
@@ -297,7 +297,7 @@ impl AuthService {
                 resp
             }
             Err(e) => {
-                // 检查是否是超时错误
+                // 妫€鏌ユ槸鍚︽槸瓒呮椂閿欒
                 if e.is_timeout() || e.is_connect() {
                     super::report_timeout_error();
                 } else {
@@ -310,7 +310,7 @@ impl AuthService {
         if !response.status().is_success() {
             let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
             
-            // 解析Firebase错误并提供友好提示
+            // 瑙ｆ瀽Firebase閿欒骞舵彁渚涘弸濂芥彁绀?
             if error_text.contains("TOO_MANY_ATTEMPTS_TRY_LATER") {
                 return Err(AppError::AuthFailed("登录尝试次数过多，请15-30分钟后再试".to_string()));
             } else if error_text.contains("INVALID_LOGIN_CREDENTIALS") {
@@ -326,7 +326,7 @@ impl AuthService {
 
         let sign_in_response: SignInResponse = response.json().await?;
         
-        // 计算Token过期时间
+        // 璁＄畻Token杩囨湡鏃堕棿
         let expires_in_secs: i64 = sign_in_response.expires_in.parse()
             .unwrap_or(3600);
         let expires_at = Utc::now() + Duration::seconds(expires_in_secs);
@@ -371,7 +371,7 @@ impl AuthService {
                 resp
             }
             Err(e) => {
-                // 检查是否是超时错误
+                // 妫€鏌ユ槸鍚︽槸瓒呮椂閿欒
                 if e.is_timeout() || e.is_connect() {
                     super::report_timeout_error();
                 } else {
@@ -384,7 +384,7 @@ impl AuthService {
         if !response.status().is_success() {
             let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
             
-            // 如果refresh token失败，返回特定错误
+            // 濡傛灉refresh token澶辫触锛岃繑鍥炵壒瀹氶敊璇?
             if error_text.contains("TOKEN_EXPIRED") || error_text.contains("INVALID_REFRESH_TOKEN") {
                 return Err(AppError::TokenExpired);
             }
@@ -394,7 +394,7 @@ impl AuthService {
 
         let refresh_response: RefreshTokenResponse = response.json().await?;
         
-        // 计算Token过期时间
+        // 璁＄畻Token杩囨湡鏃堕棿
         let expires_in_secs: i64 = refresh_response.expires_in.parse()
             .unwrap_or(3600);
         let expires_at = Utc::now() + Duration::seconds(expires_in_secs);
@@ -425,7 +425,7 @@ impl AuthService {
                 resp
             }
             Err(e) => {
-                // 检查是否是超时错误
+                // 妫€鏌ユ槸鍚︽槸瓒呮椂閿欒
                 if e.is_timeout() || e.is_connect() {
                     super::report_timeout_error();
                 } else {
@@ -458,18 +458,13 @@ impl AuthService {
     }
 
     pub fn should_refresh_token(expires_at: &DateTime<Utc>) -> bool {
-        // 如果Token在5分钟内过期，则刷新
+        // 濡傛灉Token鍦?鍒嗛挓鍐呰繃鏈燂紝鍒欏埛鏂?
         let buffer = Duration::minutes(5);
         Utc::now() + buffer >= *expires_at
     }
 
-<<<<<<< HEAD
-    /// Windsurf 2.0 兼容登录：返回与旧 sign_in 相同的 (token, refresh_token, expires_at) 格式
-    /// token = session_token（用于 API 调用），refresh_token = auth1_token（用于后续刷新）
-=======
-    /// 兼容登录：先尝试 Windsurf 2.0 (devin-auth)，失败则回退到 Firebase
-    /// 返回与旧 sign_in 相同的 (token, refresh_token, expires_at) 格式
->>>>>>> 8bd8dc7f9351f7d68f2aa0e67ad5a345970d0fca
+    /// Windsurf 2.0 鍏煎鐧诲綍锛氳繑鍥炰笌鏃?sign_in 鐩稿悓鐨?(token, refresh_token, expires_at) 鏍煎紡
+    /// token = session_token锛堢敤浜?API 璋冪敤锛夛紝refresh_token = auth1_token锛堢敤浜庡悗缁埛鏂帮級
     pub async fn sign_in_compat(&self, email: &str, password: &str) -> AppResult<(String, String, DateTime<Utc>)> {
         match self.sign_in_v2_session(email, password).await {
             Ok(result) => {
@@ -477,13 +472,13 @@ impl AuthService {
                 Ok((result.session_token, result.auth1_token, expires_at))
             }
             Err(e) => {
-                info!("[sign_in_compat] sign_in_v2_session 失败({}), 回退到 Firebase: {}", e, email);
+                info!("[sign_in_compat] sign_in_v2_session 澶辫触({}), 鍥為€€鍒?Firebase: {}", e, email);
                 self.sign_in(email, password).await
             }
         }
     }
 
-    // ============= Windsurf 2.0 新认证方法 =============
+    // ============= Windsurf 2.0 鏂拌璇佹柟娉?=============
 
     pub async fn sign_in_v2_session(&self, email: &str, password: &str) -> AppResult<WindsurfAuthResult> {
         info!("[sign_in_v2_session] Step 1: Calling _devin-auth/password/login for {}", email);
@@ -514,9 +509,9 @@ impl AuthService {
             let status = login_resp.status();
             let error_text = login_resp.text().await.unwrap_or_else(|_| "Unknown error".to_string());
             if error_text.contains("invalid_credentials") || error_text.contains("Invalid") || status.as_u16() == 401 {
-                return Err(AppError::AuthFailed("邮箱或密码错误，请检查后重试".to_string()));
+                return Err(AppError::AuthFailed("閭鎴栧瘑鐮侀敊璇紝璇锋鏌ュ悗閲嶈瘯".to_string()));
             }
-            return Err(AppError::AuthFailed(format!("登录失败({}): {}", status, error_text)));
+            return Err(AppError::AuthFailed(format!("鐧诲綍澶辫触({}): {}", status, error_text)));
         }
 
         let login_data: DevinLoginResponse = login_resp.json().await
@@ -571,8 +566,8 @@ impl AuthService {
         })
     }
 
-    /// Windsurf 2.0 登录：通过 devin-auth + WindsurfPostAuth + GetOneTimeAuthToken
-    /// 返回 WindsurfAuthResult，包含 OTT（用于 handleAuthToken 回调）
+    /// Windsurf 2.0 鐧诲綍锛氶€氳繃 devin-auth + WindsurfPostAuth + GetOneTimeAuthToken
+    /// 杩斿洖 WindsurfAuthResult锛屽寘鍚?OTT锛堢敤浜?handleAuthToken 鍥炶皟锛?
     pub async fn sign_in_v2(&self, email: &str, password: &str) -> AppResult<WindsurfAuthResult> {
         let mut result = self.sign_in_v2_session(email, password).await?;
 
@@ -585,8 +580,8 @@ impl AuthService {
         Ok(result)
     }
 
-    /// 使用 auth1_token 刷新 session_token（不获取 OTT）
-    /// 返回与旧 sign_in 相同的 (session_token, auth1_token, expires_at) 格式，便于替换 Firebase refresh_token 调用
+    /// 浣跨敤 auth1_token 鍒锋柊 session_token锛堜笉鑾峰彇 OTT锛?
+    /// 杩斿洖涓庢棫 sign_in 鐩稿悓鐨?(session_token, auth1_token, expires_at) 鏍煎紡锛屼究浜庢浛鎹?Firebase refresh_token 璋冪敤
     pub async fn refresh_session_with_auth1(&self, auth1_token: &str) -> AppResult<(String, String, DateTime<Utc>)> {
         info!("[refresh_session_with_auth1] Refreshing session via WindsurfPostAuth...");
 
@@ -619,7 +614,7 @@ impl AuthService {
         if !post_auth_resp.status().is_success() {
             let status = post_auth_resp.status();
             let error_text = post_auth_resp.text().await.unwrap_or_default();
-            // auth1 失效 -> TokenExpired，让调用方回退到密码登录
+            // auth1 澶辨晥 -> TokenExpired锛岃璋冪敤鏂瑰洖閫€鍒板瘑鐮佺櫥褰?
             if Self::is_invalid_devin_token_error(status, &error_text) {
                 warn!("[refresh_session_with_auth1] auth1_token expired: {}", error_text);
                 return Err(AppError::TokenExpired);
@@ -642,7 +637,7 @@ impl AuthService {
             .filter(|s| !s.is_empty())
             .ok_or_else(|| AppError::Api("WindsurfPostAuth: missing session_token (field 1)".to_string()))?;
 
-        // 服务端未返回新 auth1 时，继续沿用旧的（避免把 refresh_token 覆盖成空字符串）
+        // 鏈嶅姟绔湭杩斿洖鏂?auth1 鏃讹紝缁х画娌跨敤鏃х殑锛堥伩鍏嶆妸 refresh_token 瑕嗙洊鎴愮┖瀛楃涓诧級
         let refreshed_auth1 = fields
             .get(&3)
             .cloned()
@@ -653,7 +648,7 @@ impl AuthService {
         Ok((session_token, refreshed_auth1, expires_at))
     }
 
-    /// 使用 auth1_token 刷新 session 并获取新 OTT
+    /// 浣跨敤 auth1_token 鍒锋柊 session 骞惰幏鍙栨柊 OTT
     pub async fn refresh_ott(&self, auth1_token: &str) -> AppResult<WindsurfAuthResult> {
         info!("[refresh_ott] Refreshing OTT with auth1_token...");
         
@@ -715,7 +710,7 @@ impl AuthService {
         })
     }
 
-    /// 用现有的 session_token 获取一个新的 OTT（一次性令牌）
+    /// 鐢ㄧ幇鏈夌殑 session_token 鑾峰彇涓€涓柊鐨?OTT锛堜竴娆℃€т护鐗岋級
     pub async fn get_fresh_ott(&self, session_token: &str, auth1_token: Option<&str>) -> AppResult<String> {
         let ott = self.get_one_time_auth_token(
             session_token,
@@ -728,15 +723,15 @@ impl AuthService {
     }
 }
 
-// ============= Protobuf 编解码工具 =============
+// ============= Protobuf 缂栬В鐮佸伐鍏?=============
 
-/// 编码 protobuf 的 string 字段（field_number, string_value）
+/// 缂栫爜 protobuf 鐨?string 瀛楁锛坒ield_number, string_value锛?
 fn encode_protobuf_string(field_number: u32, value: &str) -> Vec<u8> {
     let tag = ((field_number << 3) | 2) as u8;
     let value_bytes = value.as_bytes();
     let mut result = Vec::with_capacity(1 + 5 + value_bytes.len());
     result.push(tag);
-    // 编码 varint 长度
+    // 缂栫爜 varint 闀垮害
     let mut len = value_bytes.len();
     loop {
         if len <= 0x7F {
@@ -750,7 +745,7 @@ fn encode_protobuf_string(field_number: u32, value: &str) -> Vec<u8> {
     result
 }
 
-/// 解析 protobuf 消息中的所有 string 字段
+/// 瑙ｆ瀽 protobuf 娑堟伅涓殑鎵€鏈?string 瀛楁
 fn parse_protobuf_fields(data: &[u8]) -> std::collections::HashMap<u32, String> {
     let mut fields = std::collections::HashMap::new();
     let mut i = 0;
@@ -787,7 +782,7 @@ fn parse_protobuf_fields(data: &[u8]) -> std::collections::HashMap<u32, String> 
                     if b & 0x80 == 0 { break; }
                 }
             }
-            _ => break, // 不支持的 wire type
+            _ => break, // 涓嶆敮鎸佺殑 wire type
         }
     }
     fields
