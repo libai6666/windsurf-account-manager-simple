@@ -689,6 +689,8 @@ export const apiService = {
 
     to_account_id?: string;
 
+    verified_editor_account?: string;
+
     to_daily_remaining?: number;
 
     to_weekly_remaining?: number;

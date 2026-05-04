@@ -10,17 +10,22 @@ const path = require('path');
 
 const ROOT_DIR = path.join(__dirname, '..');
 
+function readJsonFile(filePath) {
+  const content = fs.readFileSync(filePath, 'utf-8').replace(/^\uFEFF/, '');
+  return JSON.parse(content);
+}
+
 // 读取 tauri.conf.json 中的版本号
 function getVersion() {
   const tauriConfPath = path.join(ROOT_DIR, 'src-tauri', 'tauri.conf.json');
-  const content = JSON.parse(fs.readFileSync(tauriConfPath, 'utf-8'));
+  const content = readJsonFile(tauriConfPath);
   return content.version;
 }
 
 // 更新 package.json
 function updatePackageJson(version) {
   const filePath = path.join(ROOT_DIR, 'package.json');
-  const content = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+  const content = readJsonFile(filePath);
   if (content.version !== version) {
     content.version = version;
     fs.writeFileSync(filePath, JSON.stringify(content, null, 2) + '\n');
@@ -37,7 +42,7 @@ function updatePackageLockJson(version) {
     console.log(`⏭️  package-lock.json: 文件不存在，跳过`);
     return false;
   }
-  const content = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+  const content = readJsonFile(filePath);
   let changed = false;
   if (content.version !== version) {
     content.version = version;

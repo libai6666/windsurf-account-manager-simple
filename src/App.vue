@@ -63,6 +63,11 @@ async function runAutoSwitchCheck() {
       });
     } else if (result.action === 'error') {
       console.error('[自动换号] 错误:', result.reason);
+      ElNotification.error({
+        title: '自动换号失败',
+        message: result.reason || '自动换号执行失败',
+        duration: 8000,
+      });
     }
   } catch (e) {
     console.error('[自动换号] 异常:', e);

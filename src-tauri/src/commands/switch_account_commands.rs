@@ -1011,6 +1011,41 @@ pub fn is_root() -> bool {
     unsafe { libc::geteuid() == 0 }
 }
 
+async fn wait_for_windsurf_account(target_email: &str) -> Result<String, String> {
+    let mut last_email: Option<String> = None;
+    let mut last_error: Option<String> = None;
+
+    for attempt in 0..12 {
+        if attempt > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+
+        match crate::commands::windsurf_info::get_current_windsurf_info() {
+            Ok(info) => {
+                if let Some(email) = info.email {
+                    if email.eq_ignore_ascii_case(target_email) {
+                        return Ok(email);
+                    }
+                    last_email = Some(email);
+                } else {
+                    last_email = None;
+                }
+            }
+            Err(e) => {
+                last_error = Some(e.to_string());
+            }
+        }
+    }
+
+    if let Some(email) = last_email {
+        Err(format!("自动换号校验失败：编辑器当前账号仍是 {}，目标账号是 {}", email, target_email))
+    } else if let Some(error) = last_error {
+        Err(format!("自动换号校验失败：无法读取编辑器账号 ({})", error))
+    } else {
+        Err(format!("自动换号校验失败：未检测到编辑器当前账号，目标账号是 {}", target_email))
+    }
+}
+
 /// 自动换号检测命令
 /// 检查当前账号的每日配额和每周配额，满足以下任一条件时自动切换：
 /// 1. 每日配额低于阈值
@@ -1167,7 +1202,13 @@ pub async fn check_auto_switch(
                 crate::commands::machine_id_commands::auto_save_before_reset(&machine_id_store, editor_email.clone(), None).await;
                 let _ = reset_machine_id_internal().await;
             }
-            let _ = trigger_windsurf_callback(&app, &auth.callback_token).await;
+            if let Err(e) = trigger_windsurf_callback(&app, &auth.callback_token).await {
+                return Ok(json!({ "action": "error", "reason": format!("触发回调URL失败: {}", e), "to_account": target_email, "to_account_id": target_id.to_string() }));
+            }
+            let verified_email = match wait_for_windsurf_account(&target_email).await {
+                Ok(email) => email,
+                Err(e) => return Ok(json!({ "action": "error", "reason": e, "to_account": target_email, "to_account_id": target_id.to_string() })),
+            };
             let expires_at = Utc::now() + chrono::Duration::seconds(auth.expires_in.parse::<i64>().unwrap_or(3600));
             if let Some(refresh_token_new) = auth.refresh_token {
                 let _ = data_store.update_account_tokens(target_id, auth.access_token, refresh_token_new, expires_at).await;
@@ -1184,6 +1225,7 @@ pub async fn check_auto_switch(
                 "from_account": editor_email,
                 "to_account": target_email,
                 "to_account_id": target_id.to_string(),
+                "verified_editor_account": verified_email,
                 "to_daily_remaining": target_daily,
                 "to_weekly_remaining": target_weekly
             }));
@@ -1427,7 +1469,28 @@ pub async fn check_auto_switch(
     }
 
     // 无感切号：通过回调URL触发
-    let _ = trigger_windsurf_callback(&app, &auth.callback_token).await;
+    if let Err(e) = trigger_windsurf_callback(&app, &auth.callback_token).await {
+        return Ok(json!({
+            "action": "error",
+            "reason": format!("触发回调URL失败: {}", e),
+            "from_account": current_account.email,
+            "to_account": target_email,
+            "to_account_id": target_id.to_string()
+        }));
+    }
+
+    let verified_email = match wait_for_windsurf_account(&target_email).await {
+        Ok(email) => email,
+        Err(e) => {
+            return Ok(json!({
+                "action": "error",
+                "reason": e,
+                "from_account": current_account.email,
+                "to_account": target_email,
+                "to_account_id": target_id.to_string()
+            }));
+        }
+    };
 
     // 更新目标账号的token信息
     let expires_at = Utc::now() + chrono::Duration::seconds(auth.expires_in.parse::<i64>().unwrap_or(3600));
@@ -1452,6 +1515,7 @@ pub async fn check_auto_switch(
         "from_weekly_remaining": current_weekly_remaining,
         "to_account": target_email,
         "to_account_id": target_id.to_string(),
+        "verified_editor_account": verified_email,
         "to_daily_remaining": target_daily,
         "to_weekly_remaining": target_weekly
     }))

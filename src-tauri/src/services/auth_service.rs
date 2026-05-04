@@ -472,7 +472,7 @@ impl AuthService {
                 Ok((result.session_token, result.auth1_token, expires_at))
             }
             Err(e) => {
-                info!("[sign_in_compat] sign_in_v2_session 澶辫触({}), 鍥為€€鍒?Firebase: {}", e, email);
+                info!("[sign_in_compat] sign_in_v2_session 失败({}), 回退到 Firebase: {}", e, email);
                 self.sign_in(email, password).await
             }
         }
@@ -509,9 +509,9 @@ impl AuthService {
             let status = login_resp.status();
             let error_text = login_resp.text().await.unwrap_or_else(|_| "Unknown error".to_string());
             if error_text.contains("invalid_credentials") || error_text.contains("Invalid") || status.as_u16() == 401 {
-                return Err(AppError::AuthFailed("閭鎴栧瘑鐮侀敊璇紝璇锋鏌ュ悗閲嶈瘯".to_string()));
+                return Err(AppError::AuthFailed("邮箱或密码错误，请检查后重试".to_string()));
             }
-            return Err(AppError::AuthFailed(format!("鐧诲綍澶辫触({}): {}", status, error_text)));
+            return Err(AppError::AuthFailed(format!("登录失败({}): {}", status, error_text)));
         }
 
         let login_data: DevinLoginResponse = login_resp.json().await
