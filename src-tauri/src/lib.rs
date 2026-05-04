@@ -292,6 +292,15 @@ pub fn run() {
             commands::stripe_bind_cancel,
             commands::stripe_bind_generate_address,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|handle, event| {
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                if let Some(store) = handle.try_state::<Arc<DataStore>>() {
+                    if let Err(e) = tauri::async_runtime::block_on(store.flush_pending_saves()) {
+                        eprintln!("[Exit] Failed to flush pending saves: {}", e);
+                    }
+                }
+            }
+        });
 }

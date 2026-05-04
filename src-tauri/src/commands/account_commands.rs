@@ -16,7 +16,7 @@ pub async fn add_account(
     account_source: Option<String>,
     store: State<'_, Arc<DataStore>>,
 ) -> Result<Account, String> {
-    let mut account = store.add_account(email.clone(), password, nickname, group, account_source.clone())
+    let mut account = store.add_account_no_save(email.clone(), password, nickname, group, account_source.clone())
         .await
         .map_err(|e| e.to_string())?;
     
@@ -30,9 +30,10 @@ pub async fn add_account(
         }
     }
     
-    store.update_account(account.clone())
+    store.update_account_no_save(account.clone())
         .await
         .map_err(|e| e.to_string())?;
+    store.inner().request_save_coalesced();
     
     // 记录日志
     let log = OperationLog::new(
@@ -108,7 +109,7 @@ pub async fn add_account_by_refresh_token(
     // Step 3: 创建账号（使用空密码，因为我们有 refresh_token）
     let final_nickname = nickname.unwrap_or_else(|| email.split('@').next().unwrap_or(&email).to_string());
     
-    let mut account = store.add_account(email.clone(), String::new(), final_nickname, group, account_source.clone())
+    let mut account = store.add_account_no_save(email.clone(), String::new(), final_nickname, group, account_source.clone())
         .await
         .map_err(|e| e.to_string())?;
     
@@ -199,9 +200,10 @@ pub async fn add_account_by_refresh_token(
         }
     }
 
-    store.update_account(account.clone())
+    store.update_account_no_save(account.clone())
         .await
         .map_err(|e| e.to_string())?;
+    store.inner().request_save_coalesced();
     
     // 记录日志
     let log = OperationLog::new(
@@ -409,20 +411,25 @@ pub async fn delete_accounts_batch(
     ids: Vec<String>,
     store: State<'_, Arc<DataStore>>,
 ) -> Result<serde_json::Value, String> {
-    let mut success_count = 0;
     let mut failed_ids = Vec::new();
-    
+
+    let mut valid_ids = Vec::new();
     for id_str in ids {
-        if let Ok(uuid) = Uuid::parse_str(&id_str) {
-            if store.delete_account(uuid).await.is_ok() {
-                success_count += 1;
-            } else {
-                failed_ids.push(id_str);
-            }
-        } else {
-            failed_ids.push(id_str);
+        match Uuid::parse_str(&id_str) {
+            Ok(uuid) => valid_ids.push(uuid),
+            Err(_) => failed_ids.push(id_str),
         }
     }
+
+    let (deleted_ids, not_found_ids) = store.delete_accounts_batch(&valid_ids)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    for id in not_found_ids {
+        failed_ids.push(id.to_string());
+    }
+
+    let success_count = deleted_ids.len();
     
     // 记录批量操作日志
     let log = OperationLog::new(

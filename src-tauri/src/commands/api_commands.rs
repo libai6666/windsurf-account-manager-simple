@@ -629,9 +629,10 @@ pub async fn reset_credits(
     // 更新最后使用的座位数
     if let Some(used_seat_count) = result.get("seat_count_used").and_then(|v| v.as_i64()) {
         account.last_seat_count = Some(used_seat_count as i32);
-        store.update_account(account.clone())
+        store.update_account_no_save(account.clone())
             .await
             .map_err(|e| e.to_string())?;
+        store.inner().request_save_coalesced();
     }
 
     // 记录日志
@@ -920,9 +921,10 @@ async fn reset_credits_internal(
     // 更新最后使用的座位数
     if let Some(used_seat_count) = result.get("seat_count_used").and_then(|v| v.as_i64()) {
         account.last_seat_count = Some(used_seat_count as i32);
-        store.update_account(account.clone())
+        store.update_account_no_save(account.clone())
             .await
             .map_err(|e| e.to_string())?;
+        store.request_save_coalesced();
     }
 
     // 记录详细的操作日志

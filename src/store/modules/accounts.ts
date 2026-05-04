@@ -336,6 +336,18 @@ export const useAccountsStore = defineStore('accounts', () => {
     }
   }
 
+  function applyAccountUpdatesLocally(updates: Account[]) {
+    if (updates.length === 0) return;
+    const updateMap = new Map(updates.map(acc => [acc.id, acc]));
+    accounts.value = accounts.value.map(acc => {
+      const updated = updateMap.get(acc.id);
+      if (!updated) return acc;
+      return (updated.password === undefined && acc.password)
+        ? { ...updated, password: acc.password }
+        : updated;
+    });
+  }
+
   /**
    * 将账号加入批量更新队列（不立即触发UI更新）
    * 用于大量账号刷新时的性能优化
@@ -861,6 +873,7 @@ export const useAccountsStore = defineStore('accounts', () => {
     loadAccounts,
     addAccount,
     updateAccount,
+    applyAccountUpdatesLocally,
     deleteAccount,
     deleteSelectedAccounts,
     toggleAccountSelection,

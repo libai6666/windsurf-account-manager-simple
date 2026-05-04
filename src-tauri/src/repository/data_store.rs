@@ -1,9 +1,13 @@
 use crate::models::{Account, AppConfig, OperationLog};
 use crate::utils::{AppError, AppResult};
+use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::Arc;
-use tokio::sync::RwLock;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 use tauri::{Manager, Emitter};
 use chrono::Local;
@@ -23,6 +27,10 @@ pub struct DataStore {
     pub logs: Arc<RwLock<Vec<OperationLog>>>,
     logs_path: PathBuf,
     app_handle: tauri::AppHandle,
+    save_pending: Arc<AtomicBool>,
+    save_logs_pending: Arc<AtomicBool>,
+    save_coalesce_lock: Arc<Mutex<()>>,
+    save_logs_coalesce_lock: Arc<Mutex<()>>,
 }
 
 impl DataStore {
@@ -58,6 +66,10 @@ impl DataStore {
             logs: Arc::new(RwLock::new(logs)),
             logs_path,
             app_handle: app_handle.clone(),
+            save_pending: Arc::new(AtomicBool::new(false)),
+            save_logs_pending: Arc::new(AtomicBool::new(false)),
+            save_coalesce_lock: Arc::new(Mutex::new(())),
+            save_logs_coalesce_lock: Arc::new(Mutex::new(())),
         })
     }
 
@@ -207,6 +219,19 @@ impl DataStore {
         group: Option<String>,
         account_source: Option<String>,
     ) -> AppResult<Account> {
+        let account = self.add_account_no_save(email, password, nickname, group, account_source).await?;
+        self.save().await?;
+        Ok(account)
+    }
+
+    pub async fn add_account_no_save(
+        &self,
+        email: String,
+        password: String,
+        nickname: String,
+        group: Option<String>,
+        account_source: Option<String>,
+    ) -> AppResult<Account> {
         let mut config = self.config.write().await;
         
         // 检查邮箱是否已存在
@@ -242,7 +267,6 @@ impl DataStore {
         config.accounts.push(account.clone());
         drop(config); // 释放写锁
         
-        self.save().await?;
         Ok(account)
     }
 
@@ -316,6 +340,34 @@ impl DataStore {
         self.save().await?;
         self.save_logs().await?;
         Ok(())
+    }
+
+    pub async fn delete_accounts_batch(&self, ids: &[Uuid]) -> AppResult<(Vec<Uuid>, Vec<Uuid>)> {
+        if ids.is_empty() {
+            return Ok((Vec::new(), Vec::new()));
+        }
+
+        let requested_ids: HashSet<Uuid> = ids.iter().copied().collect();
+        let mut config = self.config.write().await;
+        let existing_ids: HashSet<Uuid> = config.accounts.iter().map(|account| account.id).collect();
+        let deleted_ids: Vec<Uuid> = requested_ids.intersection(&existing_ids).copied().collect();
+        let not_found_ids: Vec<Uuid> = requested_ids.difference(&existing_ids).copied().collect();
+
+        if deleted_ids.is_empty() {
+            return Ok((deleted_ids, not_found_ids));
+        }
+
+        let deleted_set: HashSet<Uuid> = deleted_ids.iter().copied().collect();
+        config.accounts.retain(|account| !deleted_set.contains(&account.id));
+        drop(config);
+
+        let mut logs = self.logs.write().await;
+        logs.retain(|log| log.account_id.map_or(true, |id| !deleted_set.contains(&id)));
+        drop(logs);
+
+        self.save().await?;
+        self.save_logs().await?;
+        Ok((deleted_ids, not_found_ids))
     }
 
     pub async fn update_account_password(&self, id: Uuid, new_password: String) -> AppResult<()> {
@@ -401,6 +453,54 @@ impl DataStore {
     /// 手动触发保存（用于批量操作结束后）
     pub async fn flush(&self) -> AppResult<()> {
         self.save().await
+    }
+
+    pub fn request_save_coalesced(self: &Arc<Self>) {
+        if self.save_pending.swap(true, Ordering::SeqCst) {
+            return;
+        }
+
+        let store = self.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
+            let _guard = store.save_coalesce_lock.lock().await;
+            if store.save_pending.swap(false, Ordering::SeqCst) {
+                if let Err(e) = store.save().await {
+                    println!("[DataStore] Coalesced save failed: {}", e);
+                }
+            }
+        });
+    }
+
+    pub fn request_save_logs_coalesced(self: &Arc<Self>) {
+        if self.save_logs_pending.swap(true, Ordering::SeqCst) {
+            return;
+        }
+
+        let store = self.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
+            let _guard = store.save_logs_coalesce_lock.lock().await;
+            if store.save_logs_pending.swap(false, Ordering::SeqCst) {
+                if let Err(e) = store.save_logs().await {
+                    println!("[DataStore] Coalesced logs save failed: {}", e);
+                }
+            }
+        });
+    }
+
+    pub async fn flush_pending_saves(&self) -> AppResult<()> {
+        if self.save_pending.swap(false, Ordering::SeqCst) {
+            let _guard = self.save_coalesce_lock.lock().await;
+            self.save().await?;
+        }
+
+        if self.save_logs_pending.swap(false, Ordering::SeqCst) {
+            let _guard = self.save_logs_coalesce_lock.lock().await;
+            self.save_logs().await?;
+        }
+
+        Ok(())
     }
 
     pub async fn get_decrypted_password(&self, id: Uuid) -> AppResult<String> {

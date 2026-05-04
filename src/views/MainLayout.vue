@@ -1731,26 +1731,33 @@ async function handleBatchRefresh() {
     icon: Loading
   });
   
-  const applyRefreshResult = async (item: any) => {
+  const pendingLocalUpdates = new Map<string, Account>();
+
+  const applyRefreshResult = (item: any) => {
+    const account = accountsStore.accounts.find(a => a.id === item.id);
+    if (!account) return;
+
+    const latestAccount: Account = { ...account };
     if (item.success && item.data) {
-      try {
-        const latestAccount = await accountApi.getAccount(item.id);
-        if (item.data.plan_name) latestAccount.plan_name = item.data.plan_name;
-        if (item.data.used_quota !== undefined) latestAccount.used_quota = item.data.used_quota;
-        if (item.data.total_quota !== undefined) latestAccount.total_quota = item.data.total_quota;
-        if (item.data.expires_at) latestAccount.token_expires_at = item.data.expires_at;
-        latestAccount.status = 'active';
-        latestAccount.last_quota_update = dayjs().toISOString();
-        await accountsStore.updateAccount(latestAccount);
-      } catch {
-        // 忽略单个账号的获取失败
-      }
+      if (item.data.plan_name) latestAccount.plan_name = item.data.plan_name;
+      if (item.data.used_quota !== undefined) latestAccount.used_quota = item.data.used_quota;
+      if (item.data.total_quota !== undefined) latestAccount.total_quota = item.data.total_quota;
+      if (item.data.expires_at) latestAccount.token_expires_at = item.data.expires_at;
+      if (item.data.windsurf_api_key) latestAccount.windsurf_api_key = item.data.windsurf_api_key;
+      if (item.data.is_disabled !== undefined) latestAccount.is_disabled = item.data.is_disabled;
+      if (item.data.is_team_owner !== undefined) latestAccount.is_team_owner = item.data.is_team_owner;
+      if (item.data.subscription_active !== undefined) latestAccount.subscription_active = item.data.subscription_active;
+      if (item.data.subscription_expires_at) latestAccount.subscription_expires_at = item.data.subscription_expires_at;
+      if (item.data.daily_quota_remaining !== undefined && item.data.daily_quota_remaining !== null) latestAccount.daily_quota_remaining = item.data.daily_quota_remaining;
+      if (item.data.weekly_quota_remaining !== undefined && item.data.weekly_quota_remaining !== null) latestAccount.weekly_quota_remaining = item.data.weekly_quota_remaining;
+      if (item.data.daily_quota_reset !== undefined && item.data.daily_quota_reset !== null) latestAccount.daily_quota_reset = item.data.daily_quota_reset;
+      if (item.data.weekly_quota_reset !== undefined && item.data.weekly_quota_reset !== null) latestAccount.weekly_quota_reset = item.data.weekly_quota_reset;
+      latestAccount.status = 'active';
+      latestAccount.last_quota_update = item.data.last_quota_update || dayjs().toISOString();
     } else {
-      const account = accountsStore.accounts.find(a => a.id === item.id);
-      if (account) {
-        await accountsStore.updateAccount({ ...account, status: 'error' as const });
-      }
+      latestAccount.status = 'error' as const;
     }
+    pendingLocalUpdates.set(item.id, latestAccount);
   };
 
   const refreshSingleWithRetry = async (id: string) => {
@@ -1761,7 +1768,7 @@ async function handleBatchRefresh() {
         const data = await apiService.refreshToken(id);
         if (data.success) {
           const result = { id, success: true, data };
-          await applyRefreshResult(result);
+          applyRefreshResult(result);
           return result;
         }
         lastError = data.message || 'Token刷新失败';
@@ -1771,7 +1778,7 @@ async function handleBatchRefresh() {
       await delay(700 + attempt * 600);
     }
     const failed = { id, success: false, error: lastError, email: account?.email };
-    await applyRefreshResult(failed);
+    applyRefreshResult(failed);
     return failed;
   };
 
@@ -1783,7 +1790,7 @@ async function handleBatchRefresh() {
         const result = await apiService.batchRefreshTokens(chunk);
         chunkResults = result.results || [];
         for (const item of chunkResults) {
-          await applyRefreshResult(item);
+          applyRefreshResult(item);
         }
       } catch (error) {
         console.error('批量刷新批次失败，降级为单账号刷新:', error);
@@ -1797,6 +1804,8 @@ async function handleBatchRefresh() {
         );
       }
       allResults.push(...chunkResults);
+      accountsStore.applyAccountUpdatesLocally(Array.from(pendingLocalUpdates.values()));
+      pendingLocalUpdates.clear();
       progressLoading.close();
       progressLoading = ElMessage({
         message: `刷新进度: ${Math.min(allResults.length, totalCount)}/${totalCount}`,
