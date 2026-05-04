@@ -729,6 +729,22 @@ impl DataStore {
         Ok(())
     }
 
+    pub async fn add_logs_batch(&self, logs_to_add: Vec<OperationLog>) -> AppResult<()> {
+        if logs_to_add.is_empty() {
+            return Ok(());
+        }
+
+        let mut logs = self.logs.write().await;
+        logs.extend(logs_to_add);
+        if logs.len() > 1000 {
+            let start = logs.len() - 1000;
+            logs.drain(0..start);
+        }
+        drop(logs);
+        self.save_logs().await?;
+        Ok(())
+    }
+
     pub async fn get_logs(&self, limit: Option<usize>) -> AppResult<Vec<OperationLog>> {
         let logs = self.logs.read().await;
         let logs_vec = logs.clone();

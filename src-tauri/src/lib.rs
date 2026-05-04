@@ -123,6 +123,7 @@ pub fn run() {
             // 账号管理命令
             commands::add_account,
             commands::add_account_by_refresh_token,
+            commands::batch_import_accounts,
             commands::get_all_accounts,
             commands::get_account,
             commands::update_account,

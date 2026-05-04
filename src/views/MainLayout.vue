@@ -752,7 +752,7 @@ import {
   InfoFilled
 } from '@element-plus/icons-vue';
 import { useAccountsStore, useSettingsStore, useUIStore } from '@/store';
-import { apiService, settingsApi, accountApi } from '@/api';
+import { apiService, settingsApi } from '@/api';
 import type { Account } from '@/types';
 import dayjs from 'dayjs';
 import AccountCard from '@/components/AccountCard.vue';
@@ -1390,327 +1390,87 @@ async function handleBatchImportConfirm(
   mode: 'password' | 'refresh_token' = 'password',
   accountSource: 'windsurf' | 'devin' = 'windsurf'
 ) {
-  const modeLabel = mode === 'refresh_token' ? 'Refresh Token' : '邮箱密码';
-  const targetGroup = group.trim() || '默认分组';
-  const shouldApplyTags = tags.length > 0;
-  const selectedAccountSource = accountSource;
-  const retryTimes = Math.max(settingsStore.settings?.retry_times ?? 2, 0);
-  
-  // 过滤已存在的账号（邮箱密码模式按邮箱过滤，Refresh Token模式按token过滤）
-  const existingEmails = new Set(accountsStore.accounts.map(a => a.email.toLowerCase()));
-  const existingTokens = new Set(accountsStore.accounts.map(a => a.refresh_token).filter(Boolean));
-  
-  let skippedCount = 0;
-  const filteredAccounts = accountsToImport.filter(item => {
-    if (mode === 'refresh_token' && item.refreshToken) {
-      // Refresh Token 模式：检查 token 是否已存在
-      if (existingTokens.has(item.refreshToken)) {
-        skippedCount++;
-        return false;
+  {
+    const modeLabel = mode === 'refresh_token' ? 'Refresh Token' : '邮箱密码';
+    const targetGroup = group.trim() || '默认分组';
+    const concurrencyLimit = getBatchConcurrency(accountsToImport.length, BULK_IMPORT_MAX_CONCURRENCY);
+    let progressMsg = ElMessage({
+      message: `正在后端批量导入 ${accountsToImport.length} 个账号（${modeLabel}模式，并发${concurrencyLimit}）...`,
+      duration: 0,
+      icon: Loading
+    });
+
+    try {
+      const result = await invoke<any>('batch_import_accounts', {
+        accounts: accountsToImport,
+        autoLogin,
+        group: targetGroup,
+        tags,
+        mode,
+        accountSource,
+        concurrentLimit: concurrencyLimit
+      });
+
+      progressMsg.close();
+      showBatchImportDialog.value = false;
+      batchImportDialogRef.value?.resetImporting();
+
+      const successCount = result.success_count ?? 0;
+      const failedCount = result.failed_count ?? 0;
+      const skippedCount = result.skipped_count ?? 0;
+      const loginSuccessCount = result.login_success_count ?? 0;
+      const offlineRetryTotal = result.offline_retry_total ?? 0;
+      const offlineRetrySuccess = result.offline_retry_success ?? 0;
+      const failedAccounts = (result.results || []).filter((item: any) => !item.success && !item.skipped);
+
+      if (successCount > 0) {
+        let message = `成功导入 ${successCount} 个账号`;
+        if (autoLogin && loginSuccessCount > 0) {
+          message += `，${loginSuccessCount} 个已登录`;
+        }
+        if (skippedCount > 0) {
+          message += `，跳过 ${skippedCount} 个已存在`;
+        }
+        if (failedCount > 0) {
+          message += `，失败 ${failedCount} 个`;
+        }
+        if (offlineRetryTotal > 0) {
+          if (offlineRetrySuccess === offlineRetryTotal) {
+            message += `，离线重试成功 ${offlineRetrySuccess} 个`;
+          } else {
+            message += `，离线重试成功 ${offlineRetrySuccess}/${offlineRetryTotal}`;
+          }
+        }
+        ElMessage.success({
+          message,
+          duration: 4000,
+          showClose: true
+        });
+        await accountsStore.loadAccounts();
+      } else {
+        let errorMsg = '没有成功导入任何账号';
+        if (skippedCount > 0) {
+          errorMsg += `（跳过 ${skippedCount} 个已存在）`;
+        }
+        if (failedAccounts.length > 0) {
+          const details = failedAccounts.slice(0, 3).map((item: any) => item.email).join(', ');
+          errorMsg += `\n失败账号: ${details}${failedAccounts.length > 3 ? '...' : ''}`;
+        }
+        ElMessage.error({
+          message: errorMsg,
+          duration: 5000,
+          showClose: true
+        });
       }
-    } else {
-      // 邮箱密码模式：检查邮箱是否已存在
-      if (existingEmails.has(item.email.toLowerCase())) {
-        skippedCount++;
-        return false;
-      }
+    } catch (error) {
+      progressMsg.close();
+      showBatchImportDialog.value = false;
+      batchImportDialogRef.value?.resetImporting();
+      ElMessage.error(`批量导入失败: ${error}`);
     }
-    return true;
-  });
-  
-  // 如果所有账号都已存在
-  if (filteredAccounts.length === 0) {
-    ElMessage.warning(`所有 ${accountsToImport.length} 个账号都已存在，无需导入`);
-    showBatchImportDialog.value = false;
-    batchImportDialogRef.value?.resetImporting();
     return;
   }
-  
-  const concurrencyLimit = getBatchConcurrency(filteredAccounts.length, BULK_IMPORT_MAX_CONCURRENCY);
-  
-  // 显示进度提示（包含跳过信息）
-  const skipInfo = skippedCount > 0 ? `，跳过 ${skippedCount} 个已存在` : '';
-  let progressMsg = ElMessage({
-    message: `正在稳定导入 ${filteredAccounts.length} 个账号（${modeLabel}模式，并发${concurrencyLimit}）${skipInfo}...`,
-    duration: 0,
-    icon: Loading
-  });
-  
-  const results: Array<{ email: string; success: boolean; accountId?: string; error?: string }> = [];
 
-  const buildMergedTags = (existingTags: string[]) => {
-    if (!shouldApplyTags) return existingTags;
-    const merged = [...existingTags];
-    for (const tag of tags) {
-      if (!merged.includes(tag)) {
-        merged.push(tag);
-      }
-    }
-    return merged;
-  };
-
-  const normalizeAccount = (account: Account) => {
-    const mergedTags = buildMergedTags(account.tags);
-    const groupChanged = account.group !== targetGroup;
-    const tagsChanged = shouldApplyTags && mergedTags.length !== account.tags.length;
-    const sourceChanged = account.account_source !== selectedAccountSource;
-    if (!groupChanged && !tagsChanged && !sourceChanged) {
-      return { updatedAccount: account, changed: false };
-    }
-    return {
-      updatedAccount: {
-        ...account,
-        group: groupChanged ? targetGroup : account.group,
-        tags: tagsChanged ? mergedTags : account.tags,
-        account_source: selectedAccountSource
-      },
-      changed: true
-    };
-  };
-
-  const waitForRetry = async (attempt: number) => {
-    if (attempt >= retryTimes) return;
-    await delay(600 + attempt * 500);
-  };
-  
-  // 单个导入任务
-  const importTask = async (item: { email: string; password: string; remark: string; refreshToken?: string }) => {
-    let lastError: string | undefined;
-    for (let attempt = 0; attempt <= retryTimes; attempt++) {
-      try {
-        if (mode === 'refresh_token' && item.refreshToken) {
-          // Refresh Token 模式：调用后端命令
-          const result = await invoke<any>('add_account_by_refresh_token', {
-            refreshToken: item.refreshToken,
-            nickname: item.remark || undefined,
-            tags: shouldApplyTags ? [...tags] : [],
-            group: targetGroup,
-            accountSource: selectedAccountSource
-          });
-          
-          if (result.success) {
-            return { email: result.email, success: true, accountId: result.account?.id };
-          }
-          lastError = result.error || '添加失败';
-        } else {
-          // 邮箱密码模式
-          const newAccount = await accountsStore.addAccount({
-            email: item.email,
-            password: item.password,
-            nickname: item.remark || item.email.split('@')[0],
-            tags: shouldApplyTags ? [...tags] : [],
-            group: targetGroup,
-            account_source: selectedAccountSource
-          });
-          return { email: item.email, success: true, accountId: newAccount.id };
-        }
-      } catch (error) {
-        lastError = String(error);
-      }
-      await waitForRetry(attempt);
-    }
-    console.error(`导入账号 ${item.email} 失败:`, lastError);
-    return { email: item.email, success: false, error: lastError || '添加失败' };
-  };
-  
-  try {
-    const importResults = await runInChunks(
-      filteredAccounts,
-      concurrencyLimit,
-      importTask,
-      (done, total) => {
-        progressMsg.close();
-        progressMsg = ElMessage({
-          message: `导入进度: ${done}/${total}`,
-          duration: 0,
-          icon: Loading
-        });
-      },
-      250
-    );
-    results.push(...importResults);
-    
-    // 统计添加结果
-    const addedAccounts = results.filter(r => r.success);
-    const failedAccounts = results.filter(r => !r.success);
-    
-    // 并发登录成功添加的账号（refresh_token 模式已经获取了账号信息，无需再登录）
-    let loginSuccessCount = 0;
-    if (autoLogin && addedAccounts.length > 0 && mode === 'password') {
-      progressMsg.close();
-      progressMsg = ElMessage({
-        message: `正在稳定登录 ${addedAccounts.length} 个账号（并发${concurrencyLimit}）...`,
-        duration: 0,
-        icon: Loading
-      });
-      
-      // 单个登录任务
-      const loginTask = async (item: { email: string; accountId?: string }) => {
-        try {
-          const loginResult = await apiService.loginAccount(item.accountId!);
-          if (loginResult.success) {
-            // 从后端获取完整的账号信息（包含token）
-            const latestAccount = await accountApi.getAccount(item.accountId!);
-            const { updatedAccount } = normalizeAccount(latestAccount);
-            await accountsStore.updateAccount(updatedAccount);
-            return { success: true };
-          }
-          return { success: false };
-        } catch (loginError) {
-          console.error(`账号 ${item.email} 登录失败:`, loginError);
-          return { success: false };
-        }
-      };
-      
-      const loginResults: Array<{ success: boolean }> = [];
-      
-      const loginChunkResults = await runInChunks(
-        addedAccounts,
-        concurrencyLimit,
-        loginTask,
-        (done, total) => {
-          progressMsg.close();
-          progressMsg = ElMessage({
-            message: `登录进度: ${done}/${total}`,
-            duration: 0,
-            icon: Loading
-          });
-        },
-        300
-      );
-      loginResults.push(...loginChunkResults);
-      
-      loginSuccessCount = loginResults.filter(r => r.success).length;
-    }
-
-    let offlineRetryTotal = 0;
-    let offlineRetrySuccess = 0;
-
-    if (addedAccounts.length > 0) {
-      progressMsg.close();
-      progressMsg = ElMessage({
-        message: '正在检查离线账号并修复分组...',
-        duration: 0,
-        icon: Loading
-      });
-
-      const postImportResults: Array<{ offline: boolean; retrySuccess: boolean; groupFixed: boolean }> = [];
-
-      const postImportTask = async (item: { email: string; accountId?: string }) => {
-        if (!item.accountId) {
-          return { offline: false, retrySuccess: false, groupFixed: false };
-        }
-
-        try {
-          let latestAccount = await accountApi.getAccount(item.accountId);
-          const isOffline = !latestAccount.token_expires_at || dayjs(latestAccount.token_expires_at).isBefore(dayjs());
-          let retrySuccess = false;
-
-          if (isOffline) {
-            for (let attempt = 0; attempt <= retryTimes; attempt++) {
-              try {
-                const retryResult = mode === 'refresh_token'
-                  ? await apiService.refreshToken(item.accountId)
-                  : await apiService.loginAccount(item.accountId);
-                if (retryResult.success) {
-                  retrySuccess = true;
-                  latestAccount = await accountApi.getAccount(item.accountId);
-                  break;
-                }
-              } catch (retryError) {
-                console.error(`账号 ${item.email} 重试失败:`, retryError);
-              }
-              await waitForRetry(attempt);
-            }
-          }
-
-          const { updatedAccount, changed } = normalizeAccount(latestAccount);
-          if (changed || retrySuccess) {
-            await accountsStore.updateAccount(updatedAccount);
-          }
-
-          return { offline: isOffline, retrySuccess, groupFixed: changed };
-        } catch (error) {
-          console.error(`处理账号 ${item.email} 失败:`, error);
-          return { offline: false, retrySuccess: false, groupFixed: false };
-        }
-      };
-
-      const postImportConcurrency = settingsStore.settings?.unlimitedConcurrentRefresh
-        ? addedAccounts.length
-        : concurrencyLimit;
-      const postChunkResults = await runInChunks(
-        addedAccounts,
-        postImportConcurrency,
-        postImportTask,
-        (done, total) => {
-          progressMsg.close();
-          progressMsg = ElMessage({
-            message: `离线检查进度: ${done}/${total}`,
-            duration: 0,
-            icon: Loading
-          });
-        },
-        350
-      );
-      postImportResults.push(...postChunkResults);
-
-      offlineRetryTotal = postImportResults.filter(result => result.offline).length;
-      offlineRetrySuccess = postImportResults.filter(result => result.retrySuccess).length;
-    }
-
-    progressMsg.close();
-    
-    // 关闭对话框
-    showBatchImportDialog.value = false;
-    batchImportDialogRef.value?.resetImporting();
-    
-    // 显示最终结果
-    if (addedAccounts.length > 0) {
-      let message = `成功导入 ${addedAccounts.length} 个账号`;
-      if (autoLogin && loginSuccessCount > 0) {
-        message += `，${loginSuccessCount} 个已登录`;
-      }
-      if (skippedCount > 0) {
-        message += `，跳过 ${skippedCount} 个已存在`;
-      }
-      if (failedAccounts.length > 0) {
-        message += `，失败 ${failedAccounts.length} 个`;
-      }
-      if (offlineRetryTotal > 0) {
-        if (offlineRetrySuccess === offlineRetryTotal) {
-          message += `，离线重试成功 ${offlineRetrySuccess} 个`;
-        } else {
-          message += `，离线重试成功 ${offlineRetrySuccess}/${offlineRetryTotal}`;
-        }
-      }
-      ElMessage.success({
-        message,
-        duration: 4000,
-        showClose: true
-      });
-      await accountsStore.loadAccounts();
-    } else {
-      let errorMsg = '没有成功导入任何账号';
-      if (skippedCount > 0) {
-        errorMsg += `（跳过 ${skippedCount} 个已存在）`;
-      }
-      if (failedAccounts.length > 0) {
-        const details = failedAccounts.slice(0, 3).map(f => f.email).join(', ');
-        errorMsg += `\n失败账号: ${details}${failedAccounts.length > 3 ? '...' : ''}`;
-      }
-      ElMessage.error({
-        message: errorMsg,
-        duration: 5000,
-        showClose: true
-      });
-    }
-  } catch (error) {
-    progressMsg.close();
-    showBatchImportDialog.value = false;
-    batchImportDialogRef.value?.resetImporting();
-    ElMessage.error(`批量导入失败: ${error}`);
-  }
 }
 
 // 批量刷新状态（使用优化的批量 API，只保存一次）
