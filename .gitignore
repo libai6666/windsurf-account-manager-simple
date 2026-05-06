@@ -22,3 +22,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# cunzhi
+src-tauri/cunzhi-bundle/
+src-tauri/target/**/cunzhi/
