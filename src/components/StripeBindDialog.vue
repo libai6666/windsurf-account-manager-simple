@@ -227,20 +227,20 @@
           <el-row :gutter="12">
             <el-col :span="8">
               <el-form-item label="代理Host">
-                <el-input v-model="proxyConfig.host" placeholder="HTTP/SOCKS代理地址(可选)" />
-              </el-form-item>
-            </el-col>
-            <el-col :span="4">
-              <el-form-item label="端口">
-                <el-input-number v-model="proxyConfig.port" :min="1" :max="65535" :controls="false" style="width: 100%" />
+                <el-input v-model="proxyConfig.host" placeholder="127.0.0.1 或 socks5://127.0.0.1" />
               </el-form-item>
             </el-col>
             <el-col :span="6">
+              <el-form-item label="端口">
+                <el-input v-model.number="proxyConfig.port" placeholder="7897" type="number" min="1" max="65535" />
+              </el-form-item>
+            </el-col>
+            <el-col :span="5">
               <el-form-item label="用户名">
                 <el-input v-model="proxyConfig.user" placeholder="代理认证(可选)" />
               </el-form-item>
             </el-col>
-            <el-col :span="6">
+            <el-col :span="5">
               <el-form-item label="密码">
                 <el-input v-model="proxyConfig.pass" placeholder="代理认证(可选)" show-password />
               </el-form-item>
@@ -248,7 +248,7 @@
           </el-row>
 
           <el-row :gutter="12">
-            <el-col :span="8">
+            <el-col :span="6">
               <el-form-item label="套餐">
                 <el-select v-model="teamsTier" style="width: 100%">
                   <el-option label="Pro" :value="2" />
@@ -256,7 +256,7 @@
                 </el-select>
               </el-form-item>
             </el-col>
-            <el-col :span="8">
+            <el-col :span="6">
               <el-form-item label="付费周期">
                 <el-select v-model="paymentPeriod" style="width: 100%">
                   <el-option label="月付" :value="1" />
@@ -264,9 +264,18 @@
                 </el-select>
               </el-form-item>
             </el-col>
-            <el-col :span="8">
+            <el-col :span="6">
               <el-form-item label="并发数">
                 <el-input-number v-model="concurrency" :min="1" :max="5" style="width: 100%" />
+              </el-form-item>
+            </el-col>
+            <el-col :span="6">
+              <el-form-item label="预解 hCaptcha">
+                <el-switch
+                  v-model="presolveCaptcha"
+                  active-text="开启"
+                  inactive-text="关闭"
+                />
               </el-form-item>
             </el-col>
           </el-row>
@@ -306,15 +315,16 @@
               <span style="color: #67c23a">成功: {{ taskStats.success }}</span> | 
               <span style="color: #f56c6c">失败: {{ taskStats.failed }}</span> | 
               <span style="color: #409eff">进行中: {{ taskStats.running }}</span> | 
-              <span style="color: #909399">等待: {{ taskStats.pending }}</span>
+              <span style="color: #909399">等待: {{ taskStats.pending }}</span> |
+              <span style="color: #e6a23c">已取消: {{ taskStats.cancelled }}</span>
             </span>
-            <el-button v-if="isRunning" type="danger" size="small" @click="cancelBind">取消</el-button>
+            <el-button v-if="hasTerminableTasks" type="danger" size="small" :loading="cancelLoading" @click="cancelBind">终止</el-button>
           </div>
 
           <el-progress
             :percentage="overallProgress"
             :stroke-width="16"
-            :format="() => `${taskStats.success + taskStats.failed} / ${taskList.length}`"
+            :format="() => `${taskStats.success + taskStats.failed + taskStats.cancelled} / ${taskList.length}`"
             style="margin-bottom: 16px"
           />
 
@@ -751,6 +761,8 @@ const canStart = computed(() => {
 // ─── 执行 Tab ────────────────────────────────────
 const isRunning = ref(false);
 const currentBatchId = ref('');
+const cancelLoading = ref(false);
+const cancelRequested = ref(false);
 
 interface TaskItem {
   account_id: string;
@@ -770,13 +782,28 @@ const taskStats = computed(() => {
     failed: list.filter(t => t.status === 'failed').length,
     running: list.filter(t => t.status === 'running').length,
     pending: list.filter(t => t.status === 'pending').length,
+    cancelled: list.filter(t => t.status === 'cancelled').length,
   };
 });
 
 const overallProgress = computed(() => {
   if (taskList.value.length === 0) return 0;
-  return Math.round(((taskStats.value.success + taskStats.value.failed) / taskList.value.length) * 100);
+  return Math.round(((taskStats.value.success + taskStats.value.failed + taskStats.value.cancelled) / taskList.value.length) * 100);
 });
+
+const hasTerminableTasks = computed(() => {
+  return taskList.value.some(t => t.status === 'pending' || t.status === 'running');
+});
+
+function markTerminableTasks(status: 'failed' | 'cancelled', error: string) {
+  taskList.value.forEach((task) => {
+    if (task.status === 'pending' || task.status === 'running') {
+      task.status = status;
+      task.step_name = status === 'cancelled' ? '已取消' : '启动失败';
+      task.error = error;
+    }
+  });
+}
 
 function taskTagType(status: string) {
   switch (status) {
@@ -874,6 +901,8 @@ function onTurnstileClosed() {
 
 async function doStartBind(verifiedAccountIds: string[]) {
   isRunning.value = true;
+  cancelRequested.value = false;
+  currentBatchId.value = '';
   activeTab.value = 'execution';
   logs.value = [];
 
@@ -946,24 +975,47 @@ async function doStartBind(verifiedAccountIds: string[]) {
     });
 
     currentBatchId.value = result.batch_id;
+    if (cancelRequested.value) {
+      await invoke('stripe_bind_cancel', { batchId: result.batch_id });
+      markTerminableTasks('cancelled', '任务已终止');
+      isRunning.value = false;
+      ElMessage.warning('已终止绑卡任务');
+      return;
+    }
     if (isDebugMode.value) {
       ElMessage.success(`调试绑卡任务已启动，共 ${result.total} 个账号, ${debugCards.value.length} 张调试卡`);
     } else {
       ElMessage.success(`批量绑卡任务已启动，共 ${result.total} 个账号`);
     }
   } catch (e: any) {
-    ElMessage.error(`启动失败: ${e}`);
+    if (cancelRequested.value) {
+      markTerminableTasks('cancelled', '任务已终止');
+      ElMessage.warning('已终止绑卡任务');
+    } else {
+      const message = `启动失败: ${e}`;
+      markTerminableTasks('failed', message);
+      ElMessage.error(message);
+    }
     isRunning.value = false;
   }
 }
 
 async function cancelBind() {
-  if (!currentBatchId.value) return;
+  if (!hasTerminableTasks.value) return;
+  cancelRequested.value = true;
+  cancelLoading.value = true;
+  const hasRemoteBatch = !!currentBatchId.value;
   try {
-    await invoke('stripe_bind_cancel', { batchId: currentBatchId.value });
-    ElMessage.warning('已取消剩余任务');
+    if (hasRemoteBatch) {
+      await invoke('stripe_bind_cancel', { batchId: currentBatchId.value });
+      isRunning.value = false;
+    }
+    markTerminableTasks('cancelled', '任务已终止');
+    ElMessage.warning(hasRemoteBatch ? '已发送终止请求' : '已终止本地等待，后台启动请求返回后会自动取消');
   } catch (e: any) {
-    ElMessage.error(`取消失败: ${e}`);
+    ElMessage.error(`终止失败: ${e}`);
+  } finally {
+    cancelLoading.value = false;
   }
 }
 
@@ -1037,6 +1089,7 @@ onMounted(async () => {
     const p = event.payload;
     const task = taskList.value.find(t => t.account_id === p.account_id);
     if (task) {
+      if (task.status === 'cancelled' && p.status === 'running') return;
       task.step = p.step;
       task.step_name = p.step_name;
       task.status = p.status;
@@ -1056,6 +1109,11 @@ onMounted(async () => {
 
   unlistenBatchDone = await listen<{ task_id: string }>('stripe-bind-batch-done', (_event) => {
     isRunning.value = false;
+    if (cancelRequested.value) {
+      cancelRequested.value = false;
+      ElMessage.warning('绑卡任务已终止');
+      return;
+    }
     // 调试模式完成后，自动把起点移到第一张未尝试的卡（跳过 success 和 failed）
     if (isDebugMode.value) {
       const nextUntried = debugCards.value.findIndex(c => c.status === 'pending' || !c.status);

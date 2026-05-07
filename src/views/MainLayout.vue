@@ -693,7 +693,7 @@
     
     <!-- 右侧悬浮按钮：重新打开最小化的试用链接结果页 -->
     <div
-      v-if="batchTrialLinksData.length > 0 && !showBatchTrialLinksDialog"
+      v-if="batchTrialLinksData.length > 0 && !showBatchTrialLinksDialog && !showConcurrentTurnstileDialog"
       class="floating-result-btn"
       @click="showBatchTrialLinksDialog = true"
     >
@@ -1690,18 +1690,21 @@ async function handleBatchGetTrialLinks() {
       token: a.token
     }));
     
-    // 过滤出有 token 的账号
-    const accountsWithToken = selectedAccounts.filter(a => a.token);
-    if (accountsWithToken.length === 0) {
-      ElMessage.warning('所有选中账号都没有Token');
-      return;
-    }
-    
-    // 初始化结果
+    // 先准备隐藏的占位数据；Pro 流程必须等所有人机验证结束后再显示结果页，避免遮挡验证窗口。
+    isBatchGettingTrialLinks.value = true;
+    batchTrialLinksData.value = selectedAccounts.map(account => ({
+      email: account.email,
+      accountId: account.id,
+      success: false,
+      loading: true,
+      error: '等待验证'
+    }));
+
+    // 初始化 Turnstile 结果缓存；链接接口会通过账号 ID 在后端自动刷新 token。
     pendingTrialLinksResults.value = new Map();
     
     // 打开并发验证对话框
-    concurrentVerifyAccounts.value = accountsWithToken.map(a => ({ id: a.id, email: a.email }));
+    concurrentVerifyAccounts.value = selectedAccounts.map(a => ({ id: a.id, email: a.email }));
     showConcurrentTurnstileDialog.value = true;
     
   } else {
@@ -1711,6 +1714,19 @@ async function handleBatchGetTrialLinks() {
 }
 
 // 不需要验证的批量获取
+function upsertBatchTrialLinkResult(result: TrialLinkItem) {
+  // 结果页按账号 ID 做原地更新，避免重复行，也能让“获取中”占位行实时变成成功/失败。
+  const existingIndex = result.accountId
+    ? batchTrialLinksData.value.findIndex(l => l.accountId === result.accountId)
+    : batchTrialLinksData.value.findIndex(l => l.email === result.email);
+
+  if (existingIndex === -1) {
+    batchTrialLinksData.value.push(result);
+  } else {
+    batchTrialLinksData.value[existingIndex] = result;
+  }
+}
+
 async function processBatchTrialLinksWithoutVerification(
   selectedAccounts: any[],
   teamsTier: number,
@@ -1719,7 +1735,15 @@ async function processBatchTrialLinksWithoutVerification(
   seatCount?: number
 ) {
   isBatchGettingTrialLinks.value = true;
-  const collectedLinks: TrialLinkItem[] = [];
+  // 先展示结果页和“获取中”占位行，用户不用等整批 API 全部结束才看到结果。
+  batchTrialLinksData.value = selectedAccounts.map(account => ({
+    email: account.email,
+    accountId: account.id,
+    success: false,
+    loading: true,
+    error: '等待获取链接'
+  }));
+  showBatchTrialLinksDialog.value = true;
   
   let progressMsg = ElMessage({
     message: `正在批量获取试用链接 (0/${selectedAccounts.length})...`,
@@ -1739,11 +1763,7 @@ async function processBatchTrialLinksWithoutVerification(
       });
       
       try {
-        if (!account.token) {
-          collectedLinks.push({ email: account.email, accountId: account.id, success: false, error: '无Token' });
-          continue;
-        }
-        
+        // 后端会根据账号 ID 自动刷新 token；前端不要因为当前缓存 token 为空而提前判失败。
         const result = await apiService.getTrialPaymentLink(
           account.id,
           teamsTier,
@@ -1755,21 +1775,19 @@ async function processBatchTrialLinksWithoutVerification(
         
         const linkUrl = result.subscription_url || result.stripe_url;
         if (result.success && linkUrl) {
-          collectedLinks.push({ email: account.email, accountId: account.id, success: true, url: linkUrl });
+          upsertBatchTrialLinkResult({ email: account.email, accountId: account.id, success: true, loading: false, url: linkUrl });
         } else {
-          collectedLinks.push({ email: account.email, accountId: account.id, success: false, error: result.error || '获取失败' });
+          upsertBatchTrialLinkResult({ email: account.email, accountId: account.id, success: false, loading: false, error: result.error || '获取失败' });
         }
         
         await new Promise(resolve => setTimeout(resolve, 500));
         
       } catch (error: any) {
-        collectedLinks.push({ email: account.email, accountId: account.id, success: false, error: error.toString() });
+        upsertBatchTrialLinkResult({ email: account.email, accountId: account.id, success: false, loading: false, error: error.toString() });
       }
     }
     
     progressMsg.close();
-    batchTrialLinksData.value = collectedLinks;
-    showBatchTrialLinksDialog.value = true;
     
   } catch (error) {
     progressMsg.close();
@@ -1791,6 +1809,9 @@ async function handleSingleVerifySuccess(accountId: string, token: string) {
   if (!account) return;
   
   pendingApiCalls.value++;
+  // 验证成功后立即把对应行改成“正在获取链接”，让结果页可以实时反馈当前进度。
+  upsertBatchTrialLinkResult({ email: account.email, accountId, success: false, loading: true, error: '验证通过，正在获取链接' });
+
   try {
     const result = await apiService.getTrialPaymentLink(
       accountId,
@@ -1803,66 +1824,42 @@ async function handleSingleVerifySuccess(accountId: string, token: string) {
     
     const linkUrl = result.subscription_url || result.stripe_url;
     if (result.success && linkUrl) {
-      // 添加到结果列表（如果不存在）
-      const existingIndex = batchTrialLinksData.value.findIndex(l => l.accountId === accountId);
-      if (existingIndex === -1) {
-        batchTrialLinksData.value.push({ email: account.email, accountId, success: true, url: linkUrl });
-      } else {
-        batchTrialLinksData.value[existingIndex] = { email: account.email, accountId, success: true, url: linkUrl };
-      }
+      // 成功拿到 Stripe/Devin checkout URL 后原地替换占位行。
+      upsertBatchTrialLinkResult({ email: account.email, accountId, success: true, loading: false, url: linkUrl });
     } else {
-      const existingIndex = batchTrialLinksData.value.findIndex(l => l.accountId === accountId);
-      if (existingIndex === -1) {
-        batchTrialLinksData.value.push({ email: account.email, accountId, success: false, error: result.error || '获取失败' });
-      } else {
-        batchTrialLinksData.value[existingIndex] = { email: account.email, accountId, success: false, error: result.error || '获取失败' };
-      }
+      upsertBatchTrialLinkResult({ email: account.email, accountId, success: false, loading: false, error: result.error || '获取失败' });
     }
   } catch (error: any) {
-    const existingIndex = batchTrialLinksData.value.findIndex(l => l.accountId === accountId);
-    if (existingIndex === -1) {
-      batchTrialLinksData.value.push({ email: account.email, accountId, success: false, error: error.toString() });
-    } else {
-      batchTrialLinksData.value[existingIndex] = { email: account.email, accountId, success: false, error: error.toString() };
-    }
+    upsertBatchTrialLinkResult({ email: account.email, accountId, success: false, loading: false, error: error.toString() });
   } finally {
     pendingApiCalls.value--;
+    if (pendingApiCalls.value <= 0 && !showConcurrentTurnstileDialog.value) {
+      isBatchGettingTrialLinks.value = false;
+    }
   }
 }
 
 // 并发验证完成后的处理
 async function handleConcurrentVerifyCompleted(results: { accountId: string; email: string; token?: string; error?: string }[]) {
   showConcurrentTurnstileDialog.value = false;
-  
-  // 等待所有进行中的 API 调用完成，避免竞态条件
-  if (pendingApiCalls.value > 0) {
-    await new Promise<void>(resolve => {
-      const checkInterval = setInterval(() => {
-        if (pendingApiCalls.value <= 0) {
-          clearInterval(checkInterval);
-          resolve();
-        }
-      }, 200);
-    });
-  }
-  
-  // 添加验证失败的到结果列表（只添加 batchTrialLinksData 中不存在的）
+
+  // 验证失败的账号没有 turnstile token，直接把占位行更新成失败；已在取链接的账号继续异步更新。
   const failedVerify = results.filter(r => !r.token);
   failedVerify.forEach(r => {
-    const existingIndex = batchTrialLinksData.value.findIndex(l => l.accountId === r.accountId);
-    if (existingIndex === -1) {
-      batchTrialLinksData.value.push({
-        email: r.email,
-        accountId: r.accountId,
-        success: false,
-        error: r.error || '验证失败'
-      });
-    }
+    upsertBatchTrialLinkResult({
+      email: r.email,
+      accountId: r.accountId,
+      success: false,
+      loading: false,
+      error: r.error || '验证失败'
+    });
   });
   
-  // 显示结果对话框
+  // 所有人机验证已结束后才打开结果页；此时未完成的链接行会继续显示“获取中”。
   showBatchTrialLinksDialog.value = true;
-  isBatchGettingTrialLinks.value = false;
+  if (pendingApiCalls.value <= 0) {
+    isBatchGettingTrialLinks.value = false;
+  }
 }
 
 

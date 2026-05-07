@@ -168,6 +168,7 @@ pub fn run() {
             commands::get_trial_payment_link_enhanced,
             commands::open_external_link,
             commands::open_external_link_incognito,
+            commands::close_opened_external_links,
             commands::detect_installed_browsers,
             commands::inject_auto_submit_script,
             commands::close_payment_window,

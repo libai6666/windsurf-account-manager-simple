@@ -504,6 +504,8 @@
           
           <el-form-item label="检测间隔" v-if="settings.autoSwitchEnabled">
             <el-select v-model="settings.autoSwitchCheckInterval" style="width: 200px;">
+              <el-option :label="'10 秒'" :value="10" />
+              <el-option :label="'30 秒'" :value="30" />
               <el-option :label="'1 分钟'" :value="60" />
               <el-option :label="'3 分钟'" :value="180" />
               <el-option :label="'5 分钟'" :value="300" />

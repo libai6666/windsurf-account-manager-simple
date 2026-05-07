@@ -1,10 +1,9 @@
-use crate::models::{OperationLog, OperationType, OperationStatus};
+use crate::models::{Account, OperationLog, OperationType, OperationStatus};
 use crate::repository::DataStore;
-use crate::services::WindsurfService;
-use crate::utils::AppError;
+use crate::services::{DevinService, WindsurfService};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, atomic::{AtomicU32, Ordering}};
 use tauri::{AppHandle, Emitter, State};
 use uuid::Uuid;
@@ -18,6 +17,8 @@ use std::ffi::OsStr;
 // ─── 全局任务状态管理 ───────────────────────────────────────────
 static BIND_TASKS: Lazy<Mutex<HashMap<String, BindTaskState>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
+static CANCELLED_BATCHES: Lazy<Mutex<HashSet<String>>> =
+    Lazy::new(|| Mutex::new(HashSet::new()));
 
 /// 根据卡号前缀识别品牌（覆盖常见卡网: unionpay/visa/mastercard/amex/jcb/discover/diners）
 fn detect_card_brand(number: &str) -> String {
@@ -165,11 +166,19 @@ struct PxTokens {
 const STRIPE_API: &str = "https://api.stripe.com";
 const STRIPE_VERSION_FULL: &str = "2025-03-31.basil; checkout_server_update_beta=v1; checkout_manual_approval_preview=v1";
 const STRIPE_VERSION_BASE: &str = "2025-03-31.basil";
-const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36";
+const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36";
+const BROWSER_LOCALE: &str = "zh-CN";
+const BROWSER_TIMEZONE: &str = "Asia/Shanghai";
+const BROWSER_TZ_OFFSET_MINUTES: &str = "-480";
+const BROWSER_SCREEN_HEIGHT: &str = "1080";
+const BROWSER_SCREEN_WIDTH: &str = "1920";
+const BROWSER_COLOR_DEPTH: &str = "32";
+const BROWSER_SCREEN_FINGERPRINT: &str = "1920w_1080h_32d_1r";
 const WINDSURF_HOST: &str = "checkout.stripe.com";
 const WINDSURF_ORIGIN: &str = "https://checkout.stripe.com";
 const KNOWN_PK: &str = "pk_live_51NRMxXFKuRRGjKOF8UiLeVezJmJe3xlk8tHCRctncoDJmMElhArAYMgN1n5s3tOMdlDyJZZkm1KcEa386dj5XS8d00TmPn497w";
 const HCAPTCHA_SITE_KEY_FALLBACK: &str = "ec637546-e9b8-447a-ab81-b5fb6d228ab8";
+const STRIPE_HCAPTCHA_WEBSITE_URL: &str = "https://b.stripecdn.com/stripethirdparty-srv/assets/v32.1/HCaptchaInvisible.html";
 
 // ─── 美国地址数据库 ──────────────────────────────────────────
 const US_FIRST_NAMES: &[&str] = &[
@@ -258,27 +267,49 @@ async fn fetch_stripe_js_version() -> String {
 // ─── 通过无头浏览器获取 PerimeterX 令牌 ─────────────────────────
 async fn fetch_px_tokens(
     checkout_url: &str,
+    proxy: &Option<ProxyConfig>,
     app: &AppHandle,
     task_id: &str,
 ) -> Result<PxTokens, String> {
     emit_log(app, task_id, "info", "  [PX] 正在启动浏览器获取反机器人令牌 ...");
 
     let url = checkout_url.to_string();
+    let browser_proxy = normalize_proxy_for_captcha(proxy)
+        .map(|(proxy_type, proxy_address, proxy_port, proxy_login, proxy_password)| {
+            if let (Some(user), Some(pass)) = (proxy_login, proxy_password) {
+                format!("{}://{}:{}@{}:{}", proxy_type, user, pass, proxy_address, proxy_port)
+            } else {
+                format!("{}://{}:{}", proxy_type, proxy_address, proxy_port)
+            }
+        });
+    if let Some(proxy_url) = &browser_proxy {
+        emit_log(app, task_id, "info", &format!("  [PX] 浏览器使用代理: {}", proxy_url));
+    } else {
+        emit_log(app, task_id, "warn", "  [PX] 未配置代理，PX 浏览器将直连");
+    }
 
     let tokens = tokio::task::spawn_blocking(move || -> Result<PxTokens, String> {
         use headless_chrome::{Browser, LaunchOptions};
+
+        let proxy_arg = browser_proxy
+            .as_ref()
+            .map(|proxy_url| format!("--proxy-server={}", proxy_url));
+        let mut args = vec![
+            OsStr::new("--disable-blink-features=AutomationControlled"),
+            OsStr::new("--disable-features=IsolateOrigins,site-per-process"),
+            OsStr::new("--disable-web-security"),
+            OsStr::new("--no-first-run"),
+            OsStr::new("--disable-extensions"),
+        ];
+        if let Some(proxy_arg) = &proxy_arg {
+            args.push(OsStr::new(proxy_arg));
+        }
 
         let launch_options = LaunchOptions {
             headless: true,
             sandbox: false,
             window_size: Some((1920, 1080)),
-            args: vec![
-                OsStr::new("--disable-blink-features=AutomationControlled"),
-                OsStr::new("--disable-features=IsolateOrigins,site-per-process"),
-                OsStr::new("--disable-web-security"),
-                OsStr::new("--no-first-run"),
-                OsStr::new("--disable-extensions"),
-            ],
+            args,
             ..Default::default()
         };
 
@@ -409,6 +440,82 @@ fn emit_progress(app: &AppHandle, task_id: &str, account_id: &str, step: i32, st
     }));
 }
 
+async fn is_batch_cancelled(batch_id: &str) -> bool {
+    CANCELLED_BATCHES.lock().await.contains(batch_id)
+}
+
+async fn ensure_batch_not_cancelled(batch_id: &str) -> Result<(), String> {
+    if is_batch_cancelled(batch_id).await {
+        Err("任务已取消".to_string())
+    } else {
+        Ok(())
+    }
+}
+
+async fn get_checkout_url_for_bind(
+    app: &AppHandle,
+    batch_id: &str,
+    account: &Account,
+    session_token: &str,
+    teams_tier: i32,
+    payment_period: i32,
+    turnstile_token: Option<&str>,
+) -> Result<String, String> {
+    let auth1 = account.refresh_token.as_deref().filter(|t| t.starts_with("auth1_"));
+
+    if account.is_devin() {
+        let auth1_token = auth1.ok_or_else(|| {
+            format!("Devin账号缺少 auth1 token，请先刷新Token后重试 ({})", account.email)
+        })?;
+        emit_log(app, batch_id, "info", &format!("  Devin账号使用 Devin checkout: {}", account.email));
+        let devin_service = DevinService::new();
+        let (stripe_url, _, _) = devin_service
+            .get_trial_checkout_url(auth1_token)
+            .await
+            .map_err(|e| format!("获取 Devin 试用链接失败 ({}): {}", account.email, e))?;
+        return Ok(stripe_url);
+    }
+
+    let windsurf_service = WindsurfService::new();
+    let result = windsurf_service
+        .subscribe_to_plan(
+            session_token,
+            auth1,
+            teams_tier,
+            payment_period,
+            None,
+            None,
+            turnstile_token,
+        )
+        .await
+        .map_err(|e| format!("获取试用链接失败 ({}): {}", account.email, e))?;
+
+    let api_success = result.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
+    if api_success {
+        return result
+            .get("stripe_url")
+            .and_then(|v| v.as_str())
+            .map(|v| v.to_string())
+            .ok_or_else(|| format!("未获取到 stripe_url ({})", account.email));
+    }
+
+    let api_err = result.get("error").and_then(|v| v.as_str()).unwrap_or("未知错误");
+    let status_code = result.get("status_code").and_then(|v| v.as_u64()).unwrap_or(0);
+    emit_log(app, batch_id, "error", &format!("  ❌ {} 获取链接失败: {} (status={})", account.email, api_err, status_code));
+
+    if teams_tier == 2 {
+        if let Some(auth1_token) = auth1 {
+            emit_log(app, batch_id, "warn", &format!("  尝试 Devin checkout fallback: {}", account.email));
+            let devin_service = DevinService::new();
+            if let Ok((stripe_url, _, _)) = devin_service.get_trial_checkout_url(auth1_token).await {
+                return Ok(stripe_url);
+            }
+        }
+    }
+
+    Err(format!("获取试用链接失败 ({}): {}", account.email, api_err))
+}
+
 // ─── 构建 HTTP 客户端 ─────────────────────────────────────────
 fn build_stripe_client(proxy: &Option<ProxyConfig>) -> Result<reqwest::Client, String> {
     let mut builder = reqwest::Client::builder()
@@ -419,27 +526,85 @@ fn build_stripe_client(proxy: &Option<ProxyConfig>) -> Result<reqwest::Client, S
         .http1_only()
         .user_agent(USER_AGENT);
 
-    if let Some(p) = proxy {
-        if let Some(host) = &p.host {
-            if !host.is_empty() {
-                let port = p.port.unwrap_or(10808);
-                let proxy_url = if let (Some(user), Some(pass)) = (&p.user, &p.pass) {
-                    if !user.is_empty() {
-                        format!("http://{}:{}@{}:{}", user, pass, host, port)
-                    } else {
-                        format!("http://{}:{}", host, port)
-                    }
-                } else {
-                    format!("http://{}:{}", host, port)
-                };
-                builder = builder.proxy(
-                    reqwest::Proxy::all(&proxy_url).map_err(|e| format!("Invalid proxy: {}", e))?
-                );
+    if let Some((proxy_type, proxy_address, proxy_port, proxy_login, proxy_password)) = normalize_proxy_for_captcha(proxy) {
+        let proxy_url = if let (Some(user), Some(pass)) = (proxy_login, proxy_password) {
+            format!("{}://{}:{}@{}:{}", proxy_type, user, pass, proxy_address, proxy_port)
+        } else {
+            format!("{}://{}:{}", proxy_type, proxy_address, proxy_port)
+        };
+        builder = builder.proxy(
+            reqwest::Proxy::all(&proxy_url).map_err(|e| format!("Invalid proxy: {}", e))?
+        );
+    }
+
+    builder.build().map_err(|e| format!("Failed to build HTTP client: {}", e))
+}
+
+fn normalize_proxy_for_captcha(proxy: &Option<ProxyConfig>) -> Option<(String, String, u16, Option<String>, Option<String>)> {
+    let p = proxy.as_ref()?;
+    let raw_host = p.host.as_ref()?.trim();
+    if raw_host.is_empty() {
+        return None;
+    }
+
+    let (proxy_type, host_with_port) = if let Some((scheme, rest)) = raw_host.split_once("://") {
+        let proxy_type = match scheme.to_ascii_lowercase().as_str() {
+            "socks" => "socks5".to_string(),
+            "socks4" => "socks4".to_string(),
+            "socks5" => "socks5".to_string(),
+            "https" => "https".to_string(),
+            _ => "http".to_string(),
+        };
+        (proxy_type, rest)
+    } else {
+        ("http".to_string(), raw_host)
+    };
+
+    let host_without_path = host_with_port.split('/').next().unwrap_or(host_with_port);
+    let host_without_auth = host_without_path.rsplit('@').next().unwrap_or(host_without_path);
+    let mut address = host_without_auth.to_string();
+    let mut parsed_port = None;
+
+    if let Some((host_part, port_part)) = host_without_auth.rsplit_once(':') {
+        if port_part.chars().all(|c| c.is_ascii_digit()) {
+            if let Ok(port) = port_part.parse::<u16>() {
+                address = host_part.to_string();
+                parsed_port = Some(port);
             }
         }
     }
 
-    builder.build().map_err(|e| format!("Failed to build HTTP client: {}", e))
+    if address.is_empty() {
+        return None;
+    }
+
+    Some((
+        proxy_type,
+        address,
+        parsed_port.or(p.port).unwrap_or(10808),
+        p.user.as_ref().filter(|v| !v.is_empty()).cloned(),
+        p.pass.as_ref().filter(|v| !v.is_empty()).cloned(),
+    ))
+}
+
+fn is_local_or_private_proxy_address(address: &str) -> bool {
+    let normalized = address.trim().trim_matches(['[', ']']).to_ascii_lowercase();
+    if normalized == "localhost" || normalized == "::1" {
+        return true;
+    }
+    if normalized.starts_with("127.") || normalized.starts_with("10.") || normalized.starts_with("192.168.") {
+        return true;
+    }
+    if let Some(second) = normalized
+        .strip_prefix("172.")
+        .and_then(|rest| rest.split('.').next())
+        .and_then(|part| part.parse::<u8>().ok())
+    {
+        if (16..=31).contains(&second) {
+            return true;
+        }
+    }
+    normalized.starts_with("169.254.") || normalized.starts_with("fc") || normalized.starts_with("fd")
 }
 
 fn stripe_headers() -> HeaderMap {
@@ -458,6 +623,167 @@ fn parse_session_id(raw: &str) -> Result<String, String> {
     } else {
         Err(format!("无法从输入中提取 checkout_session_id: {}", &raw[..raw.len().min(120)]))
     }
+}
+
+fn mask_publishable_key(key: &str) -> String {
+    if key.len() <= 18 {
+        return key.to_string();
+    }
+    format!("{}...{}", &key[..12], &key[key.len().saturating_sub(6)..])
+}
+
+fn extract_publishable_key_from_text(text: &str, prefer_live: Option<bool>) -> Option<String> {
+    let re = regex::Regex::new(r"(pk_(?:live|test)_[A-Za-z0-9]+)").unwrap();
+    let keys: Vec<String> = re.captures_iter(text).map(|cap| cap[1].to_string()).collect();
+    if let Some(is_live) = prefer_live {
+        let expected_prefix = if is_live { "pk_live_" } else { "pk_test_" };
+        if let Some(key) = keys.iter().find(|key| key.starts_with(expected_prefix)) {
+            return Some(key.clone());
+        }
+        return None;
+    }
+    keys.into_iter().next()
+}
+
+async fn extract_publishable_key_with_browser(
+    checkout_url: &str,
+    prefer_live: Option<bool>,
+    app: &AppHandle,
+    task_id: &str,
+) -> Option<String> {
+    emit_log(app, task_id, "info", "  静态页面未找到匹配环境的 Stripe key，尝试浏览器渲染提取 ...");
+
+    let url = checkout_url.to_string();
+    match tokio::task::spawn_blocking(move || -> Result<Option<String>, String> {
+        use headless_chrome::{Browser, LaunchOptions};
+
+        let launch_options = LaunchOptions {
+            headless: true,
+            sandbox: false,
+            window_size: Some((1280, 900)),
+            args: vec![
+                OsStr::new("--disable-blink-features=AutomationControlled"),
+                OsStr::new("--disable-features=IsolateOrigins,site-per-process"),
+                OsStr::new("--no-first-run"),
+                OsStr::new("--disable-extensions"),
+            ],
+            ..Default::default()
+        };
+
+        let browser = Browser::new(launch_options)
+            .map_err(|e| format!("启动浏览器失败: {}", e))?;
+        let tab = browser.new_tab()
+            .map_err(|e| format!("创建标签页失败: {}", e))?;
+        tab.set_user_agent(USER_AGENT, None, None)
+            .map_err(|e| format!("设置 UA 失败: {}", e))?;
+        tab.navigate_to(&url)
+            .map_err(|e| format!("导航失败: {}", e))?;
+        let _ = tab.wait_for_element_with_custom_timeout("body", std::time::Duration::from_secs(12));
+        std::thread::sleep(std::time::Duration::from_secs(6));
+
+        let script = r#"
+        (function() {
+            const chunks = [];
+            try { chunks.push(document.documentElement ? document.documentElement.outerHTML : ''); } catch(e) {}
+            try {
+                document.querySelectorAll('script').forEach(function(s) {
+                    chunks.push(s.src || '');
+                    chunks.push(s.textContent || '');
+                });
+            } catch(e) {}
+            try {
+                for (let i = 0; i < localStorage.length; i++) {
+                    const k = localStorage.key(i);
+                    chunks.push(k + '=' + localStorage.getItem(k));
+                }
+            } catch(e) {}
+            try {
+                for (let i = 0; i < sessionStorage.length; i++) {
+                    const k = sessionStorage.key(i);
+                    chunks.push(k + '=' + sessionStorage.getItem(k));
+                }
+            } catch(e) {}
+            return chunks.join('\n');
+        })()
+        "#;
+
+        let text = tab.evaluate(script, false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_str().map(|s| s.to_string()))
+            .unwrap_or_default();
+
+        Ok(extract_publishable_key_from_text(&text, prefer_live))
+    }).await {
+        Ok(Ok(key)) => key,
+        Ok(Err(e)) => {
+            emit_log(app, task_id, "warn", &format!("  浏览器提取 Stripe key 失败: {}", e));
+            None
+        }
+        Err(e) => {
+            emit_log(app, task_id, "warn", &format!("  浏览器提取任务异常: {}", e));
+            None
+        }
+    }
+}
+
+async fn resolve_publishable_key(
+    client: &reqwest::Client,
+    checkout_url: &str,
+    app: &AppHandle,
+    task_id: &str,
+) -> String {
+    let prefer_live = if checkout_url.contains("cs_live_") {
+        Some(true)
+    } else if checkout_url.contains("cs_test_") {
+        Some(false)
+    } else {
+        None
+    };
+
+    if let Some(key) = extract_publishable_key_from_text(checkout_url, prefer_live) {
+        emit_log(app, task_id, "info", &format!("  Stripe publishable key: {}", mask_publishable_key(&key)));
+        return key;
+    }
+
+    match client.get(checkout_url)
+        .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+        .header("User-Agent", USER_AGENT)
+        .send()
+        .await
+    {
+        Ok(resp) => {
+            let status = resp.status();
+            match resp.text().await {
+                Ok(text) => {
+                    if let Some(key) = extract_publishable_key_from_text(&text, prefer_live) {
+                        emit_log(app, task_id, "info", &format!("  Stripe publishable key: {}", mask_publishable_key(&key)));
+                        return key;
+                    }
+                    emit_log(app, task_id, "warn", &format!("  未从 checkout 页面提取到匹配环境的 publishable key (status={})", status));
+                }
+                Err(e) => {
+                    emit_log(app, task_id, "warn", &format!("  读取 checkout 页面失败: {}", e));
+                }
+            }
+        }
+        Err(e) => {
+            emit_log(app, task_id, "warn", &format!("  请求 checkout 页面失败: {}", e));
+        }
+    }
+
+    if let Some(key) = extract_publishable_key_with_browser(checkout_url, prefer_live, app, task_id).await {
+        emit_log(app, task_id, "info", &format!("  Stripe publishable key: {}", mask_publishable_key(&key)));
+        return key;
+    }
+
+    if prefer_live == Some(true) && !KNOWN_PK.starts_with("pk_live_") {
+        emit_log(app, task_id, "error", "  当前是 cs_live checkout，但没有找到 pk_live，拒绝使用 pk_test");
+        return String::new();
+    }
+
+    emit_log(app, task_id, "warn", &format!("  使用默认 Stripe publishable key: {}", mask_publishable_key(KNOWN_PK)));
+    KNOWN_PK.to_string()
 }
 
 // ─── 指纹注册 (m.stripe.com/6) ────────────────────────────────
@@ -497,9 +823,9 @@ async fn register_fingerprint(
         "a": {
             "a": {"v": "true", "t": 0},
             "b": {"v": "true", "t": 0},
-            "c": {"v": "en-US", "t": 0},
+            "c": {"v": BROWSER_LOCALE, "t": 0},
             "d": {"v": "Win32", "t": 0},
-            "f": {"v": "1920w_1040h_24d_1r", "t": 0},
+            "f": {"v": BROWSER_SCREEN_FINGERPRINT, "t": 0},
             "g": {"v": "8", "t": 0},
             "h": {"v": "false", "t": 0},
             "l": {"v": USER_AGENT, "t": 0},
@@ -559,6 +885,7 @@ async fn register_fingerprint(
 async fn init_checkout(
     client: &reqwest::Client,
     session_id: &str,
+    publishable_key: &str,
     app: &AppHandle,
     task_id: &str,
 ) -> Result<(serde_json::Value, String), String> {
@@ -566,10 +893,10 @@ async fn init_checkout(
 
     for version in [STRIPE_VERSION_BASE, STRIPE_VERSION_FULL] {
         let mut params = HashMap::new();
-        params.insert("key", KNOWN_PK);
+        params.insert("key", publishable_key);
         params.insert("eid", "NA");
-        params.insert("browser_locale", "en-US");
-        params.insert("browser_timezone", "America/Chicago");
+        params.insert("browser_locale", BROWSER_LOCALE);
+        params.insert("browser_timezone", BROWSER_TIMEZONE);
         params.insert("redirect_type", "url");
 
         emit_log(app, task_id, "info", &format!("  初始化结账会话 version={}...", &version[..version.len().min(30)]));
@@ -608,6 +935,12 @@ async fn init_checkout(
         }
 
         let body_text = resp.text().await.unwrap_or_default();
+        emit_log(app, task_id, "error", &format!(
+            "  init 失败 [{}], key={}, body={}",
+            status,
+            mask_publishable_key(publishable_key),
+            &body_text[..body_text.len().min(500)]
+        ));
         if status.as_u16() == 400 && body_text.to_lowercase().contains("beta") {
             emit_log(app, task_id, "warn", "  版本不支持 beta, 尝试下一个...");
             continue;
@@ -619,10 +952,41 @@ async fn init_checkout(
 }
 
 // ─── 提取 hCaptcha 配置 ───────────────────────────────────────
+fn find_string_field_recursive(value: &serde_json::Value, key_needles: &[&str]) -> Option<String> {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, child) in map {
+                let key_lower = key.to_ascii_lowercase();
+                if key_needles.iter().any(|needle| key_lower == *needle || key_lower.contains(*needle)) {
+                    if let Some(s) = child.as_str() {
+                        if !s.is_empty() {
+                            return Some(s.to_string());
+                        }
+                    }
+                }
+                if let Some(found) = find_string_field_recursive(child, key_needles) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        serde_json::Value::Array(items) => {
+            for child in items {
+                if let Some(found) = find_string_field_recursive(child, key_needles) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
 fn extract_hcaptcha_config(init_resp: &serde_json::Value) -> (String, String) {
     let raw = serde_json::to_string(init_resp).unwrap_or_default();
     let mut site_key = HCAPTCHA_SITE_KEY_FALLBACK.to_string();
-    let mut rqdata = String::new();
+    let mut rqdata = find_string_field_recursive(init_resp, &["hcaptcha_rqdata", "rqdata"])
+        .unwrap_or_default();
 
     if let Some(sk) = init_resp.get("site_key").and_then(|v| v.as_str()) {
         site_key = sk.to_string();
@@ -633,18 +997,51 @@ fn extract_hcaptcha_config(init_resp: &serde_json::Value) -> (String, String) {
         }
     }
 
-    let re_rq = regex::Regex::new(r#""hcaptcha_rqdata"\s*:\s*"([^"]+)""#).unwrap();
-    if let Some(cap) = re_rq.captures(&raw) {
-        rqdata = cap[1].to_string();
+    if rqdata.is_empty() {
+        let re_rq = regex::Regex::new(r#""(?:hcaptcha_)?rqdata"\s*:\s*"([^"]+)""#).unwrap();
+        if let Some(cap) = re_rq.captures(&raw) {
+            rqdata = cap[1].to_string();
+        }
     }
 
     (site_key, rqdata)
+}
+
+fn build_checkout_consent_fields(init_resp: &serde_json::Value) -> Vec<(String, String)> {
+    let mut fields = Vec::new();
+    if init_resp
+        .pointer("/consent_collection/terms_of_service")
+        .and_then(|v| v.as_str())
+        == Some("required")
+    {
+        fields.push(("consent[terms_of_service]".to_string(), "accepted".to_string()));
+    }
+    fields
+}
+
+fn is_retryable_confirm_captcha_error(error: &str) -> bool {
+    let error_lower = error.to_lowercase();
+    if error_lower.contains("3ds")
+        || error_lower.contains("challenge")
+        || error_lower.contains("requires_payment_method")
+        || error_lower.contains("setup_intent_authentication_failure")
+        || error_lower.contains("previously used")
+        || error_lower.contains("paymentmethod was previously used")
+    {
+        return false;
+    }
+
+    error_lower.contains("captcha")
+        || error_lower.contains("hcaptcha")
+        || error_lower.contains("blocked")
+        || error_lower.contains("radar")
 }
 
 // ─── 获取 elements session (Python 的 fetch_elements_session) ───
 async fn fetch_elements_session(
     client: &reqwest::Client,
     session_id: &str,
+    publishable_key: &str,
     stripe_js_id: &str,
     stripe_ver: &str,
     app: &AppHandle,
@@ -660,15 +1057,14 @@ async fn fetch_elements_session(
         ("deferred_intent[currency]", "usd"),
         ("deferred_intent[setup_future_usage]", "off_session"),
         ("deferred_intent[payment_method_types][0]", "card"),
-        ("deferred_intent[payment_method_types][1]", "link"),
         ("currency", "usd"),
-        ("key", KNOWN_PK),
+        ("key", publishable_key),
         ("_stripe_version", stripe_ver),
         ("elements_init_source", "checkout"),
         ("hosted_surface", "checkout"),
         ("referrer_host", WINDSURF_HOST),
         ("stripe_js_id", stripe_js_id),
-        ("locale", "en"),
+        ("locale", BROWSER_LOCALE),
         ("type", "deferred_intent"),
         ("checkout_session_id", session_id),
     ];
@@ -716,6 +1112,7 @@ async fn fetch_elements_session(
 async fn update_address(
     client: &reqwest::Client,
     session_id: &str,
+    publishable_key: &str,
     addr: &AddressInfo,
     _stripe_js_id: &str,
     _elements_session_id: &str,
@@ -746,7 +1143,7 @@ async fn update_address(
             ("eid".to_string(), "NA".to_string()),
         ];
         form_data.extend(accumulated.clone());
-        form_data.push(("key".to_string(), KNOWN_PK.to_string()));
+        form_data.push(("key".to_string(), publishable_key.to_string()));
 
         let step_name = if step_fields.is_empty() { "(焦点变更)" } else { step_fields[0].0 };
         emit_log(app, task_id, "debug", &format!("  [address] step {}/6: {}", i + 1, step_name));
@@ -776,14 +1173,75 @@ async fn update_address(
     Ok(())
 }
 
+fn build_hcaptcha_task_body(
+    site_key: &str,
+    rqdata: Option<&str>,
+    website_url: &str,
+    is_invisible: bool,
+    captcha_proxy: Option<&(String, String, u16, Option<String>, Option<String>)>,
+) -> serde_json::Value {
+    let mut task_body = serde_json::Map::new();
+    task_body.insert("type".to_string(), json!(if captcha_proxy.is_some() { "HCaptchaTask" } else { "HCaptchaTaskProxyless" }));
+    task_body.insert("websiteURL".to_string(), json!(website_url));
+    task_body.insert("websiteKey".to_string(), json!(site_key));
+    task_body.insert("isEnterprise".to_string(), json!(true));
+    task_body.insert("isInvisible".to_string(), json!(is_invisible));
+    task_body.insert("userAgent".to_string(), json!(USER_AGENT));
+    if let Some(rq) = rqdata {
+        if !rq.is_empty() {
+            task_body.insert("rqdata".to_string(), json!(rq));
+        }
+    }
+    if let Some((proxy_type, proxy_address, proxy_port, proxy_login, proxy_password)) = captcha_proxy {
+        task_body.insert("proxyType".to_string(), json!(proxy_type));
+        task_body.insert("proxyAddress".to_string(), json!(proxy_address));
+        task_body.insert("proxyPort".to_string(), json!(*proxy_port));
+        if let Some(login) = proxy_login {
+            task_body.insert("proxyLogin".to_string(), json!(login));
+        }
+        if let Some(password) = proxy_password {
+            task_body.insert("proxyPassword".to_string(), json!(password));
+        }
+    }
+    serde_json::Value::Object(task_body)
+}
+
 // ─── 解 hCaptcha ──────────────────────────────────────────────
 async fn solve_hcaptcha(
     captcha_cfg: &CaptchaConfig,
+    proxy: &Option<ProxyConfig>,
     site_key: &str,
+    rqdata: Option<&str>,
+    website_url: &str,
+    is_invisible: bool,
     app: &AppHandle,
     task_id: &str,
-) -> Result<(String, String), String> {
+) -> Result<(String, String, String), String> {
     let max_retries = 3;
+    let normalized_proxy = normalize_proxy_for_captcha(proxy);
+    let captcha_proxy = match normalized_proxy {
+        Some(proxy_params) if is_local_or_private_proxy_address(&proxy_params.1) => {
+            emit_log(app, task_id, "warn", &format!(
+                "  hCaptcha 代理 {}://{}:{} 是本机/内网地址，YesCaptcha 远程服务器无法访问；将改用 Proxyless 解题。需要公网代理才可同代理解题。",
+                proxy_params.0,
+                proxy_params.1,
+                proxy_params.2
+            ));
+            None
+        }
+        other => other,
+    };
+    let has_proxy = captcha_proxy.is_some();
+    if let Some((proxy_type, proxy_address, proxy_port, _, _)) = &captcha_proxy {
+        emit_log(app, task_id, "info", &format!(
+            "  hCaptcha 将尝试同代理解题: {}://{}:{}",
+            proxy_type,
+            proxy_address,
+            proxy_port
+        ));
+    } else {
+        emit_log(app, task_id, "warn", "  hCaptcha 未配置代理，将使用 Proxyless 解题，3DS challenge 可能被 Stripe 拒绝");
+    }
 
     for retry in 0..max_retries {
         if retry > 0 {
@@ -792,44 +1250,75 @@ async fn solve_hcaptcha(
 
         emit_log(app, task_id, "info", &format!("  解 hCaptcha (siteKey: {}...)", &site_key[..site_key.len().min(20)]));
 
-        let task_body = json!({
-            "type": "HCaptchaTaskProxyless",
-            "websiteURL": "https://b.stripecdn.com/stripethirdparty-srv/assets/v32.1/HCaptchaInvisible.html",
-            "websiteKey": site_key,
-            "isEnterprise": true,
-            "userAgent": USER_AGENT,
-        });
+        let has_rqdata = rqdata.map_or(false, |rq| !rq.is_empty());
+        emit_log(app, task_id, "debug", &format!(
+            "  [captcha] websiteURL={}, invisible={}, rqdata={}, proxy={}",
+            website_url,
+            is_invisible,
+            if has_rqdata { "yes" } else { "no" },
+            if has_proxy { "yes" } else { "no" }
+        ));
 
         let create_url = format!("{}/createTask", captcha_cfg.api_url.trim_end_matches('/'));
-        let create_payload = json!({
-            "clientKey": captcha_cfg.api_key,
-            "task": task_body,
-        });
-
         emit_log(app, task_id, "debug", &format!("  [captcha] URL: {}", create_url));
         emit_log(app, task_id, "debug", &format!("  [captcha] key: {}...{}", &captcha_cfg.api_key[..captcha_cfg.api_key.len().min(8)], &captcha_cfg.api_key[captcha_cfg.api_key.len().saturating_sub(6)..]));
 
         let http = reqwest::Client::new();
-        let create_resp = http.post(&create_url)
-            .json(&create_payload)
-            .timeout(std::time::Duration::from_secs(15))
-            .send()
-            .await
-            .map_err(|e| format!("创建验证码任务失败: {}", e))?;
+        let mut task_bodies = Vec::new();
+        if let Some(proxy_params) = captcha_proxy.as_ref() {
+            task_bodies.push(("HCaptchaTask", build_hcaptcha_task_body(site_key, rqdata, website_url, is_invisible, Some(proxy_params))));
+            task_bodies.push(("HCaptchaTaskProxyless", build_hcaptcha_task_body(site_key, rqdata, website_url, is_invisible, None)));
+        } else {
+            task_bodies.push(("HCaptchaTaskProxyless", build_hcaptcha_task_body(site_key, rqdata, website_url, is_invisible, None)));
+        }
 
-        let data: serde_json::Value = create_resp.json().await
-            .map_err(|e| format!("解析验证码响应失败: {}", e))?;
+        let mut captcha_task_id = String::new();
+        for (task_type, task_body) in task_bodies {
+            emit_log(app, task_id, "debug", &format!("  [captcha] task_type={}", task_type));
+            let create_payload = json!({
+                "clientKey": captcha_cfg.api_key,
+                "task": task_body,
+            });
 
-        if data.get("errorId").and_then(|v| v.as_i64()).unwrap_or(1) != 0 {
-            let desc = data.get("errorDescription").and_then(|v| v.as_str()).unwrap_or("?");
-            let err_code = data.get("errorCode").and_then(|v| v.as_str()).unwrap_or("?");
-            emit_log(app, task_id, "error", &format!("  任务创建失败: {} (code: {}, full: {})", desc, err_code, data));
+            let create_resp = match http.post(&create_url)
+                .json(&create_payload)
+                .timeout(std::time::Duration::from_secs(15))
+                .send()
+                .await
+            {
+                Ok(resp) => resp,
+                Err(e) => {
+                    emit_log(app, task_id, "warn", &format!("  {} 创建请求失败: {}", task_type, e));
+                    continue;
+                }
+            };
+
+            let data: serde_json::Value = match create_resp.json().await {
+                Ok(data) => data,
+                Err(e) => {
+                    emit_log(app, task_id, "warn", &format!("  {} 创建响应解析失败: {}", task_type, e));
+                    continue;
+                }
+            };
+
+            if data.get("errorId").and_then(|v| v.as_i64()).unwrap_or(1) != 0 {
+                let desc = data.get("errorDescription").and_then(|v| v.as_str()).unwrap_or("?");
+                let err_code = data.get("errorCode").and_then(|v| v.as_str()).unwrap_or("?");
+                emit_log(app, task_id, "warn", &format!("  {} 创建失败: {} (code: {}, full: {})", task_type, desc, err_code, data));
+                continue;
+            }
+
+            captcha_task_id = data.get("taskId").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            if !captcha_task_id.is_empty() {
+                emit_log(app, task_id, "info", &format!("  {} 任务: {} 等待解题 ...", task_type, captcha_task_id));
+                break;
+            }
+        }
+
+        if captcha_task_id.is_empty() {
             tokio::time::sleep(std::time::Duration::from_secs(3)).await;
             continue;
         }
-
-        let captcha_task_id = data.get("taskId").and_then(|v| v.as_str()).unwrap_or("");
-        emit_log(app, task_id, "info", &format!("  任务: {} 等待解题 ...", captcha_task_id));
 
         let result_url = format!("{}/getTaskResult", captcha_cfg.api_url);
         for attempt in 0..60 {
@@ -876,8 +1365,22 @@ async fn solve_hcaptcha(
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
+                let solution_user_agent = solution.get("userAgent")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let solver_ip = result_data.get("ip")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 emit_log(app, task_id, "info", &format!("  已解决 (token: {} chars)", token.len()));
-                return Ok((token, ekey));
+                if !solver_ip.is_empty() || !solution_user_agent.is_empty() {
+                    emit_log(app, task_id, "debug", &format!(
+                        "  [captcha] solver_ip={}, solution_ua={}",
+                        if solver_ip.is_empty() { "unknown" } else { solver_ip },
+                        if solution_user_agent.is_empty() { "unknown" } else { solution_user_agent.as_str() }
+                    ));
+                }
+                return Ok((token, ekey, solution_user_agent));
             }
 
             if attempt % 5 == 4 {
@@ -892,6 +1395,7 @@ async fn solve_hcaptcha(
 // ─── 创建 Payment Method ─────────────────────────────────────
 async fn create_payment_method(
     client: &reqwest::Client,
+    publishable_key: &str,
     card: &CardInfo,
     addr: &AddressInfo,
     name: &str,
@@ -922,7 +1426,7 @@ async fn create_payment_method(
         ("guid".into(), guid.to_string()),
         ("muid".into(), muid.to_string()),
         ("sid".into(), sid.to_string()),
-        ("key".into(), KNOWN_PK.into()),
+        ("key".into(), publishable_key.to_string()),
         ("payment_user_agent".into(), format!("stripe.js/{}; stripe-js-v3/{}; checkout", "d0116183d3", "d0116183d3")),
         ("client_attribution_metadata[client_session_id]".into(), stripe_js_id.to_string()),
         ("client_attribution_metadata[checkout_session_id]".into(), session_id.to_string()),
@@ -965,6 +1469,7 @@ async fn create_payment_method(
 // ─── 确认支付 ─────────────────────────────────────────────────
 async fn confirm_payment(
     client: &reqwest::Client,
+    publishable_key: &str,
     session_id: &str,
     pm_id: &str,
     captcha_token: &str,
@@ -977,12 +1482,12 @@ async fn confirm_payment(
     captcha_cfg: &CaptchaConfig,
     px_tokens: &PxTokens,
     stripe_ver: &str,
+    proxy: &Option<ProxyConfig>,
     app: &AppHandle,
     task_id: &str,
 ) -> Result<serde_json::Value, String> {
     let init_checksum = init_resp.get("init_checksum").and_then(|v| v.as_str()).unwrap_or("");
     let config_id = init_resp.get("config_id").and_then(|v| v.as_str()).unwrap_or("");
-
     // 从 line_items 计算 expected_amount (与 Python 一致)
     let expected_amount = if let Some(items) = init_resp.get("line_items").and_then(|v| v.as_array()) {
         let total: i64 = items.iter().map(|item| item.get("amount").and_then(|a| a.as_i64()).unwrap_or(0)).sum();
@@ -1015,10 +1520,16 @@ async fn confirm_payment(
         ("guid".into(), guid.to_string()),
         ("muid".into(), muid.to_string()),
         ("sid".into(), sid.to_string()),
-        ("key".into(), KNOWN_PK.into()),
+        ("key".into(), publishable_key.to_string()),
         ("version".into(), stripe_ver.to_string()),
         ("init_checksum".into(), init_checksum.to_string()),
     ];
+
+    let consent_fields = build_checkout_consent_fields(init_resp);
+    if !consent_fields.is_empty() {
+        emit_log(app, task_id, "info", "  [confirm] 检测到商户服务条款 required，提交已接受条款");
+        data.extend(consent_fields);
+    }
 
     // js_checksum 是 Stripe.js 完整性校验 (浏览器必发)
     if !px_tokens.js_checksum.is_empty() {
@@ -1101,7 +1612,7 @@ async fn confirm_payment(
 
     if has_next_action {
         emit_log(app, task_id, "info", "  触发 3DS 验证，正在处理 ...");
-        handle_3ds(client, &confirm_data, captcha_token, captcha_cfg, guid, muid, sid, app, task_id).await?;
+        handle_3ds(client, publishable_key, &confirm_data, captcha_token, captcha_cfg, proxy, guid, muid, sid, app, task_id).await?;
     }
 
     Ok(confirm_data)
@@ -1110,9 +1621,11 @@ async fn confirm_payment(
 // ─── 3DS 处理 ─────────────────────────────────────────────────
 async fn handle_3ds(
     client: &reqwest::Client,
+    publishable_key: &str,
     confirm_data: &serde_json::Value,
     captcha_token: &str,
     captcha_cfg: &CaptchaConfig,
+    proxy: &Option<ProxyConfig>,
     _guid: &str,
     _muid: &str,
     _sid: &str,
@@ -1155,25 +1668,48 @@ async fn handle_3ds(
             }
         }
     }
+    let challenge_rqdata = find_string_field_recursive(confirm_data, &["hcaptcha_rqdata", "rqdata"])
+        .unwrap_or_default();
+    emit_log(app, task_id, "debug", &format!(
+        "  3DS challenge: site_key={}, rqdata={}",
+        challenge_site_key.as_deref().unwrap_or("none"),
+        if challenge_rqdata.is_empty() { "no" } else { "yes" }
+    ));
 
     // 处理 challenge captcha
     if let (Some(ref sk), Some(ref seti), Some(ref cs)) = (&challenge_site_key, &seti_id, &client_secret) {
-        let max_attempts = 2;
+        let max_attempts = 1;
         for attempt in 1..=max_attempts {
             emit_log(app, task_id, "info", &format!("  解 challenge captcha (第 {}/{} 次) ...", attempt, max_attempts));
-            let (challenge_token, _ekey) = solve_hcaptcha(captcha_cfg, sk, app, task_id).await?;
+            let challenge_rqdata_opt = if challenge_rqdata.is_empty() { None } else { Some(challenge_rqdata.as_str()) };
+            let (challenge_token, _ekey, challenge_user_agent) = solve_hcaptcha(
+                captcha_cfg,
+                proxy,
+                sk,
+                challenge_rqdata_opt,
+                STRIPE_HCAPTCHA_WEBSITE_URL,
+                true,
+                app,
+                task_id,
+            ).await?;
 
             let verify_url = format!("{}/v1/setup_intents/{}/verify_challenge", STRIPE_API, seti);
             let verify_data: Vec<(String, String)> = vec![
                 ("client_secret".into(), cs.clone()),
                 ("challenge_response_token".into(), challenge_token),
                 ("captcha_vendor_name".into(), "hcaptcha".into()),
-                ("key".into(), KNOWN_PK.into()),
+                ("key".into(), publishable_key.to_string()),
                 ("_stripe_version".into(), STRIPE_VERSION_BASE.into()),
             ];
 
+            let verify_user_agent = if challenge_user_agent.is_empty() {
+                USER_AGENT
+            } else {
+                challenge_user_agent.as_str()
+            };
             let resp = client.post(&verify_url)
                 .headers(stripe_headers())
+                .header("User-Agent", verify_user_agent)
                 .form(&verify_data)
                 .send()
                 .await
@@ -1182,17 +1718,28 @@ async fn handle_3ds(
             if !resp.status().is_success() {
                 let body = resp.text().await.unwrap_or_default();
                 emit_log(app, task_id, "error", &format!("  verify_challenge 失败: {}", &body[..body.len().min(300)]));
-                break;
+                return Err(format!("verify_challenge 失败: {}", &body[..body.len().min(300)]));
             }
 
             let result: serde_json::Value = resp.json().await.unwrap_or_default();
             let verify_status = result.get("status").and_then(|v| v.as_str()).unwrap_or("unknown");
             emit_log(app, task_id, "info", &format!("  verify_challenge 状态: {}", verify_status));
 
-            // requires_payment_method = 卡被拒绝，不是 captcha 问题，直接退出
             if verify_status == "requires_payment_method" {
-                emit_log(app, task_id, "warn", "  卡被拒绝 (requires_payment_method)，退出 challenge 重试");
-                break;
+                let setup_error_msg = result
+                    .pointer("/last_setup_error/message")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("卡片或 3DS 验证被拒绝");
+                let setup_error_code = result
+                    .pointer("/last_setup_error/code")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                emit_log(app, task_id, "error", &format!(
+                    "  卡被拒绝/3DS失败 (requires_payment_method): code={}, msg={}",
+                    setup_error_code,
+                    setup_error_msg
+                ));
+                return Err(format!("3DS 验证失败: {}", setup_error_msg));
             }
 
             // 检查 captcha 错误
@@ -1200,11 +1747,7 @@ async fn handle_3ds(
             if let Some(err) = setup_error {
                 let err_msg = err.get("message").and_then(|v| v.as_str()).unwrap_or("");
                 if err_msg.to_lowercase().contains("captcha") {
-                    if attempt < max_attempts {
-                        emit_log(app, task_id, "warn", "  challenge captcha 被拒，重试...");
-                        continue;
-                    }
-                    return Err(format!("challenge captcha 连续 {} 次被拒", max_attempts));
+                    return Err(format!("challenge captcha 被拒: {}", err_msg));
                 }
             }
 
@@ -1223,7 +1766,7 @@ async fn handle_3ds(
                 ("client_secret".into(), cs.clone()),
                 ("challenge_response_token".into(), captcha_token.to_string()),
                 ("captcha_vendor_name".into(), "hcaptcha".into()),
-                ("key".into(), KNOWN_PK.into()),
+                ("key".into(), publishable_key.to_string()),
                 ("_stripe_version".into(), STRIPE_VERSION_BASE.into()),
             ];
 
@@ -1263,11 +1806,11 @@ async fn handle_3ds(
             "threeDSCompInd": "Y",
             "browserJavaEnabled": false,
             "browserJavascriptEnabled": true,
-            "browserLanguage": "en-US",
-            "browserColorDepth": "24",
-            "browserScreenHeight": "1080",
-            "browserScreenWidth": "1920",
-            "browserTZ": "360",
+            "browserLanguage": BROWSER_LOCALE,
+            "browserColorDepth": BROWSER_COLOR_DEPTH,
+            "browserScreenHeight": BROWSER_SCREEN_HEIGHT,
+            "browserScreenWidth": BROWSER_SCREEN_WIDTH,
+            "browserTZ": BROWSER_TZ_OFFSET_MINUTES,
             "browserUserAgent": USER_AGENT,
         });
 
@@ -1279,7 +1822,7 @@ async fn handle_3ds(
             ("one_click_authn_device_support[spc_eligible]".into(), "true".into()),
             ("one_click_authn_device_support[webauthn_eligible]".into(), "true".into()),
             ("one_click_authn_device_support[publickey_credentials_get_allowed]".into(), "true".into()),
-            ("key".into(), KNOWN_PK.into()),
+            ("key".into(), publishable_key.to_string()),
             ("_stripe_version".into(), STRIPE_VERSION_BASE.into()),
         ];
 
@@ -1347,7 +1890,7 @@ async fn handle_3ds(
         let params = [
             ("client_secret", cs.as_str()),
             ("is_stripe_sdk", "false"),
-            ("key", KNOWN_PK),
+            ("key", publishable_key),
             ("_stripe_version", STRIPE_VERSION_BASE),
         ];
 
@@ -1382,12 +1925,13 @@ async fn handle_3ds(
 async fn poll_result(
     client: &reqwest::Client,
     session_id: &str,
+    publishable_key: &str,
     app: &AppHandle,
     task_id: &str,
 ) -> Result<serde_json::Value, String> {
     let url = format!("{}/v1/payment_pages/{}/poll", STRIPE_API, session_id);
     let params = [
-        ("key", KNOWN_PK),
+        ("key", publishable_key),
         ("_stripe_version", STRIPE_VERSION_BASE),
     ];
 
@@ -1460,6 +2004,7 @@ async fn bind_single_account(
     app: &AppHandle,
     task_id: &str,
 ) -> Result<serde_json::Value, String> {
+    ensure_batch_not_cancelled(task_id).await?;
     let client = build_stripe_client(proxy)?;
     let addr = custom_address.clone().unwrap_or_else(generate_random_address);
     let name = custom_name.clone().unwrap_or_else(generate_random_name);
@@ -1475,40 +2020,58 @@ async fn bind_single_account(
     emit_log(app, task_id, "info", "[1/6] 解析 checkout session ID ...");
     let session_id = parse_session_id(stripe_url)?;
     emit_log(app, task_id, "info", &format!("  session_id: {}", session_id));
+    let publishable_key = resolve_publishable_key(&client, stripe_url, app, task_id).await;
 
+    ensure_batch_not_cancelled(task_id).await?;
     // Step 2: 注册指纹 & init checkout
     emit_progress(app, task_id, account_id, 2, "初始化", "running");
     let (guid, muid, sid) = register_fingerprint(&client, app, task_id).await?;
 
+    ensure_batch_not_cancelled(task_id).await?;
+    emit_progress(app, task_id, account_id, 2, "初始化 Checkout", "running");
     emit_log(app, task_id, "info", "[2/6] 初始化 checkout ...");
-    let (init_resp, stripe_ver) = init_checkout(&client, &session_id, app, task_id).await?;
+    let (init_resp, stripe_ver) = init_checkout(&client, &session_id, &publishable_key, app, task_id).await?;
 
-    let display_name = init_resp.pointer("/account_settings/display_name")
-        .and_then(|v| v.as_str()).unwrap_or("?");
-    emit_log(app, task_id, "info", &format!("  商户: {}", display_name));
+    let merchant = init_resp.pointer("/business_profile/name")
+        .or(init_resp.get("merchant_name"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("?");
+    emit_log(app, task_id, "info", &format!("  商户: {}", merchant));
 
     // Step 2c: 获取 elements session (与 Python 一致)
     let (elements_session_id, _es_config_id) = fetch_elements_session(
-        &client, &session_id, &stripe_js_id, &stripe_ver, app, task_id,
+        &client, &session_id, &publishable_key, &stripe_js_id, &stripe_ver, app, task_id,
     ).await?;
 
+    ensure_batch_not_cancelled(task_id).await?;
     // Step 3: 提交地址
     emit_progress(app, task_id, account_id, 3, "提交地址", "running");
     emit_log(app, task_id, "info", "[3/6] 提交账单地址 ...");
-    update_address(&client, &session_id, &addr, &stripe_js_id, &elements_session_id, &stripe_ver, app, task_id).await?;
+    update_address(&client, &session_id, &publishable_key, &addr, &stripe_js_id, &elements_session_id, &stripe_ver, app, task_id).await?;
 
+    ensure_batch_not_cancelled(task_id).await?;
     // Step 4: 解 captcha + 创建 payment_method
     emit_progress(app, task_id, account_id, 4, "创建支付方式", "running");
-    let (hcaptcha_site_key, _rqdata) = extract_hcaptcha_config(&init_resp);
+    let (hcaptcha_site_key, hcaptcha_rqdata) = extract_hcaptcha_config(&init_resp);
+    let hcaptcha_rqdata_opt = if hcaptcha_rqdata.is_empty() { None } else { Some(hcaptcha_rqdata.as_str()) };
     let config_id = init_resp.get("config_id").and_then(|v| v.as_str()).unwrap_or("");
 
     let (captcha_token, pm_id) = if presolve_captcha {
         // 预解模式: 先解 hCaptcha，带 token 提交降低风控评级
         emit_log(app, task_id, "info", "[3.5/6] 解 hCaptcha ...");
-        match solve_hcaptcha(captcha_cfg, &hcaptcha_site_key, app, task_id).await {
-            Ok((token, _ekey)) => {
+        match solve_hcaptcha(
+            captcha_cfg,
+            proxy,
+            &hcaptcha_site_key,
+            hcaptcha_rqdata_opt,
+            STRIPE_HCAPTCHA_WEBSITE_URL,
+            true,
+            app,
+            task_id,
+        ).await {
+            Ok((token, _ekey, _captcha_user_agent)) => {
                 let pm = create_payment_method(
-                    &client, card, &addr, &name, email, &token, &session_id,
+                    &client, &publishable_key, card, &addr, &name, email, &token, &session_id,
                     config_id, &stripe_js_id, &guid, &muid, &sid, app, task_id,
                 ).await?;
                 (token, pm)
@@ -1516,7 +2079,7 @@ async fn bind_single_account(
             Err(captcha_err) => {
                 emit_log(app, task_id, "warn", &format!("  hCaptcha 失败: {}, 尝试不带 captcha 提交 ...", &captcha_err[..captcha_err.len().min(80)]));
                 let pm = create_payment_method(
-                    &client, card, &addr, &name, email, "", &session_id,
+                    &client, &publishable_key, card, &addr, &name, email, "", &session_id,
                     config_id, &stripe_js_id, &guid, &muid, &sid, app, task_id,
                 ).await?;
                 ("".to_string(), pm)
@@ -1526,7 +2089,7 @@ async fn bind_single_account(
         // 非预解模式: 先不带 captcha 提交
         emit_log(app, task_id, "info", "[3.5/6] 尝试不带 hCaptcha 直接提交 ...");
         match create_payment_method(
-            &client, card, &addr, &name, email, "", &session_id,
+            &client, &publishable_key, card, &addr, &name, email, "", &session_id,
             config_id, &stripe_js_id, &guid, &muid, &sid, app, task_id,
         ).await {
             Ok(pm) => ("".to_string(), pm),
@@ -1535,9 +2098,18 @@ async fn bind_single_account(
                 if err_lower.contains("captcha") || err_lower.contains("hcaptcha")
                     || err_lower.contains("blocked") || err_lower.contains("radar") {
                     emit_log(app, task_id, "info", "  需要 hCaptcha，开始解题 ...");
-                    let (token, _ekey) = solve_hcaptcha(captcha_cfg, &hcaptcha_site_key, app, task_id).await?;
+                    let (token, _ekey, _captcha_user_agent) = solve_hcaptcha(
+                        captcha_cfg,
+                        proxy,
+                        &hcaptcha_site_key,
+                        hcaptcha_rqdata_opt,
+                        STRIPE_HCAPTCHA_WEBSITE_URL,
+                        true,
+                        app,
+                        task_id,
+                    ).await?;
                     let pm = create_payment_method(
-                        &client, card, &addr, &name, email, &token, &session_id,
+                        &client, &publishable_key, card, &addr, &name, email, &token, &session_id,
                         config_id, &stripe_js_id, &guid, &muid, &sid, app, task_id,
                     ).await?;
                     (token, pm)
@@ -1548,9 +2120,10 @@ async fn bind_single_account(
         }
     };
 
+    ensure_batch_not_cancelled(task_id).await?;
     // Step 4.5: 获取 PX 反机器人令牌 (在 confirm 之前)
     emit_log(app, task_id, "info", "[4.5/6] 获取反机器人令牌 ...");
-    let px_tokens = match fetch_px_tokens(stripe_url, app, task_id).await {
+    let px_tokens = match fetch_px_tokens(stripe_url, proxy, app, task_id).await {
         Ok(t) => t,
         Err(e) => {
             emit_log(app, task_id, "warn", &format!("  PX 令牌获取失败: {}, 将不带令牌继续", &e[..e.len().min(100)]));
@@ -1566,51 +2139,43 @@ async fn bind_single_account(
     };
     emit_log(app, task_id, "debug", &format!("  stripe.js version: {}", dynamic_stripe_ver));
 
-    // 确保 confirm 前有 passive_captcha_token (浏览器始终发送此字段)
-    let passive_captcha_token = if captcha_token.is_empty() {
-        emit_log(app, task_id, "info", "[4.6/6] 解被动 hCaptcha (用于 confirm) ...");
-        match solve_hcaptcha(captcha_cfg, HCAPTCHA_SITE_KEY_FALLBACK, app, task_id).await {
-            Ok((token, _ekey)) => {
-                emit_log(app, task_id, "info", &format!("  被动 captcha 已解决 ({}字符)", token.len()));
-                token
-            }
-            Err(e) => {
-                emit_log(app, task_id, "warn", &format!("  被动 captcha 失败: {}, 继续...", &e[..e.len().min(80)]));
-                String::new()
-            }
-        }
-    } else {
-        captcha_token.clone()
-    };
-
+    ensure_batch_not_cancelled(task_id).await?;
     // Step 5: confirm
     emit_progress(app, task_id, account_id, 5, "确认支付", "running");
     let confirm_result = confirm_payment(
-        &client, &session_id, &pm_id, &passive_captcha_token, &init_resp,
+        &client, &publishable_key, &session_id, &pm_id, &captcha_token, &init_resp,
         &guid, &muid, &sid, &stripe_js_id, &elements_session_id,
-        captcha_cfg, &px_tokens, &dynamic_stripe_ver, app, task_id,
+        captcha_cfg, &px_tokens, &dynamic_stripe_ver, proxy, app, task_id,
     ).await;
 
     match confirm_result {
         Ok(_) => {},
-        Err(ref e) if !presolve_captcha && captcha_token.is_empty() && {
-            let el = e.to_lowercase();
-            el.contains("captcha") || el.contains("blocked") || el.contains("radar")
-        } => {
+        Err(ref e) if !presolve_captcha && captcha_token.is_empty() && is_retryable_confirm_captcha_error(e) => {
             emit_log(app, task_id, "info", "  confirm 需要 hCaptcha，开始解题后重试 ...");
-            let (solved_token, _ekey) = solve_hcaptcha(captcha_cfg, &hcaptcha_site_key, app, task_id).await?;
+            let (solved_token, _ekey, _captcha_user_agent) = solve_hcaptcha(
+                captcha_cfg,
+                proxy,
+                &hcaptcha_site_key,
+                hcaptcha_rqdata_opt,
+                STRIPE_HCAPTCHA_WEBSITE_URL,
+                true,
+                app,
+                task_id,
+            ).await?;
             confirm_payment(
-                &client, &session_id, &pm_id, &solved_token, &init_resp,
+                &client, &publishable_key, &session_id, &pm_id, &solved_token, &init_resp,
                 &guid, &muid, &sid, &stripe_js_id, &elements_session_id,
-                captcha_cfg, &px_tokens, &dynamic_stripe_ver, app, task_id,
+                captcha_cfg, &px_tokens, &dynamic_stripe_ver, proxy, app, task_id,
             ).await?;
         },
         Err(e) => return Err(e),
     }
 
+    ensure_batch_not_cancelled(task_id).await?;
     // Step 6: poll
     emit_progress(app, task_id, account_id, 6, "轮询结果", "running");
-    let result = poll_result(&client, &session_id, app, task_id).await?;
+    let result = poll_result(&client, &session_id, &publishable_key, app, task_id).await?;
+    ensure_batch_not_cancelled(task_id).await?;
 
     let state = result.get("state").and_then(|v| v.as_str()).unwrap_or("unknown");
     if state == "succeeded" {
@@ -1688,8 +2253,8 @@ pub async fn stripe_bind_start(
         let uuid = Uuid::parse_str(account_id_str).map_err(|e| e.to_string())?;
         let mut account = store.get_account(uuid).await.map_err(|e| e.to_string())?;
 
-        // 确保 token 有效
-        super::api_commands::ensure_valid_token(&store, &mut account, uuid).await?;
+        let force_refresh = account.refresh_token.as_ref().map_or(false, |rt| rt.starts_with("auth1_"));
+        super::api_commands::ensure_valid_token_with_force(&store, &mut account, uuid, force_refresh).await?;
         let token = account.token.clone().ok_or("No token available")?;
 
         emit_log(&app, &batch_id, "info", &format!("  获取试用链接: {} ...", account.email));
@@ -1699,25 +2264,15 @@ pub async fn stripe_bind_start(
             .and_then(|m| m.get(account_id_str))
             .cloned();
 
-        let windsurf_service = WindsurfService::new();
-        let auth1 = account.refresh_token.as_deref().filter(|t| t.starts_with("auth1_"));
-        let result = windsurf_service.subscribe_to_plan(
-            &token, auth1, teams_tier, payment_period, None, None, turnstile_token.as_deref(),
-        ).await.map_err(|e: AppError| format!("获取试用链接失败 ({}): {}", account.email, e))?;
-
-        // 检查API是否成功
-        let api_success = result.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
-        if !api_success {
-            let api_err = result.get("error").and_then(|v| v.as_str()).unwrap_or("未知错误");
-            let status_code = result.get("status_code").and_then(|v| v.as_u64()).unwrap_or(0);
-            emit_log(&app, &batch_id, "error", &format!("  ❌ {} 获取链接失败: {} (status={})", account.email, api_err, status_code));
-            return Err(format!("获取试用链接失败 ({}): {}", account.email, api_err));
-        }
-
-        let stripe_url = result.get("stripe_url")
-            .and_then(|v| v.as_str())
-            .ok_or(format!("未获取到 stripe_url ({})", account.email))?
-            .to_string();
+        let stripe_url = get_checkout_url_for_bind(
+            &app,
+            &batch_id,
+            &account,
+            &token,
+            teams_tier,
+            payment_period,
+            turnstile_token.as_deref(),
+        ).await?;
 
         emit_log(&app, &batch_id, "info", &format!("  ✅ {} → {}", account.email, &stripe_url[..stripe_url.len().min(80)]));
 
@@ -1773,6 +2328,25 @@ pub async fn stripe_bind_start(
             let handle = tokio::spawn(async move {
                 let _permit = sem.acquire().await.unwrap();
                 let task_key = format!("{}_{}", batch_id, account_id);
+
+                if is_batch_cancelled(&batch_id).await {
+                    {
+                        let mut tasks = BIND_TASKS.lock().await;
+                        if let Some(t) = tasks.get_mut(&task_key) {
+                            t.status = "cancelled".to_string();
+                            t.error = Some("任务已取消".to_string());
+                        }
+                    }
+                    emit_progress(&app, &batch_id, &account_id, 0, "已取消", "cancelled");
+                    let _ = app.emit("stripe-bind-task-done", json!({
+                        "task_id": batch_id,
+                        "account_id": account_id,
+                        "email": email,
+                        "status": "cancelled",
+                        "error": "任务已取消",
+                    }));
+                    return;
+                }
 
                 // 更新状态: running
                 {
@@ -1843,6 +2417,11 @@ pub async fn stripe_bind_start(
                                 }
                             }
                             Err(e) => {
+                                if e == "任务已取消" {
+                                    final_status = "cancelled".to_string();
+                                    final_error = Some(e.clone());
+                                    break;
+                                }
                                 let fail_count = failure_counter.fetch_add(1, Ordering::Relaxed) + 1;
                                 emit_log(&app, &batch_id, "warn", &format!(
                                     "  ❌ [{}] 调试卡 ****{} 出错: {} (累计失败 {}/{})",
@@ -1887,6 +2466,7 @@ pub async fn stripe_bind_start(
                                 ("failed".to_string(), Some(format!("state={}", state)))
                             }
                         }
+                        Err(e) if e == "任务已取消" => ("cancelled".to_string(), Some(e.clone())),
                         Err(e) => ("failed".to_string(), Some(e.clone())),
                     }
                 };
@@ -1942,6 +2522,7 @@ pub async fn stripe_bind_start(
         let _ = app_clone.emit("stripe-bind-batch-done", json!({
             "task_id": batch_id_clone,
         }));
+        CANCELLED_BATCHES.lock().await.remove(&batch_id_clone);
     });
 
     Ok(json!({
@@ -1980,11 +2561,13 @@ pub async fn stripe_bind_get_status(batch_id: String) -> Result<serde_json::Valu
 /// 取消绑卡任务
 #[tauri::command]
 pub async fn stripe_bind_cancel(batch_id: String) -> Result<serde_json::Value, String> {
+    CANCELLED_BATCHES.lock().await.insert(batch_id.clone());
     let mut tasks = BIND_TASKS.lock().await;
     let mut cancelled = 0;
     for task in tasks.values_mut() {
-        if task.task_id == batch_id && task.status == "pending" {
+        if task.task_id == batch_id && (task.status == "pending" || task.status == "running") {
             task.status = "cancelled".to_string();
+            task.error = Some("任务已取消".to_string());
             cancelled += 1;
         }
     }

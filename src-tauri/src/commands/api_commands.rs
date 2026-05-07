@@ -511,6 +511,7 @@ pub async fn refresh_token(
         "used_quota": updated_account.used_quota,
         "total_quota": updated_account.total_quota,
         "subscription_expires_at": updated_account.subscription_expires_at.map(|dt| dt.to_rfc3339()),
+        "subscription_active": updated_account.subscription_active,
         "is_disabled": updated_account.is_disabled,
         "is_team_owner": updated_account.is_team_owner,
         "windsurf_api_key": updated_account.windsurf_api_key,
@@ -1766,16 +1767,60 @@ pub async fn get_trial_payment_link(
     let force = account.refresh_token.as_ref().map_or(false, |rt| rt.starts_with("auth1_"));
     ensure_valid_token_with_force(&store, &mut account, uuid, force).await?;
 
-    let token = account.token.ok_or("No token available")?;
+    let is_devin_account = account.is_devin();
+    let token = account.token.clone().ok_or("No token available")?;
     let refresh_token = account.refresh_token.clone();
 
     // 默认值
     let final_teams_tier = teams_tier.unwrap_or(2); // 默认 Pro
     let final_payment_period = payment_period.unwrap_or(1); // 默认月付
 
-    // 调用Windsurf API获取支付链接
-    // 如果 refresh_token 是 auth1_ 开头，传给 subscribe_to_plan 做 Bearer 认证
+    // 如果 refresh_token 是 auth1_ 开头，后续可以传给 Devin 或 Windsurf 新账号接口做认证。
     let auth1 = refresh_token.as_deref().filter(|t| t.starts_with("auth1_"));
+
+    if is_devin_account && final_teams_tier == 2 {
+        let auth1_token = auth1.ok_or_else(|| {
+            format!("Devin账号缺少 auth1 token，请先刷新Token后重试 ({})", account.email)
+        })?;
+        let devin_service = DevinService::new();
+        let (stripe_url, org_id, org_name) = devin_service
+            .get_trial_checkout_url(auth1_token)
+            .await
+            .map_err(|e| format!("获取 Devin 试用链接失败 ({}): {}", account.email, e))?;
+
+        // Devin 账号的试用链接必须来自 app.devin.ai/api/billing/checkout；
+        // 不走 Windsurf SubscribeToPlan，避免 _backend/ 认证失败导致结果页没有可打开 URL。
+        let result = json!({
+            "success": true,
+            "stripe_url": stripe_url,
+            "stripe_session_id": WindsurfService::extract_checkout_session_id(&stripe_url),
+            "account_source": "devin",
+            "checkout_source": "devin",
+            "devin_org_id": org_id,
+            "devin_org_name": org_name,
+            "teams_tier": final_teams_tier,
+            "payment_period": final_payment_period,
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+        });
+
+        let log = OperationLog::new(
+            OperationType::GetAccountInfo,
+            OperationStatus::Success,
+            format!("获取 Devin 试用绑卡链接成功: {}", account.email),
+        )
+        .with_account(uuid, account.email.clone())
+        .with_details(json!({
+            "teams_tier": final_teams_tier,
+            "payment_period": final_payment_period,
+            "stripe_url": result.get("stripe_url").and_then(|v| v.as_str()).unwrap_or(""),
+            "checkout_source": "devin",
+        }));
+
+        let _ = store.add_log(log).await;
+        return Ok(result);
+    }
+
+    // 非 Devin 账号仍走 Windsurf SubscribeToPlan；auth1 新账号失败时保留 Devin fallback 兼容历史数据。
     let windsurf_service = WindsurfService::new();
     let result = match windsurf_service.subscribe_to_plan(
         &token,

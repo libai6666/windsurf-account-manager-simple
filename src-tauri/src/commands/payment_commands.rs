@@ -1,12 +1,36 @@
 use tauri::{command, AppHandle, WebviewWindowBuilder, WebviewUrl, Manager, Listener, State};
+use once_cell::sync::Lazy;
+use std::collections::{HashMap, HashSet};
 use std::process::Command;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use crate::utils::card_generator::{CardGenerator, VirtualCard};
 use crate::repository::DataStore;
 use crate::services::{DevinService, WindsurfService};
 use serde_json::json;
 use std::fs;
 use uuid::Uuid;
+
+#[cfg(target_os = "windows")]
+use winapi::shared::minwindef::{BOOL, LPARAM};
+#[cfg(target_os = "windows")]
+use winapi::shared::windef::HWND;
+#[cfg(target_os = "windows")]
+use winapi::um::winuser::{
+    EnumWindows, GetWindowTextLengthW, IsWindow, IsWindowVisible, PostMessageW, WM_CLOSE,
+};
+
+#[derive(Debug, Clone)]
+struct ExternalBrowserSession {
+    pid: u32,
+    window_handle: Option<isize>,
+    user_data_dir: Option<PathBuf>,
+    safe_to_terminate: bool,
+}
+
+static EXTERNAL_BROWSER_SESSIONS: Lazy<Mutex<HashMap<String, ExternalBrowserSession>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 #[command]
 pub async fn generate_virtual_card(data_store: State<'_, Arc<DataStore>>) -> Result<VirtualCard, String> {
@@ -1088,7 +1112,11 @@ pub async fn get_trial_payment_link_enhanced(
 
 /// 在系统默认浏览器中打开链接
 #[command]
-pub async fn open_external_link(url: String) -> Result<(), String> {
+pub async fn open_external_link(url: String, browser_path: Option<String>) -> Result<(), String> {
+    if open_with_tracked_browser(browser_path.as_deref(), &url, false).is_ok() {
+        return Ok(());
+    }
+
     #[cfg(target_os = "windows")]
     {
         Command::new("cmd")
@@ -1118,23 +1146,269 @@ pub async fn open_external_link(url: String) -> Result<(), String> {
 
 /// 在浏览器无痕模式中打开链接
 #[command]
-pub async fn open_external_link_incognito(url: String) -> Result<(), String> {
-    open_in_incognito_new_window(&url)
+pub async fn open_external_link_incognito(url: String, browser_path: Option<String>) -> Result<(), String> {
+    open_in_incognito_new_window(&url, browser_path.as_deref())
 }
 
 /// 在浏览器无痕模式的新窗口中打开链接（每个链接独立窗口）
 #[command]
-pub async fn open_external_link_incognito_new_window(url: String) -> Result<(), String> {
-    open_in_incognito_new_window(&url)
+pub async fn open_external_link_incognito_new_window(url: String, browser_path: Option<String>) -> Result<(), String> {
+    open_in_incognito_new_window(&url, browser_path.as_deref())
+}
+
+fn browser_session_key(url: &str) -> String {
+    url.trim().to_string()
+}
+
+fn record_external_browser_session(url: &str, session: ExternalBrowserSession) {
+    // 用 checkout URL 做键，前端关闭“已完成窗口”时可以按链接精准找到本应用打开的浏览器进程。
+    if let Ok(mut sessions) = EXTERNAL_BROWSER_SESSIONS.lock() {
+        sessions.insert(browser_session_key(url), session);
+    }
+}
+
+fn take_external_browser_session(url: &str) -> Option<ExternalBrowserSession> {
+    EXTERNAL_BROWSER_SESSIONS
+        .lock()
+        .ok()
+        .and_then(|mut sessions| sessions.remove(&browser_session_key(url)))
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn enum_visible_window_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    if IsWindowVisible(hwnd) != 0 && GetWindowTextLengthW(hwnd) > 0 {
+        let handles = &mut *(lparam as *mut HashSet<isize>);
+        handles.insert(hwnd as isize);
+    }
+    1
+}
+
+#[cfg(target_os = "windows")]
+fn visible_window_handles() -> HashSet<isize> {
+    let mut handles = HashSet::new();
+    unsafe {
+        EnumWindows(
+            Some(enum_visible_window_proc),
+            &mut handles as *mut HashSet<isize> as LPARAM,
+        );
+    }
+    handles
+}
+
+#[cfg(not(target_os = "windows"))]
+fn visible_window_handles() -> HashSet<isize> {
+    HashSet::new()
+}
+
+fn wait_for_new_window_handle(before: &HashSet<isize>, timeout: Duration) -> Option<isize> {
+    let start = Instant::now();
+    while start.elapsed() < timeout {
+        let after = visible_window_handles();
+        if let Some(handle) = after.difference(before).next() {
+            return Some(*handle);
+        }
+        std::thread::sleep(Duration::from_millis(120));
+    }
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn close_window_handle(window_handle: isize) -> Result<bool, String> {
+    unsafe {
+        let hwnd = window_handle as HWND;
+        if IsWindow(hwnd) == 0 {
+            return Ok(false);
+        }
+
+        // 只给记录到的具体顶层窗口发送关闭消息，不杀 Chrome 进程，避免误关其它浏览器窗口。
+        Ok(PostMessageW(hwnd, WM_CLOSE, 0, 0) != 0)
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn close_window_handle(_window_handle: isize) -> Result<bool, String> {
+    Ok(false)
+}
+
+fn browser_candidates(browser_path: Option<&str>) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(path) = browser_path.map(str::trim).filter(|p| !p.is_empty()) {
+        candidates.push(PathBuf::from(path));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(program_files) = std::env::var("ProgramFiles") {
+            candidates.push(PathBuf::from(&program_files).join("Google\\Chrome\\Application\\chrome.exe"));
+            candidates.push(PathBuf::from(&program_files).join("Microsoft\\Edge\\Application\\msedge.exe"));
+        }
+        if let Ok(program_files_x86) = std::env::var("ProgramFiles(x86)") {
+            candidates.push(PathBuf::from(&program_files_x86).join("Google\\Chrome\\Application\\chrome.exe"));
+            candidates.push(PathBuf::from(&program_files_x86).join("Microsoft\\Edge\\Application\\msedge.exe"));
+        }
+        if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+            candidates.push(PathBuf::from(&local_app_data).join("Google\\Chrome\\Application\\chrome.exe"));
+            candidates.push(PathBuf::from(&local_app_data).join("Microsoft\\Edge\\Application\\msedge.exe"));
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        candidates.push(PathBuf::from("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"));
+        candidates.push(PathBuf::from("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"));
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        candidates.push(PathBuf::from("/usr/bin/google-chrome"));
+        candidates.push(PathBuf::from("/usr/bin/chromium"));
+        candidates.push(PathBuf::from("/usr/bin/microsoft-edge"));
+    }
+
+    candidates
+}
+
+fn spawn_tracked_browser(path: &Path, url: &str, incognito: bool) -> Result<ExternalBrowserSession, String> {
+    if !path.exists() {
+        return Err(format!("浏览器路径不存在: {}", path.to_string_lossy()));
+    }
+
+    let windows_before = visible_window_handles();
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let mut command = Command::new(path);
+    if incognito {
+        // 保持使用用户正常 Chrome/Edge 配置的无痕窗口，避免独立 profile 导致扩展和浏览器状态丢失。
+        if file_name.contains("msedge") {
+            command.arg("-inprivate");
+        } else {
+            command.arg("--incognito");
+        }
+    }
+    command.arg("--new-window");
+    command.arg(url);
+    let child = command.spawn().map_err(|e| e.to_string())?;
+    let window_handle = wait_for_new_window_handle(&windows_before, Duration::from_secs(5));
+
+    Ok(ExternalBrowserSession {
+        pid: child.id(),
+        window_handle,
+        user_data_dir: None,
+        safe_to_terminate: false,
+    })
+}
+
+fn open_with_tracked_browser(browser_path: Option<&str>, url: &str, incognito: bool) -> Result<(), String> {
+    let mut last_error = None;
+    for candidate in browser_candidates(browser_path) {
+        if !candidate.exists() {
+            continue;
+        }
+        match spawn_tracked_browser(&candidate, url, incognito) {
+            Ok(session) => {
+                record_external_browser_session(url, session);
+                return Ok(());
+            }
+            Err(err) => {
+                last_error = Some(err);
+            }
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| "未找到可跟踪的浏览器进程".to_string()))
+}
+
+fn terminate_process(pid: u32) -> Result<bool, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let status = Command::new("taskkill")
+            .args(&["/PID", &pid.to_string(), "/T", "/F"])
+            .status()
+            .map_err(|e| e.to_string())?;
+        return Ok(status.success());
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        let status = Command::new("kill")
+            .args(&["-TERM", &pid.to_string()])
+            .status()
+            .map_err(|e| e.to_string())?;
+        return Ok(status.success());
+    }
+}
+
+#[command]
+pub async fn close_opened_external_links(urls: Vec<String>) -> Result<serde_json::Value, String> {
+    let mut closed_urls = Vec::new();
+    let mut skipped_urls = Vec::new();
+    let mut failed_urls = Vec::new();
+
+    for url in urls {
+        if let Some(session) = take_external_browser_session(&url) {
+            if let Some(window_handle) = session.window_handle {
+                match close_window_handle(window_handle) {
+                    Ok(true) => {
+                        closed_urls.push(url);
+                    }
+                    Ok(false) => {
+                        skipped_urls.push(url);
+                    }
+                    Err(err) => {
+                        failed_urls.push(json!({ "url": url, "error": err }));
+                    }
+                }
+            } else if session.safe_to_terminate {
+                match terminate_process(session.pid) {
+                    Ok(true) => {
+                        // 关闭后清理临时浏览器 profile；清理失败不影响主流程。
+                        if let Some(dir) = session.user_data_dir {
+                            let _ = fs::remove_dir_all(dir);
+                        }
+                        closed_urls.push(url);
+                    }
+                    Ok(false) => {
+                        skipped_urls.push(url);
+                    }
+                    Err(err) => {
+                        failed_urls.push(json!({ "url": url, "error": err }));
+                    }
+                }
+            } else {
+                // 正常 Chrome profile 的 PID 可能是用户主浏览器进程，不能强杀，否则会误关其它浏览器窗口。
+                skipped_urls.push(url);
+            }
+        } else {
+            // 没有记录通常表示窗口已经关掉，或者链接不是由本应用这次打开的。
+            skipped_urls.push(url);
+        }
+    }
+
+    Ok(json!({
+        "success": failed_urls.is_empty(),
+        "closed": closed_urls.len(),
+        "skipped": skipped_urls.len(),
+        "failed": failed_urls.len(),
+        "closed_urls": closed_urls,
+        "skipped_urls": skipped_urls,
+        "failed_urls": failed_urls,
+    }))
 }
 
 /// 内部函数：在无痕模式的新窗口中打开链接
-fn open_in_incognito_new_window(url: &str) -> Result<(), String> {
+fn open_in_incognito_new_window(url: &str, browser_path: Option<&str>) -> Result<(), String> {
+    if open_with_tracked_browser(browser_path, url, true).is_ok() {
+        return Ok(());
+    }
+
     #[cfg(target_os = "windows")]
     {
         // 尝试使用 Chrome 无痕模式 + 新窗口
         let chrome_result = Command::new("cmd")
-            .args(&["/C", "start", "chrome", "--incognito", "--new-window", url])
+            .args(&["/C", "start", "", "chrome", "--incognito", "--new-window", url])
             .spawn();
 
         if chrome_result.is_ok() {
@@ -1143,7 +1417,7 @@ fn open_in_incognito_new_window(url: &str) -> Result<(), String> {
 
         // 如果 Chrome 失败，尝试 Edge 无痕模式 + 新窗口
         let edge_result = Command::new("cmd")
-            .args(&["/C", "start", "msedge", "-inprivate", "--new-window", url])
+            .args(&["/C", "start", "", "msedge", "-inprivate", "--new-window", url])
             .spawn();
 
         if edge_result.is_ok() {
@@ -1405,8 +1679,6 @@ pub async fn inject_auto_submit_script(
 }
 
 // ========== 成功BIN池管理 ==========
-
-use std::path::PathBuf;
 
 /// 获取成功BIN池文件路径
 fn get_success_bins_file_path(app: &AppHandle) -> PathBuf {
