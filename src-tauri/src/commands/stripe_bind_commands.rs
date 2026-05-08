@@ -1037,6 +1037,54 @@ fn is_retryable_confirm_captcha_error(error: &str) -> bool {
         || error_lower.contains("radar")
 }
 
+fn classify_setup_intent_failure(code: &str, message: &str) -> (String, String) {
+    let code_lower = code.to_lowercase();
+    let message_lower = message.to_lowercase();
+    let original = if code.is_empty() {
+        message.to_string()
+    } else {
+        format!("[{}] {}", code, message)
+    };
+
+    if message_lower.contains("captcha") || code_lower.contains("captcha") {
+        return (
+            "3DS hCaptcha 验证失败".to_string(),
+            format!(
+                "3DS hCaptcha 验证失败：第三方打码返回的 challenge token 未被 Stripe 接受，不代表卡片一定不可用。建议改用正常浏览器完成绑卡。原始错误: {}",
+                original
+            ),
+        );
+    }
+
+    if code_lower.contains("authentication_failure")
+        || message_lower.contains("authentication")
+        || message_lower.contains("3ds")
+    {
+        return (
+            "3DS 认证失败".to_string(),
+            format!(
+                "3DS 认证失败：发卡行或 Stripe 拒绝本次认证，可能需要真实浏览器或银行交互验证。原始错误: {}",
+                original
+            ),
+        );
+    }
+
+    if code_lower.contains("card_declined")
+        || message_lower.contains("declined")
+        || message_lower.contains("insufficient")
+    {
+        return (
+            "卡片被拒绝".to_string(),
+            format!("卡片被拒绝：{}", original),
+        );
+    }
+
+    (
+        "SetupIntent 失败".to_string(),
+        format!("绑卡失败：{}", original),
+    )
+}
+
 // ─── 获取 elements session (Python 的 fetch_elements_session) ───
 async fn fetch_elements_session(
     client: &reqwest::Client,
@@ -1222,7 +1270,7 @@ async fn solve_hcaptcha(
     let captcha_proxy = match normalized_proxy {
         Some(proxy_params) if is_local_or_private_proxy_address(&proxy_params.1) => {
             emit_log(app, task_id, "warn", &format!(
-                "  hCaptcha 代理 {}://{}:{} 是本机/内网地址，YesCaptcha 远程服务器无法访问；将改用 Proxyless 解题。需要公网代理才可同代理解题。",
+                "  hCaptcha 代理 {}://{}:{} 是本机/内网地址，第三方打码平台无法复用该本地出口；将改用 Proxyless 解题。Stripe 3DS Enterprise hCaptcha 可能因此拒绝 token。",
                 proxy_params.0,
                 proxy_params.1,
                 proxy_params.2
@@ -1240,7 +1288,7 @@ async fn solve_hcaptcha(
             proxy_port
         ));
     } else {
-        emit_log(app, task_id, "warn", "  hCaptcha 未配置代理，将使用 Proxyless 解题，3DS challenge 可能被 Stripe 拒绝");
+        emit_log(app, task_id, "warn", "  hCaptcha 将使用 Proxyless 解题；第三方解题环境与本机 Stripe 请求环境不一致时，3DS challenge 可能被 Stripe 拒绝");
     }
 
     for retry in 0..max_retries {
@@ -1734,20 +1782,32 @@ async fn handle_3ds(
                     .pointer("/last_setup_error/code")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
+                let (error_title, user_error) = classify_setup_intent_failure(setup_error_code, setup_error_msg);
                 emit_log(app, task_id, "error", &format!(
-                    "  卡被拒绝/3DS失败 (requires_payment_method): code={}, msg={}",
+                    "  {} (requires_payment_method): code={}, msg={}",
+                    error_title,
                     setup_error_code,
                     setup_error_msg
                 ));
-                return Err(format!("3DS 验证失败: {}", setup_error_msg));
+                return Err(user_error);
             }
 
             // 检查 captcha 错误
             let setup_error = result.get("last_setup_error");
             if let Some(err) = setup_error {
+                let err_code = err.get("code").and_then(|v| v.as_str()).unwrap_or("");
                 let err_msg = err.get("message").and_then(|v| v.as_str()).unwrap_or("");
-                if err_msg.to_lowercase().contains("captcha") {
-                    return Err(format!("challenge captcha 被拒: {}", err_msg));
+                if err_msg.to_lowercase().contains("captcha")
+                    || err_code.to_lowercase().contains("authentication_failure")
+                {
+                    let (error_title, user_error) = classify_setup_intent_failure(err_code, err_msg);
+                    emit_log(app, task_id, "error", &format!(
+                        "  {}: code={}, msg={}",
+                        error_title,
+                        err_code,
+                        err_msg
+                    ));
+                    return Err(user_error);
                 }
             }
 

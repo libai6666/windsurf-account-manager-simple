@@ -211,6 +211,14 @@
 
           <el-divider content-position="left">打码平台 & 网络代理</el-divider>
 
+          <el-alert
+            type="warning"
+            :closable="false"
+            show-icon
+            style="margin-bottom: 12px"
+            title="第三方打码不保证通过 Stripe 3DS hCaptcha。使用 127.0.0.1 这类本机代理时，打码平台无法复用你的本机代理出口，可能出现浏览器可绑但协议绑卡提示 3DS hCaptcha 验证失败。"
+          />
+
           <el-row :gutter="12">
             <el-col :span="16">
               <el-form-item label="API Key">
@@ -345,7 +353,7 @@
                   {{ task.status === 'running' ? `步骤 ${task.step}/6: ${task.step_name}` : taskStatusText(task.status) }}
                 </el-tag>
               </div>
-              <div v-if="task.error" class="task-error">{{ task.error }}</div>
+              <div v-if="task.error" class="task-error" :title="task.error">{{ task.error }}</div>
             </div>
           </div>
         </div>
