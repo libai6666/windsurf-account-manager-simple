@@ -5,7 +5,7 @@ use crate::commands::switch_account_commands::{
     trigger_windsurf_callback,
 };
 #[cfg(target_os = "windows")]
-use crate::commands::switch_account_commands::write_windsurf_auth_direct;
+use crate::commands::switch_account_commands::{prepare_profile_local_state, write_windsurf_auth_direct};
 use crate::commands::windsurf_info::{get_windsurf_info_from_dir, WindsurfCurrentInfo};
 use crate::models::{main_profile, Account, AccountStatus, ProfileAutoSwitch, WindsurfProfile, MAIN_PROFILE_ID};
 use crate::repository::DataStore;
@@ -226,37 +226,17 @@ fn spawn_profile_window(_profile: &WindsurfProfile, _exe_path: &str) -> Result<(
     Err("当前平台暂不支持启动分身".to_string())
 }
 
-/// 等待分身的 Local State 文件出现（write_windsurf_auth_direct 必需 DPAPI 密钥）
-async fn wait_for_local_state(user_data_dir: &Path, timeout_ms: u64) -> bool {
-    let local_state = user_data_dir.join("Local State");
-    let mut elapsed: u64 = 0;
-    while elapsed < timeout_ms {
-        if local_state.exists() {
-            return true;
-        }
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-        elapsed += 500;
-    }
-    local_state.exists()
+/// 确保分身的 Local State 文件存在；不存在则直接用 DPAPI 生成一份合法 AES key，
+/// 避免冷启动 Windsurf 让用户看到第一个窗口闪现。
+#[cfg(target_os = "windows")]
+fn ensure_profile_local_state(profile: &WindsurfProfile) -> Result<(), String> {
+    prepare_profile_local_state(&profile.user_data_dir)
+        .map_err(|e| format!("生成分身 Local State 失败: {}", e))
 }
 
-/// 确保分身的 Local State 文件存在；不存在时冷启动一次以让 Windsurf 生成
-async fn ensure_profile_local_state(profile: &WindsurfProfile, exe_path: &str) -> Result<(), String> {
-    let local_state = profile.user_data_dir.join("Local State");
-    if local_state.exists() {
-        return Ok(());
-    }
-    info!("Local State not found for profile '{}', launching briefly to initialize", profile.name);
-    spawn_profile_window(profile, exe_path)?;
-    if !wait_for_local_state(&profile.user_data_dir, 15_000).await {
-        let _ = stop_profile_processes_sync(profile);
-        return Err("分身初始化超时（无法生成 Local State）".to_string());
-    }
-    // 让 Windsurf 多跑一会，避免 state.vscdb / Local State 还在写入半成品
-    tokio::time::sleep(tokio::time::Duration::from_millis(2500)).await;
-    let _ = stop_profile_processes_sync(profile);
-    tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
-    Ok(())
+#[cfg(not(target_os = "windows"))]
+fn ensure_profile_local_state(_profile: &WindsurfProfile) -> Result<(), String> {
+    Err("当前平台暂不支持分身首登 direct-write".to_string())
 }
 
 fn is_free_plan(acc: &Account) -> bool {
@@ -436,8 +416,7 @@ async fn switch_profile_to_account(
                 tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
             }
 
-            ensure_profile_local_state(profile, &exe_path)
-                .await
+            ensure_profile_local_state(profile)
                 .map_err(|e| format!("分身初始化失败: {}", e))?;
 
             if let Err(e) = write_windsurf_auth_direct(

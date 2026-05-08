@@ -401,8 +401,17 @@ pub(crate) fn write_windsurf_auth_direct(
         .join("User")
         .join("globalStorage")
         .join("state.vscdb");
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| AppError::FileOperation(format!("Failed to create globalStorage dir: {}", e)))?;
+    }
     let conn = rusqlite::Connection::open(&db_path)
         .map_err(|e| AppError::Database(format!("Failed to open state.vscdb: {}", e)))?;
+    // 空数据库时 ItemTable 不存在，主实例首次启动后才生成；这里兜底
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS ItemTable (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB)",
+        [],
+    ).map_err(|e| AppError::Database(format!("Failed to ensure ItemTable: {}", e)))?;
     
     // 读取当前 windsurfAuthStatus
     let current_auth: Option<String> = conn.query_row(
@@ -490,6 +499,101 @@ fn dpapi_decrypt(data: &[u8]) -> AppResult<Vec<u8>> {
     unsafe { LocalFree(output_blob.pbData as *mut _); }
     
     Ok(decrypted)
+}
+
+/// DPAPI 加密
+#[cfg(target_os = "windows")]
+fn dpapi_encrypt(data: &[u8]) -> AppResult<Vec<u8>> {
+    use winapi::um::dpapi::CryptProtectData;
+    use winapi::um::wincrypt::CRYPTOAPI_BLOB;
+    use std::ptr;
+
+    extern "system" {
+        fn LocalFree(hMem: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
+    }
+
+    let mut input_blob = CRYPTOAPI_BLOB {
+        cbData: data.len() as u32,
+        pbData: data.as_ptr() as *mut u8,
+    };
+    let mut output_blob = CRYPTOAPI_BLOB {
+        cbData: 0,
+        pbData: ptr::null_mut(),
+    };
+
+    let result = unsafe {
+        CryptProtectData(
+            &mut input_blob,
+            ptr::null(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+            0,
+            &mut output_blob,
+        )
+    };
+
+    if result == 0 {
+        return Err(AppError::Config(format!("DPAPI CryptProtectData failed: {}", std::io::Error::last_os_error())));
+    }
+
+    let encrypted = unsafe {
+        std::slice::from_raw_parts(output_blob.pbData, output_blob.cbData as usize).to_vec()
+    };
+
+    unsafe { LocalFree(output_blob.pbData as *mut _); }
+
+    Ok(encrypted)
+}
+
+/// 为分身预生成合法的 Local State（含 DPAPI 加密的 AES key），免去冷启动 Windsurf 一次的 UX 跳变。
+/// - 文件已存在且包含 `os_crypt.encrypted_key` → 直接复用
+/// - 否则：随机 32 字节 AES key → DPAPI 加密 + "DPAPI" 前缀 + base64 → 写入 `<user_data_dir>/Local State`
+#[cfg(target_os = "windows")]
+pub(crate) fn prepare_profile_local_state(user_data_dir: &std::path::Path) -> AppResult<()> {
+    use base64::{Engine, engine::general_purpose};
+    use rand::RngCore;
+
+    let local_state_path = user_data_dir.join("Local State");
+
+    if local_state_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(&local_state_path) {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                if json.get("os_crypt").and_then(|v| v.get("encrypted_key")).and_then(|v| v.as_str()).is_some() {
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    std::fs::create_dir_all(user_data_dir)
+        .map_err(|e| AppError::FileOperation(format!("Failed to create user_data_dir: {}", e)))?;
+
+    let mut aes_key = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut aes_key);
+
+    let encrypted = dpapi_encrypt(&aes_key)?;
+
+    let mut prefixed = Vec::with_capacity(5 + encrypted.len());
+    prefixed.extend_from_slice(b"DPAPI");
+    prefixed.extend_from_slice(&encrypted);
+
+    let encoded = general_purpose::STANDARD.encode(&prefixed);
+
+    let local_state_json = serde_json::json!({
+        "os_crypt": {
+            "encrypted_key": encoded
+        }
+    });
+
+    let serialized = serde_json::to_string_pretty(&local_state_json)
+        .map_err(|e| AppError::Config(format!("Failed to serialize Local State: {}", e)))?;
+
+    std::fs::write(&local_state_path, serialized)
+        .map_err(|e| AppError::FileOperation(format!("Failed to write Local State: {}", e)))?;
+
+    info!("Generated Local State for profile dir: {}", user_data_dir.display());
+    Ok(())
 }
 
 /// 触发Windsurf回调URL以完成登录
