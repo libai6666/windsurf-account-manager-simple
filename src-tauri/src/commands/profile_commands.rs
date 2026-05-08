@@ -4,6 +4,8 @@ use crate::commands::switch_account_commands::{
     reset_storage_json_for_profile,
     trigger_windsurf_callback,
 };
+#[cfg(target_os = "windows")]
+use crate::commands::switch_account_commands::write_windsurf_auth_direct;
 use crate::commands::windsurf_info::{get_windsurf_info_from_dir, WindsurfCurrentInfo};
 use crate::models::{main_profile, Account, AccountStatus, ProfileAutoSwitch, WindsurfProfile, MAIN_PROFILE_ID};
 use crate::repository::DataStore;
@@ -167,6 +169,96 @@ async fn wait_for_profile_account(user_data_dir: &Path, target_email: &str) -> O
     None
 }
 
+/// 检查分身是否已登录（state.vscdb 存在 windsurfAuthStatus 或 auth-usages 记录）
+fn is_profile_authenticated(user_data_dir: &Path) -> bool {
+    get_windsurf_info_from_dir(user_data_dir)
+        .map(|info| info.is_active)
+        .unwrap_or(false)
+}
+
+/// 同步关闭指定分身的所有 Windsurf 进程（写 state.vscdb 前必须调用）
+#[cfg(target_os = "windows")]
+fn stop_profile_processes_sync(profile: &WindsurfProfile) -> Result<usize, String> {
+    use std::os::windows::process::CommandExt;
+    let processes = list_windsurf_processes();
+    let pids = matching_profile_process_ids(profile, &processes);
+    if pids.is_empty() {
+        return Ok(0);
+    }
+    for pid in &pids {
+        let output = Command::new("taskkill")
+            .arg("/PID")
+            .arg(pid.to_string())
+            .arg("/T")
+            .arg("/F")
+            .creation_flags(0x08000000)
+            .output()
+            .map_err(|e| format!("关闭分身失败: {}", e))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            warn!("taskkill failed for PID {}: {}", pid, stderr.trim());
+        }
+    }
+    Ok(pids.len())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn stop_profile_processes_sync(_profile: &WindsurfProfile) -> Result<usize, String> {
+    Err("当前平台暂不支持关闭分身进程".to_string())
+}
+
+/// 启动分身窗口
+#[cfg(target_os = "windows")]
+fn spawn_profile_window(profile: &WindsurfProfile, exe_path: &str) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    let mut command = Command::new(exe_path);
+    if !profile.is_main() {
+        command.arg("--user-data-dir").arg(&profile.user_data_dir);
+        command.arg("--new-window");
+    }
+    command.creation_flags(0x08000000);
+    command.spawn().map_err(|e| format!("启动分身失败: {}", e))?;
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn spawn_profile_window(_profile: &WindsurfProfile, _exe_path: &str) -> Result<(), String> {
+    Err("当前平台暂不支持启动分身".to_string())
+}
+
+/// 等待分身的 Local State 文件出现（write_windsurf_auth_direct 必需 DPAPI 密钥）
+async fn wait_for_local_state(user_data_dir: &Path, timeout_ms: u64) -> bool {
+    let local_state = user_data_dir.join("Local State");
+    let mut elapsed: u64 = 0;
+    while elapsed < timeout_ms {
+        if local_state.exists() {
+            return true;
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        elapsed += 500;
+    }
+    local_state.exists()
+}
+
+/// 确保分身的 Local State 文件存在；不存在时冷启动一次以让 Windsurf 生成
+async fn ensure_profile_local_state(profile: &WindsurfProfile, exe_path: &str) -> Result<(), String> {
+    let local_state = profile.user_data_dir.join("Local State");
+    if local_state.exists() {
+        return Ok(());
+    }
+    info!("Local State not found for profile '{}', launching briefly to initialize", profile.name);
+    spawn_profile_window(profile, exe_path)?;
+    if !wait_for_local_state(&profile.user_data_dir, 15_000).await {
+        let _ = stop_profile_processes_sync(profile);
+        return Err("分身初始化超时（无法生成 Local State）".to_string());
+    }
+    // 让 Windsurf 多跑一会，避免 state.vscdb / Local State 还在写入半成品
+    tokio::time::sleep(tokio::time::Duration::from_millis(2500)).await;
+    let _ = stop_profile_processes_sync(profile);
+    tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
+    Ok(())
+}
+
 fn is_free_plan(acc: &Account) -> bool {
     acc.plan_name
         .as_ref()
@@ -317,16 +409,65 @@ async fn switch_profile_to_account(
         false
     };
 
-    if let Err(e) = trigger_windsurf_callback(app, &auth.callback_token, Some(&profile.user_data_dir)).await {
-        error!("Profile callback failed: {}", e);
-        return Ok(json!({
-            "success": false,
-            "error": format!("触发分身回调失败: {}", e)
-        }));
-    }
+    let already_authenticated = is_profile_authenticated(&profile.user_data_dir);
+    let was_running = is_profile_running_from_cmds(profile, &list_windsurf_process_command_lines());
+
+    let used_direct_write = if already_authenticated && was_running {
+        // 已认证且正在运行 → 走 callback URL，让正在跑的 Windsurf 实例直接接管，无需重启窗口
+        if let Err(e) = trigger_windsurf_callback(app, &auth.callback_token, Some(&profile.user_data_dir)).await {
+            error!("Profile callback failed: {}", e);
+            return Ok(json!({
+                "success": false,
+                "error": format!("触发分身回调失败: {}", e)
+            }));
+        }
+        false
+    } else {
+        // 首次登录 / 编辑器停留在 Sign up 页 / 未运行：直接写 state.vscdb 后重启分身
+        #[cfg(target_os = "windows")]
+        {
+            let exe_path = find_windsurf_exe()
+                .ok_or_else(|| "找不到 Windsurf.exe，请确认已安装 Windsurf".to_string())?;
+
+            if was_running {
+                if let Err(e) = stop_profile_processes_sync(profile) {
+                    warn!("stop profile before direct-write failed: {}", e);
+                }
+                tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
+            }
+
+            ensure_profile_local_state(profile, &exe_path)
+                .await
+                .map_err(|e| format!("分身初始化失败: {}", e))?;
+
+            if let Err(e) = write_windsurf_auth_direct(
+                &auth.register_result.api_key,
+                &auth.register_result.name,
+                &auth.register_result.api_server_url,
+                &profile.user_data_dir,
+            ) {
+                error!("Direct-write profile auth failed: {}", e);
+                return Ok(json!({
+                    "success": false,
+                    "error": format!("写入分身认证失败: {}", e)
+                }));
+            }
+
+            spawn_profile_window(profile, &exe_path)
+                .map_err(|e| format!("启动分身失败: {}", e))?;
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            return Ok(json!({
+                "success": false,
+                "error": "当前平台暂不支持分身首次登录的 direct-write 路径"
+            }));
+        }
+        true
+    };
 
     let verified_info = wait_for_profile_account(&profile.user_data_dir, &account.email).await;
-    if verified_info.is_none() {
+    if verified_info.is_none() && !used_direct_write {
         return Ok(json!({
             "success": false,
             "error": format!("分身账号校验失败，未检测到目标账号: {}", account.email),

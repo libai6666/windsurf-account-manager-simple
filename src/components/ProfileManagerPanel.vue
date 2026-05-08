@@ -13,7 +13,7 @@
     </div>
 
     <el-alert
-      title="主实例仍使用默认 Windsurf 数据目录；分身窗口会通过 --user-data-dir 独立启动。分身首次登录建议先选择手动目标号并点击“切到目标号”，避免浏览器 windsurf:// 协议被主实例接管。"
+      title="主实例仍使用默认 Windsurf 数据目录；分身窗口通过 --user-data-dir 独立启动。推荐打开自动换号，分身首次登录时选择对应账号后选择切到目标号，等待新窗口出来点击log in会直接用选择好的号登录到编辑器中"
       type="info"
       :closable="false"
       show-icon

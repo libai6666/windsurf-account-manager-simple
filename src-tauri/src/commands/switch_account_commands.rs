@@ -304,9 +304,9 @@ pub(crate) async fn get_auth_token_for_account(
 
 /// 直接写入指定 Windsurf 实例的 state.vscdb 完成账号切换（绕过回调URL）
 /// `user_data_dir` 决定写入哪个实例：主实例 = main_user_data_dir()，分身 = profile.user_data_dir
+/// 调用前必须确保该实例进程已退出，否则 state.vscdb 可能被锁
 #[cfg(target_os = "windows")]
-#[allow(dead_code)] // Phase 3 接入后启用
-fn write_windsurf_auth_direct(
+pub(crate) fn write_windsurf_auth_direct(
     api_key: &str,
     name: &str,
     api_server_url: &str,
