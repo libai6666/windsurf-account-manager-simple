@@ -6,7 +6,8 @@ import { useAccountsStore, useSettingsStore, useUIStore } from './store';
 import MainLayout from './views/MainLayout.vue';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { apiService } from './api';
+import { apiService, profileApi } from './api';
+
 import { ElNotification } from 'element-plus';
 
 const accountsStore = useAccountsStore();
@@ -19,13 +20,15 @@ let tokenRefreshedUnlisten: UnlistenFn | null = null;
 // 自动换号定时器
 let autoSwitchTimer: ReturnType<typeof setInterval> | null = null;
 const autoSwitchChecking = ref(false);
+const autoSwitchLastChecked = new Map<string, number>();
+const AUTO_SWITCH_TIMER_TICK_SECONDS = 10;
 
 function startAutoSwitchTimer() {
   stopAutoSwitchTimer();
   const s = settingsStore.settings;
-  if (!s.autoSwitchEnabled || !s.seamlessSwitchEnabled) return;
-  const interval = (s.autoSwitchCheckInterval || 300) * 1000;
-  console.log(`[自动换号] 启动定时检测，间隔 ${interval / 1000} 秒`);
+  if (!s.seamlessSwitchEnabled) return;
+  const interval = AUTO_SWITCH_TIMER_TICK_SECONDS * 1000;
+  console.log(`[自动换号] 启动定时检测心跳，间隔 ${AUTO_SWITCH_TIMER_TICK_SECONDS} 秒`);
   autoSwitchTimer = setInterval(runAutoSwitchCheck, interval);
 }
 
@@ -36,31 +39,73 @@ function stopAutoSwitchTimer() {
   }
 }
 
+function shouldRunAutoSwitchCheck(scopeKey: string, intervalSeconds?: number) {
+  const interval = Math.max(intervalSeconds || 300, AUTO_SWITCH_TIMER_TICK_SECONDS) * 1000;
+  const now = Date.now();
+  const lastCheckedAt = autoSwitchLastChecked.get(scopeKey) || 0;
+  if (now - lastCheckedAt < interval) return false;
+  autoSwitchLastChecked.set(scopeKey, now);
+  return true;
+}
+
+async function handleAutoSwitchResult(scopeName: string, result: any, reloadSettingsOnSwitch: boolean) {
+  if (result.action === 'switched') {
+    ElNotification.success({
+      title: scopeName === '主实例' ? '自动换号成功' : `${scopeName} 自动换号成功`,
+      message: `${result.reason ? `原因：${result.reason}\n` : ''}已从 ${result.from_account || '未知账号'} (日${result.from_daily_remaining ?? '?'}%/周${result.from_weekly_remaining ?? '?'}%) 切换到 ${result.to_account} (日${result.to_daily_remaining ?? '?'}%/周${result.to_weekly_remaining ?? '?'}%)`,
+      duration: 8000,
+    });
+    if (reloadSettingsOnSwitch) {
+      await settingsStore.loadSettings();
+    }
+  } else if (result.action === 'no_candidate') {
+    ElNotification.warning({
+      title: scopeName === '主实例' ? '自动换号' : `${scopeName} 自动换号`,
+      message: result.reason || '分组中没有配额充足的账号',
+      duration: 6000,
+    });
+  } else if (result.action === 'error') {
+    ElNotification.error({
+      title: scopeName === '主实例' ? '自动换号失败' : `${scopeName} 自动换号失败`,
+      message: result.reason || '自动换号执行失败',
+      duration: 8000,
+    });
+  }
+}
+
 async function runAutoSwitchCheck() {
   if (autoSwitchChecking.value) return;
   autoSwitchChecking.value = true;
   try {
-    const result = await apiService.checkAutoSwitch();
-    console.log('[自动换号] 检测结果:', result.action, result.reason || '');
-    // 每次检测后都刷新账号列表（后端会更新配额数据到数据库）
-    await accountsStore.loadAccounts();
+    let shouldReloadAccounts = false;
+    const settings = settingsStore.settings;
     
-    if (result.action === 'switched') {
-      ElNotification.success({
-        title: '自动换号成功',
-        message: `${result.reason ? `原因：${result.reason}\n` : ''}已从 ${result.from_account} (日${result.from_daily_remaining}%/周${result.from_weekly_remaining}%) 切换到 ${result.to_account} (日${result.to_daily_remaining}%/周${result.to_weekly_remaining}%)`,
-        duration: 8000,
-      });
-      // 重新加载设置（因为后端更新了currentAccountId）
-      await settingsStore.loadSettings();
-    } else if (result.action === 'no_candidate') {
-      ElNotification.warning({
-        title: '自动换号',
-        message: result.reason || '分组中没有配额充足的账号',
-        duration: 6000,
-      });
-    } else if (result.action === 'error') {
-      console.error('[自动换号] 错误:', result.reason);
+    if (settings.autoSwitchEnabled && settings.seamlessSwitchEnabled && shouldRunAutoSwitchCheck('main', settings.autoSwitchCheckInterval)) {
+      const result = await apiService.checkAutoSwitch();
+      console.log('[自动换号][主实例] 检测结果:', result.action, result.reason || '');
+      shouldReloadAccounts = true;
+      await handleAutoSwitchResult('主实例', result, true);
+    }
+
+    const profiles = await profileApi.listProfiles();
+    const enabledProfiles = profiles.filter(item =>
+      item.profile.id !== 'main' &&
+      item.isRunning &&
+      item.profile.autoSwitch?.enabled
+    );
+
+    for (const item of enabledProfiles) {
+      if (!shouldRunAutoSwitchCheck(`profile:${item.profile.id}`, item.profile.autoSwitch?.checkInterval)) {
+        continue;
+      }
+      const result = await profileApi.checkProfileAutoSwitch(item.profile.id);
+      console.log(`[自动换号][${item.profile.name}] 检测结果:`, result.action, result.reason || '');
+      shouldReloadAccounts = true;
+      await handleAutoSwitchResult(item.profile.name, result, false);
+    }
+
+    if (shouldReloadAccounts) {
+      await accountsStore.loadAccounts();
     }
   } catch (e) {
     console.error('[自动换号] 异常:', e);

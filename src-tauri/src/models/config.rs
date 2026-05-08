@@ -27,6 +27,8 @@ pub struct AppConfig {
     pub settings: Settings,
     #[serde(default)]  // 保留字段以便向后兼容，但不再使用
     pub logs: Vec<super::OperationLog>,  // 日志现在存储在独立的 logs.json 文件中
+    #[serde(default, rename = "windsurfProfiles")]
+    pub windsurf_profiles: Vec<super::WindsurfProfile>,  // Windsurf 分身（独立 user-data-dir）列表
 }
 
 /// 账户排序字段
@@ -234,6 +236,7 @@ impl Default for AppConfig {
             tags: Vec::new(),
             settings: Settings::default(),
             logs: Vec::new(),
+            windsurf_profiles: Vec::new(),
         }
     }
 }

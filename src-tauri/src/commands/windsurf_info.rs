@@ -129,50 +129,35 @@ fn find_latest_auth_user(connection: &rusqlite::Connection) -> Option<String> {
     })
 }
 
-/// 获取 Windsurf 数据库路径（跨平台）
+/// 获取 Windsurf 主实例数据库路径（跨平台）
 fn get_windsurf_db_path() -> Result<PathBuf, AppError> {
-    #[cfg(target_os = "windows")]
-    {
-        let appdata = std::env::var("APPDATA")
-            .map_err(|e| AppError::Config(format!("Failed to get APPDATA: {}", e)))?;
-        Ok(PathBuf::from(appdata)
-            .join("Windsurf")
-            .join("User")
-            .join("globalStorage")
-            .join("state.vscdb"))
-    }
-    
-    #[cfg(target_os = "macos")]
-    {
-        let home = std::env::var("HOME")
-            .map_err(|e| AppError::Config(format!("Failed to get HOME: {}", e)))?;
-        Ok(PathBuf::from(home)
-            .join("Library")
-            .join("Application Support")
-            .join("Windsurf")
-            .join("User")
-            .join("globalStorage")
-            .join("state.vscdb"))
-    }
-    
-    #[cfg(target_os = "linux")]
-    {
-        let home = std::env::var("HOME")
-            .map_err(|e| AppError::Config(format!("Failed to get HOME: {}", e)))?;
-        Ok(PathBuf::from(home)
-            .join(".config")
-            .join("Windsurf")
-            .join("User")
-            .join("globalStorage")
-            .join("state.vscdb"))
-    }
+    let main_dir = crate::models::main_user_data_dir()
+        .ok_or_else(|| AppError::Config("Failed to resolve Windsurf main user data dir".to_string()))?;
+    Ok(state_vscdb_path_for(&main_dir))
 }
 
-/// 获取当前Windsurf账号信息
+/// 由 user_data_dir 推导 state.vscdb 路径（主实例 / 分身共用）
+fn state_vscdb_path_for(user_data_dir: &std::path::Path) -> PathBuf {
+    user_data_dir
+        .join("User")
+        .join("globalStorage")
+        .join("state.vscdb")
+}
+
+/// 读取指定 user_data_dir 下的 Windsurf 当前账号信息（主实例 / 分身共用核心实现）
+pub fn get_windsurf_info_from_dir(user_data_dir: &std::path::Path) -> Result<WindsurfCurrentInfo, AppError> {
+    let db_path = state_vscdb_path_for(user_data_dir);
+    read_current_info(&db_path)
+}
+
+/// 获取当前Windsurf账号信息（主实例入口；保持原命令签名向后兼容）
 #[tauri::command]
 pub fn get_current_windsurf_info() -> Result<WindsurfCurrentInfo, AppError> {
     let db_path = get_windsurf_db_path()?;
-    
+    read_current_info(&db_path)
+}
+
+fn read_current_info(db_path: &std::path::Path) -> Result<WindsurfCurrentInfo, AppError> {
     if !db_path.exists() {
         return Ok(WindsurfCurrentInfo {
             email: None, name: None, api_key: None, plan_name: None,
@@ -181,7 +166,7 @@ pub fn get_current_windsurf_info() -> Result<WindsurfCurrentInfo, AppError> {
     }
     
     let connection = rusqlite::Connection::open_with_flags(
-        &db_path,
+        db_path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
     .map_err(|e| AppError::Database(format!("Failed to open state.vscdb: {}", e)))?;

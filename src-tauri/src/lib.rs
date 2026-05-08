@@ -241,6 +241,20 @@ pub fn run() {
             commands::reset_machine_id,
             commands::check_admin_privileges,
             commands::check_auto_switch,
+
+            // Windsurf 分身命令
+            commands::list_profiles,
+            commands::create_profile,
+            commands::rename_profile,
+            commands::delete_profile,
+            commands::is_profile_running,
+            commands::launch_profile,
+            commands::stop_profile,
+            commands::get_profile_current_info,
+            commands::bind_account_to_profile,
+            commands::update_profile_auto_switch_config,
+            commands::switch_account_in_profile,
+            commands::check_profile_auto_switch,
             
             // 机器设备码管理命令
             commands::get_current_machine_ids,

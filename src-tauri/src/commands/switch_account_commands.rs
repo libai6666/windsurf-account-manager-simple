@@ -144,10 +144,10 @@ fn deserialize_protobuf_response(data: &[u8]) -> Option<String> {
 }
 
 /// RegisterUser 响应数据
-struct RegisterUserResult {
-    api_key: String,
-    name: String,
-    api_server_url: String,
+pub(crate) struct RegisterUserResult {
+    pub(crate) api_key: String,
+    pub(crate) name: String,
+    pub(crate) api_server_url: String,
 }
 
 /// 解析 RegisterUser protobuf 响应
@@ -220,12 +220,12 @@ async fn call_register_user(id_token: &str) -> AppResult<RegisterUserResult> {
         .ok_or_else(|| AppError::ApiRequest("Failed to parse RegisterUser response".to_string()))
 }
 
-struct SwitchAuthResult {
-    register_result: RegisterUserResult,
-    callback_token: String,
-    access_token: String,
-    refresh_token: Option<String>,
-    expires_in: String,
+pub(crate) struct SwitchAuthResult {
+    pub(crate) register_result: RegisterUserResult,
+    pub(crate) callback_token: String,
+    pub(crate) access_token: String,
+    pub(crate) refresh_token: Option<String>,
+    pub(crate) expires_in: String,
 }
 
 async fn get_auth_token_from_auth_result(
@@ -283,7 +283,7 @@ async fn get_auth_token(refresh_token: &str) -> AppResult<SwitchAuthResult> {
     }
 }
 
-async fn get_auth_token_for_account(
+pub(crate) async fn get_auth_token_for_account(
     store: &Arc<DataStore>,
     account_id: Uuid,
     email: &str,
@@ -302,18 +302,22 @@ async fn get_auth_token_for_account(
     }
 }
 
-/// 直接写入 Windsurf state.vscdb 完成账号切换（绕过回调URL）
+/// 直接写入指定 Windsurf 实例的 state.vscdb 完成账号切换（绕过回调URL）
+/// `user_data_dir` 决定写入哪个实例：主实例 = main_user_data_dir()，分身 = profile.user_data_dir
 #[cfg(target_os = "windows")]
-fn write_windsurf_auth_direct(api_key: &str, name: &str, api_server_url: &str) -> AppResult<()> {
+#[allow(dead_code)] // Phase 3 接入后启用
+fn write_windsurf_auth_direct(
+    api_key: &str,
+    name: &str,
+    api_server_url: &str,
+    user_data_dir: &std::path::Path,
+) -> AppResult<()> {
     use aes_gcm::{Aes256Gcm, KeyInit, aead::Aead};
     use aes_gcm::aead::generic_array::GenericArray;
     use rand::RngCore;
     
-    let appdata = std::env::var("APPDATA")
-        .map_err(|e| AppError::Config(format!("Failed to get APPDATA: {}", e)))?;
-    
-    // 1. 读取 AES 密钥 (从 Local State, DPAPI 保护)
-    let local_state_path = format!("{}\\Windsurf\\Local State", appdata);
+    // 1. 读取 AES 密钥 (从该实例的 Local State, DPAPI 保护)
+    let local_state_path = user_data_dir.join("Local State");
     let local_state_content = std::fs::read_to_string(&local_state_path)
         .map_err(|e| AppError::FileOperation(format!("Failed to read Local State: {}", e)))?;
     let local_state: serde_json::Value = serde_json::from_str(&local_state_content)
@@ -393,7 +397,10 @@ fn write_windsurf_auth_direct(api_key: &str, name: &str, api_server_url: &str) -
         .map_err(|e| AppError::Config(format!("Failed to serialize url buffer: {}", e)))?;
     
     // 5. 更新 windsurfAuthStatus (只更新 apiKey，保留其他字段)
-    let db_path = format!("{}\\Windsurf\\User\\globalStorage\\state.vscdb", appdata);
+    let db_path = user_data_dir
+        .join("User")
+        .join("globalStorage")
+        .join("state.vscdb");
     let conn = rusqlite::Connection::open(&db_path)
         .map_err(|e| AppError::Database(format!("Failed to open state.vscdb: {}", e)))?;
     
@@ -486,7 +493,15 @@ fn dpapi_decrypt(data: &[u8]) -> AppResult<Vec<u8>> {
 }
 
 /// 触发Windsurf回调URL以完成登录
-async fn trigger_windsurf_callback(app: &tauri::AppHandle, auth_token: &str) -> AppResult<()> {
+/// - `user_data_dir = None` → 投递给主实例（保持原行为）
+/// - `user_data_dir = Some(path)` → 在 Windsurf CLI 命令前追加 `--user-data-dir <path>`，
+///   把回调投递给该分身实例。注意：当指定分身时，Windows 上必须找到 Windsurf.exe，
+///   不能回退到 opener（系统 URL 协议会路由到主实例，无法定向到分身）。
+pub(crate) async fn trigger_windsurf_callback(
+    app: &tauri::AppHandle,
+    auth_token: &str,
+    user_data_dir: Option<&std::path::Path>,
+) -> AppResult<()> {
     // 生成state参数
     let state = Uuid::new_v4().to_string();
     
@@ -503,18 +518,25 @@ async fn trigger_windsurf_callback(app: &tauri::AppHandle, auth_token: &str) -> 
     
     let callback_url = format!("windsurf://codeium.windsurf#{}", fragment);
     
-    info!("Triggering Windsurf callback: windsurf://codeium.windsurf#access_token=<hidden>&state={}&token_type=Bearer", state);
+    info!(
+        "Triggering Windsurf callback (target={}): windsurf://codeium.windsurf#access_token=<hidden>&state={}&token_type=Bearer",
+        user_data_dir.map(|p| p.display().to_string()).unwrap_or_else(|| "main".to_string()),
+        state
+    );
     
     // Windows: 使用 Windsurf CLI --open-url 直接传递给运行中的 Windsurf 实例（避免 ShellExecuteW 弹出 Git Bash）
     #[cfg(target_os = "windows")]
     {
         if let Some(exe_path) = find_windsurf_exe() {
             use std::os::windows::process::CommandExt;
-            let output = std::process::Command::new(&exe_path)
-                .arg("--open-url")
-                .arg(&callback_url)
-                .creation_flags(0x08000000) // CREATE_NO_WINDOW
-                .output();
+            let mut cmd = std::process::Command::new(&exe_path);
+            // 分身：追加 --user-data-dir，让 Windsurf CLI 定位到该分身实例
+            if let Some(dir) = user_data_dir {
+                cmd.arg("--user-data-dir").arg(dir);
+            }
+            cmd.arg("--open-url").arg(&callback_url);
+            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+            let output = cmd.output();
             match output {
                 Ok(o) => {
                     if !o.status.success() {
@@ -524,6 +546,12 @@ async fn trigger_windsurf_callback(app: &tauri::AppHandle, auth_token: &str) -> 
                     info!("Successfully triggered Windsurf callback via CLI");
                 }
                 Err(e) => {
+                    // 仅主实例可回退到系统 opener；分身一旦回退就会路由到主实例，反而破坏隔离。
+                    if user_data_dir.is_some() {
+                        return Err(AppError::FileOperation(format!(
+                            "Windsurf CLI failed for profile callback: {}", e
+                        )));
+                    }
                     warn!("Windsurf CLI failed ({}), falling back to opener", e);
                     use tauri_plugin_opener::OpenerExt;
                     app.opener()
@@ -531,8 +559,13 @@ async fn trigger_windsurf_callback(app: &tauri::AppHandle, auth_token: &str) -> 
                         .map_err(|e| AppError::FileOperation(format!("Failed to open URL: {}", e)))?;
                 }
             }
+        } else if user_data_dir.is_some() {
+            // 分身必须依赖 Windsurf CLI，找不到 exe 直接报错
+            return Err(AppError::FileOperation(
+                "Cannot dispatch profile callback: Windsurf.exe not found".to_string()
+            ));
         } else {
-            // 找不到 Windsurf 可执行文件时回退到 opener
+            // 主实例：找不到 Windsurf 可执行文件时回退到 opener
             use tauri_plugin_opener::OpenerExt;
             app.opener()
                 .open_url(&callback_url, None::<&str>)
@@ -540,9 +573,10 @@ async fn trigger_windsurf_callback(app: &tauri::AppHandle, auth_token: &str) -> 
         }
     }
     
-    // macOS/Linux: 直接使用 opener 打开回调URL
+    // macOS/Linux: 直接使用 opener 打开回调URL（分身路径在该平台暂不支持，保留主实例行为）
     #[cfg(not(target_os = "windows"))]
     {
+        let _ = user_data_dir; // 暂不在非 Windows 平台使用
         use tauri_plugin_opener::OpenerExt;
         app.opener()
             .open_url(&callback_url, None::<&str>)
@@ -609,7 +643,7 @@ async fn restart_windsurf() -> bool {
 
 /// 查找 Windsurf 可执行文件路径
 #[cfg(target_os = "windows")]
-fn find_windsurf_exe() -> Option<String> {
+pub(crate) fn find_windsurf_exe() -> Option<String> {
     let candidates = [
         r"C:\Program Files\Windsurf\Windsurf.exe",
         r"C:\Users\Default\AppData\Local\Programs\Windsurf\Windsurf.exe",
@@ -716,7 +750,7 @@ pub async fn switch_account(
     
     // Step 3: 通过回调URL触发无感切号（extension.js 补丁中的 handleAuthToken 会处理全部流程）
     info!("Triggering seamless account switch via callback URL...");
-    if let Err(e) = trigger_windsurf_callback(&app, &auth.callback_token).await {
+    if let Err(e) = trigger_windsurf_callback(&app, &auth.callback_token, None).await {
         error!("Callback failed: {}", e);
         return Ok(json!({
             "success": false,
@@ -954,6 +988,54 @@ pub async fn reset_machine_id() -> Result<Value, String> {
     }
 }
 
+/// 仅为指定分身重写 storage.json 中的机器码（不动 HKLM、/etc/machine-id 等系统级标识）。
+/// HKLM\MachineGuid 全机共享，分身共用一份是预期行为；分身切号默认只刷新 telemetry 层。
+#[allow(dead_code)] // Phase 3 接入后启用
+pub async fn reset_storage_json_for_profile(
+    profile: &crate::models::WindsurfProfile,
+) -> AppResult<()> {
+    use std::fs;
+    use rand::Rng;
+
+    let mut rng = rand::thread_rng();
+    let machine_bytes: Vec<u8> = (0..32).map(|_| rng.gen()).collect();
+    let new_machine_id = hex::encode(&machine_bytes);
+    let new_mac_machine_id = format!("{:032x}", rng.gen::<u128>());
+    let new_sqm_id = Uuid::new_v4().to_string().to_uppercase();
+    let new_device_id = Uuid::new_v4().to_string().to_lowercase();
+
+    let storage_path = profile.storage_json_path();
+
+    if !storage_path.exists() {
+        warn!(
+            "storage.json not found for profile '{}' at {:?}; skip (profile may not have been launched yet)",
+            profile.name, storage_path
+        );
+        return Ok(());
+    }
+
+    let content = fs::read_to_string(&storage_path)
+        .map_err(|e| AppError::FileOperation(format!("Failed to read profile storage.json: {}", e)))?;
+    let mut storage: Value = serde_json::from_str(&content)
+        .map_err(AppError::Serialization)?;
+
+    storage["telemetry.machineId"] = json!(new_machine_id);
+    storage["telemetry.macMachineId"] = json!(new_mac_machine_id);
+    storage["telemetry.sqmId"] = json!(new_sqm_id);
+    storage["telemetry.devDeviceId"] = json!(new_device_id);
+
+    let updated = serde_json::to_string_pretty(&storage)
+        .map_err(AppError::Serialization)?;
+    fs::write(&storage_path, updated)
+        .map_err(|e| AppError::FileOperation(format!("Failed to write profile storage.json: {}", e)))?;
+
+    info!(
+        "Reset machine IDs for profile '{}' (storage.json only, HKLM unchanged)",
+        profile.name
+    );
+    Ok(())
+}
+
 #[cfg(target_os = "windows")]
 pub fn is_elevated() -> bool {
     use std::ptr;
@@ -1016,6 +1098,23 @@ pub fn is_root() -> bool {
 /// 1. 每日配额低于阈值
 /// 2. 每周配额为0（即使日配额充足）
 /// 候选账号需同时满足：周配额>0 且 日配额>阈值
+async fn wait_for_windsurf_account(target_email: &str) -> Option<crate::commands::windsurf_info::WindsurfCurrentInfo> {
+    for _ in 0..12 {
+        if let Ok(info) = crate::commands::windsurf_info::get_current_windsurf_info() {
+            if info
+                .email
+                .as_deref()
+                .map(|email| email.eq_ignore_ascii_case(target_email))
+                .unwrap_or(false)
+            {
+                return Some(info);
+            }
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    }
+    None
+}
+
 #[tauri::command]
 pub async fn check_auto_switch(
     app: tauri::AppHandle,
@@ -1087,13 +1186,14 @@ pub async fn check_auto_switch(
             let is_free_plan = |acc: &crate::models::Account| -> bool {
                 acc.plan_name.as_ref().map(|p| p.to_lowercase().contains("free")).unwrap_or(true)
             };
-            let is_better_candidate = |new_daily: i32, new_is_free: bool, cur: &Option<(Uuid, String, i32, i32, bool)>| -> bool {
+            let is_better_candidate = |new_daily: i32, new_weekly: i32, new_is_free: bool, cur: &Option<(Uuid, String, i32, i32, bool)>| -> bool {
                 match cur {
                     None => true,
-                    Some((_, _, cur_daily, _, cur_is_free)) => {
+                    Some((_, _, cur_daily, cur_weekly, cur_is_free)) => {
                         if !new_is_free && *cur_is_free { return true; }
                         if new_is_free && !*cur_is_free { return false; }
-                        new_daily > *cur_daily
+                        if new_daily != *cur_daily { return new_daily > *cur_daily; }
+                        new_weekly > *cur_weekly
                     }
                 }
             };
@@ -1104,7 +1204,7 @@ pub async fn check_auto_switch(
                 let weekly = acc.weekly_quota_remaining.unwrap_or(0);
                 let acc_is_free = is_free_plan(acc);
                 if daily > threshold && weekly > 0 {
-                    if is_better_candidate(daily, acc_is_free, &best_candidate) {
+                    if is_better_candidate(daily, weekly, acc_is_free, &best_candidate) {
                         best_candidate = Some((acc.id, acc.email.clone(), daily, weekly, acc_is_free));
                     }
                 }
@@ -1130,7 +1230,7 @@ pub async fn check_auto_switch(
                                 let _ = data_store.update_account(updated).await;
                                 let acc_is_free = is_free_plan(acc);
                                 if daily > threshold && weekly > 0 {
-                                    if is_better_candidate(daily, acc_is_free, &best_candidate) {
+                                    if is_better_candidate(daily, weekly, acc_is_free, &best_candidate) {
                                         best_candidate = Some((acc.id, acc.email.clone(), daily, weekly, acc_is_free));
                                     }
                                 }
@@ -1167,7 +1267,18 @@ pub async fn check_auto_switch(
                 crate::commands::machine_id_commands::auto_save_before_reset(&machine_id_store, editor_email.clone(), None).await;
                 let _ = reset_machine_id_internal().await;
             }
-            let _ = trigger_windsurf_callback(&app, &auth.callback_token).await;
+            if let Err(e) = trigger_windsurf_callback(&app, &auth.callback_token, None).await {
+                return Ok(json!({ "action": "error", "reason": format!("触发回调URL失败: {}", e) }));
+            }
+            let verified_info = match wait_for_windsurf_account(&target_email).await {
+                Some(info) => info,
+                None => {
+                    return Ok(json!({
+                        "action": "error",
+                        "reason": format!("编辑器账号校验失败，未检测到目标账号: {}", target_email)
+                    }));
+                }
+            };
             let expires_at = Utc::now() + chrono::Duration::seconds(auth.expires_in.parse::<i64>().unwrap_or(3600));
             if let Some(refresh_token_new) = auth.refresh_token {
                 let _ = data_store.update_account_tokens(target_id, auth.access_token, refresh_token_new, expires_at).await;
@@ -1185,7 +1296,8 @@ pub async fn check_auto_switch(
                 "to_account": target_email,
                 "to_account_id": target_id.to_string(),
                 "to_daily_remaining": target_daily,
-                "to_weekly_remaining": target_weekly
+                "to_weekly_remaining": target_weekly,
+                "verified_editor_account": verified_info.email
             }));
         }
     };
@@ -1277,12 +1389,12 @@ pub async fn check_auto_switch(
         acc.plan_name.as_ref().map(|p| p.to_lowercase().contains("free")).unwrap_or(true)
     };
     
-    // 候选号比较逻辑：非Free优先，然后日配额最高
+    // 候选号比较逻辑：非Free优先，然后日配额最高，日配额相同时周配额最高
     // 返回true表示new_acc比current更优
-    let is_better_candidate = |new_daily: i32, new_is_free: bool, cur: &Option<(Uuid, String, i32, i32, bool)>| -> bool {
+    let is_better_candidate = |new_daily: i32, new_weekly: i32, new_is_free: bool, cur: &Option<(Uuid, String, i32, i32, bool)>| -> bool {
         match cur {
             None => true,
-            Some((_, _, cur_daily, _, cur_is_free)) => {
+            Some((_, _, cur_daily, cur_weekly, cur_is_free)) => {
                 // 非Free优先于Free
                 if !new_is_free && *cur_is_free {
                     return true;
@@ -1291,7 +1403,11 @@ pub async fn check_auto_switch(
                     return false;
                 }
                 // 同类型中，日配额更高的优先
-                new_daily > *cur_daily
+                if new_daily != *cur_daily {
+                    return new_daily > *cur_daily;
+                }
+                // 日配额相同时，周配额更高的优先
+                new_weekly > *cur_weekly
             }
         }
     };
@@ -1306,7 +1422,7 @@ pub async fn check_auto_switch(
         let acc_is_free = is_free_plan(acc);
         // 候选号必须同时满足：周配额>0 且 日配额>阈值
         if daily > threshold && weekly > 0 {
-            if is_better_candidate(daily, acc_is_free, &best_candidate) {
+            if is_better_candidate(daily, weekly, acc_is_free, &best_candidate) {
                 best_candidate = Some((acc.id, acc.email.clone(), daily, weekly, acc_is_free));
             }
         }
@@ -1330,7 +1446,7 @@ pub async fn check_auto_switch(
                     let weekly = acc.weekly_quota_remaining.unwrap_or(0);
                     let acc_is_free = is_free_plan(acc);
                     if daily > threshold && weekly > 0 {
-                        if is_better_candidate(daily, acc_is_free, &best_candidate) {
+                        if is_better_candidate(daily, weekly, acc_is_free, &best_candidate) {
                             best_candidate = Some((acc.id, acc.email.clone(), daily, weekly, acc_is_free));
                         }
                     }
@@ -1365,7 +1481,7 @@ pub async fn check_auto_switch(
                         
                         // 候选号必须同时满足：周配额>0 且 日配额>阈值
                         if daily > threshold && weekly > 0 {
-                            if is_better_candidate(daily, acc_is_free, &best_candidate) {
+                            if is_better_candidate(daily, weekly, acc_is_free, &best_candidate) {
                                 best_candidate = Some((acc.id, acc.email.clone(), daily, weekly, acc_is_free));
                             }
                         }
@@ -1427,7 +1543,21 @@ pub async fn check_auto_switch(
     }
     
     // 无感切号：通过回调URL触发
-    let _ = trigger_windsurf_callback(&app, &auth.callback_token).await;
+    if let Err(e) = trigger_windsurf_callback(&app, &auth.callback_token, None).await {
+        return Ok(json!({
+            "action": "error",
+            "reason": format!("触发回调URL失败: {}", e)
+        }));
+    }
+    let verified_info = match wait_for_windsurf_account(&target_email).await {
+        Some(info) => info,
+        None => {
+            return Ok(json!({
+                "action": "error",
+                "reason": format!("编辑器账号校验失败，未检测到目标账号: {}", target_email)
+            }));
+        }
+    };
     
     // 更新目标账号的token信息
     let expires_at = Utc::now() + chrono::Duration::seconds(auth.expires_in.parse::<i64>().unwrap_or(3600));
@@ -1453,6 +1583,7 @@ pub async fn check_auto_switch(
         "to_account": target_email,
         "to_account_id": target_id.to_string(),
         "to_daily_remaining": target_daily,
-        "to_weekly_remaining": target_weekly
+        "to_weekly_remaining": target_weekly,
+        "verified_editor_account": verified_info.email
     }))
 }

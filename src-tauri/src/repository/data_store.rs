@@ -1,4 +1,4 @@
-use crate::models::{Account, AppConfig, OperationLog};
+use crate::models::{Account, AppConfig, OperationLog, WindsurfProfile};
 use crate::utils::{AppError, AppResult};
 use std::fs;
 use std::path::PathBuf;
@@ -633,6 +633,102 @@ impl DataStore {
         logs.clear();
         drop(logs);
         self.save_logs().await?;
+        Ok(())
+    }
+
+    // ==================== Windsurf 分身（user-data-dir 隔离实例）管理 ====================
+
+    /// 获取所有分身（不含主实例）
+    pub async fn get_profiles(&self) -> AppResult<Vec<WindsurfProfile>> {
+        let config = self.config.read().await;
+        Ok(config.windsurf_profiles.clone())
+    }
+
+    /// 按 id 获取分身
+    pub async fn get_profile(&self, id: &str) -> AppResult<WindsurfProfile> {
+        let config = self.config.read().await;
+        config.windsurf_profiles
+            .iter()
+            .find(|p| p.id == id)
+            .cloned()
+            .ok_or_else(|| AppError::Config(format!("Profile not found: {}", id)))
+    }
+
+    /// 新增分身（id 必须唯一）
+    pub async fn add_profile(&self, profile: WindsurfProfile) -> AppResult<()> {
+        let mut config = self.config.write().await;
+        if config.windsurf_profiles.iter().any(|p| p.id == profile.id) {
+            return Err(AppError::Config(format!("Profile id already exists: {}", profile.id)));
+        }
+        if config.windsurf_profiles.iter().any(|p| p.name == profile.name) {
+            return Err(AppError::Config(format!("Profile name already exists: {}", profile.name)));
+        }
+        config.windsurf_profiles.push(profile);
+        drop(config);
+        self.save().await?;
+        Ok(())
+    }
+
+    /// 更新分身（按 id 匹配，整体替换）
+    pub async fn update_profile(&self, profile: WindsurfProfile) -> AppResult<()> {
+        let mut config = self.config.write().await;
+        if let Some(existing) = config.windsurf_profiles.iter_mut().find(|p| p.id == profile.id) {
+            *existing = profile;
+        } else {
+            return Err(AppError::Config(format!("Profile not found: {}", profile.id)));
+        }
+        drop(config);
+        self.save().await?;
+        Ok(())
+    }
+
+    /// 删除分身
+    pub async fn delete_profile(&self, id: &str) -> AppResult<()> {
+        let mut config = self.config.write().await;
+        let initial_len = config.windsurf_profiles.len();
+        config.windsurf_profiles.retain(|p| p.id != id);
+        if config.windsurf_profiles.len() == initial_len {
+            return Err(AppError::Config(format!("Profile not found: {}", id)));
+        }
+        drop(config);
+        self.save().await?;
+        Ok(())
+    }
+
+    /// 更新分身的当前绑定账号（切号成功后调用）
+    pub async fn update_profile_bound_account(
+        &self,
+        id: &str,
+        account_id: Option<String>,
+        email: Option<String>,
+    ) -> AppResult<()> {
+        let mut config = self.config.write().await;
+        if let Some(p) = config.windsurf_profiles.iter_mut().find(|p| p.id == id) {
+            p.bound_account_id = account_id;
+            p.last_account_email = email;
+            p.last_used_at = Some(chrono::Utc::now());
+        } else {
+            return Err(AppError::Config(format!("Profile not found: {}", id)));
+        }
+        drop(config);
+        self.save().await?;
+        Ok(())
+    }
+
+    /// 更新分身的自动换号配置
+    pub async fn update_profile_auto_switch(
+        &self,
+        id: &str,
+        cfg: crate::models::ProfileAutoSwitch,
+    ) -> AppResult<()> {
+        let mut config = self.config.write().await;
+        if let Some(p) = config.windsurf_profiles.iter_mut().find(|p| p.id == id) {
+            p.auto_switch = cfg;
+        } else {
+            return Err(AppError::Config(format!("Profile not found: {}", id)));
+        }
+        drop(config);
+        self.save().await?;
         Ok(())
     }
 
