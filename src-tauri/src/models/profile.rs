@@ -23,11 +23,11 @@ fn default_profile_group() -> String {
 }
 
 fn default_profile_threshold() -> i32 {
-    10
+    5
 }
 
 fn default_profile_check_interval() -> i32 {
-    300
+    30
 }
 
 impl Default for ProfileAutoSwitch {

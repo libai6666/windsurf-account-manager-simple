@@ -176,11 +176,11 @@ fn default_auto_switch_group() -> String {
 }
 
 fn default_auto_switch_threshold() -> i32 {
-    10  // 默认10%
+    5  // 默认5%
 }
 
 fn default_auto_switch_interval() -> i32 {
-    300  // 默认5分钟
+    30  // 默认30秒
 }
 
 impl Default for Settings {
@@ -220,8 +220,8 @@ impl Default for Settings {
             seat_count: 1,  // 默认1个席位
             auto_switch_enabled: false,  // 默认关闭自动换号
             auto_switch_group: "默认分组".to_string(),
-            auto_switch_threshold: 10,  // 默认10%
-            auto_switch_check_interval: 300,  // 默认5分钟
+            auto_switch_threshold: 5,  // 默认5%
+            auto_switch_check_interval: 30,  // 默认30秒
             auto_switch_current_account_id: None,
             reset_machine_id_on_switch: true,  // 默认开启切号时重置设备码
         }

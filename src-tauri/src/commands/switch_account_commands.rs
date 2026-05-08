@@ -1269,11 +1269,16 @@ pub async fn check_auto_switch(
             
             // 跳到候选号选择逻辑（设置 dummy 值以继续后续流程）
             // 构造一个"需要切换"的场景
+            let in_use = crate::commands::profile_commands::accounts_in_use_by_other_profiles(
+                &data_store,
+                crate::models::MAIN_PROFILE_ID,
+            ).await;
             let group_candidates: Vec<_> = all_accounts.iter()
                 .filter(|a| {
                     a.group.as_deref() == Some(group)
                     && !matches!(a.status, crate::models::AccountStatus::Error(_))
                     && a.refresh_token.is_some()
+                    && !in_use.contains(&a.email.to_ascii_lowercase())
                 })
                 .collect();
             
@@ -1470,12 +1475,17 @@ pub async fn check_auto_switch(
     println!("[自动换号] {}，从分组 '{}' 中查找可用账号...", switch_reason, group);
     
     let all_accounts = data_store.get_all_accounts().await.map_err(|e| e.to_string())?;
+    let in_use = crate::commands::profile_commands::accounts_in_use_by_other_profiles(
+        &data_store,
+        crate::models::MAIN_PROFILE_ID,
+    ).await;
     let group_accounts: Vec<_> = all_accounts.iter()
         .filter(|a| {
             a.group.as_deref() == Some(group) 
             && a.id != current_uuid
             && !matches!(a.status, crate::models::AccountStatus::Error(_))
             && a.refresh_token.is_some()
+            && !in_use.contains(&a.email.to_ascii_lowercase())
         })
         .collect();
     

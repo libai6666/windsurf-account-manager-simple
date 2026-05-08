@@ -279,6 +279,60 @@ fn consider_candidate(
     }
 }
 
+/// 收集"已被其它分身或主实例占用"的账号 email（小写）。
+/// 用于自动换号候选过滤，避免一号同时登录多个编辑器。
+/// 排除规则：
+/// - 主实例（若不是 exclude_profile_id）：实际登录账号 + autoSwitchCurrentAccountId 对应账号
+/// - 其它分身：实际登录账号 + boundAccountId 对应账号
+pub(crate) async fn accounts_in_use_by_other_profiles(
+    store: &Arc<DataStore>,
+    exclude_profile_id: &str,
+) -> std::collections::HashSet<String> {
+    use std::collections::HashSet;
+    let mut emails: HashSet<String> = HashSet::new();
+
+    if exclude_profile_id != MAIN_PROFILE_ID {
+        if let Some(main_p) = main_profile() {
+            if let Ok(info) = get_windsurf_info_from_dir(&main_p.user_data_dir) {
+                if let Some(email) = info.email {
+                    emails.insert(email.to_ascii_lowercase());
+                }
+            }
+        }
+        if let Ok(settings) = store.get_settings().await {
+            if let Some(account_id) = settings.auto_switch_current_account_id.clone() {
+                if let Ok(uuid) = Uuid::parse_str(&account_id) {
+                    if let Ok(acc) = store.get_account(uuid).await {
+                        emails.insert(acc.email.to_ascii_lowercase());
+                    }
+                }
+            }
+        }
+    }
+
+    if let Ok(profiles) = store.get_profiles().await {
+        for p in profiles {
+            if p.id == exclude_profile_id {
+                continue;
+            }
+            if let Ok(info) = get_windsurf_info_from_dir(&p.user_data_dir) {
+                if let Some(email) = info.email {
+                    emails.insert(email.to_ascii_lowercase());
+                }
+            }
+            if let Some(ref bid) = p.bound_account_id {
+                if let Ok(uuid) = Uuid::parse_str(bid) {
+                    if let Ok(acc) = store.get_account(uuid).await {
+                        emails.insert(acc.email.to_ascii_lowercase());
+                    }
+                }
+            }
+        }
+    }
+
+    emails
+}
+
 async fn choose_best_candidate(
     store: &Arc<DataStore>,
     candidates: &[Account],
@@ -392,7 +446,7 @@ async fn switch_profile_to_account(
     let already_authenticated = is_profile_authenticated(&profile.user_data_dir);
     let was_running = is_profile_running_from_cmds(profile, &list_windsurf_process_command_lines());
 
-    let used_direct_write = if already_authenticated && was_running {
+    let _used_direct_write = if already_authenticated && was_running {
         // 已认证且正在运行 → 走 callback URL，让正在跑的 Windsurf 实例直接接管，无需重启窗口
         if let Err(e) = trigger_windsurf_callback(app, &auth.callback_token, Some(&profile.user_data_dir)).await {
             error!("Profile callback failed: {}", e);
@@ -445,13 +499,15 @@ async fn switch_profile_to_account(
         true
     };
 
+    // 切号已经执行（direct-write 写入文件 / callback URL 已投递给分身实例），
+    // 这里的 wait 只是尝试在短时间内拿到最新的 state.vscdb 解析结果。
+    // 即使等不到也不应判定为失败：分身可能仍在启动/处理 URL，前端 5s 轮询会兜底刷新。
     let verified_info = wait_for_profile_account(&profile.user_data_dir, &account.email).await;
-    if verified_info.is_none() && !used_direct_write {
-        return Ok(json!({
-            "success": false,
-            "error": format!("分身账号校验失败，未检测到目标账号: {}", account.email),
-            "machine_id_reset": machine_id_reset
-        }));
+    if verified_info.is_none() {
+        warn!(
+            "Profile {} 切号至 {} 后未在短时间内读到目标账号，等待编辑器异步生效",
+            profile.id, account.email
+        );
     }
 
     let expires_at = Utc::now() + chrono::Duration::seconds(auth.expires_in.parse::<i64>().unwrap_or(3600));
@@ -654,18 +710,23 @@ pub async fn stop_profile(
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
+        // 注意：taskkill 输出是 GBK，直接当 UTF-8 读会乱码 → 不回传 stderr，只用 exit code 与 PID 表达失败。
+        // 进程间存在父子关系，杀第一个父进程后子进程可能已经一并退出，
+        // 所以单 PID 失败不立刻 return；最后用进程列表兜底确认。
         for pid in &pids {
-            let output = Command::new("taskkill")
+            let kill_outcome = Command::new("taskkill")
                 .arg("/PID")
                 .arg(pid.to_string())
                 .arg("/T")
+                .arg("/F")
                 .creation_flags(0x08000000)
-                .output()
-                .map_err(|e| format!("关闭 Windsurf 失败: {}", e))?;
-
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(format!("关闭 Windsurf 失败: {}", stderr.trim()));
+                .output();
+            match kill_outcome {
+                Err(e) => warn!("启动 taskkill 失败 (PID {}): {}", pid, e),
+                Ok(o) if !o.status.success() => {
+                    warn!("taskkill 返回非零 (PID {}, code {:?})，可能进程已退出", pid, o.status.code());
+                }
+                Ok(_) => {}
             }
         }
     }
@@ -675,7 +736,17 @@ pub async fn stop_profile(
         return Err("当前平台暂不支持关闭分身进程".to_string());
     }
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(700)).await;
+
+    // 兜底：重新扫描进程列表，确认是否真的关掉了
+    let remaining = matching_profile_process_ids(&profile, &list_windsurf_processes());
+    if !remaining.is_empty() {
+        return Err(format!(
+            "仍有 {} 个 Windsurf 进程未关闭 (PID: {:?})，请手动从任务管理器结束",
+            remaining.len(),
+            remaining
+        ));
+    }
 
     Ok(json!({
         "success": true,
@@ -826,12 +897,14 @@ pub async fn check_profile_auto_switch(
     let current_account = match current_account {
         Some(account) => account,
         None => {
+            let in_use = accounts_in_use_by_other_profiles(&store, &profile_id).await;
             let candidates: Vec<Account> = all_accounts
                 .into_iter()
                 .filter(|a| {
                     a.group.as_deref() == Some(group.as_str())
                         && !matches!(a.status, AccountStatus::Error(_))
                         && a.refresh_token.as_ref().map(|t| !t.is_empty()).unwrap_or(false)
+                        && !in_use.contains(&a.email.to_ascii_lowercase())
                 })
                 .collect();
 
@@ -929,6 +1002,7 @@ pub async fn check_profile_auto_switch(
     }
 
     let all_accounts = store.get_all_accounts().await.map_err(|e| e.to_string())?;
+    let in_use = accounts_in_use_by_other_profiles(&store, &profile_id).await;
     let candidates: Vec<Account> = all_accounts
         .into_iter()
         .filter(|a| {
@@ -936,6 +1010,7 @@ pub async fn check_profile_auto_switch(
                 && a.id != current_account.id
                 && !matches!(a.status, AccountStatus::Error(_))
                 && a.refresh_token.as_ref().map(|t| !t.is_empty()).unwrap_or(false)
+                && !in_use.contains(&a.email.to_ascii_lowercase())
         })
         .collect();
 

@@ -13,12 +13,39 @@
     </div>
 
     <el-alert
-      title="主实例仍使用默认 Windsurf 数据目录；分身窗口通过 --user-data-dir 独立启动。推荐打开自动换号，分身首次登录时选择对应账号后选择切到目标号，等待新窗口出来点击log in会直接用选择好的号登录到编辑器中"
-      type="info"
+      type="warning"
       :closable="false"
       show-icon
-      class="profile-alert"
-    />
+      class="profile-alert profile-alert-tip"
+    >
+      <template #title>
+        <div class="alert-title-row">
+          <span class="alert-title-strong">📌 新建分身使用指南</span>
+          <el-button text size="small" class="alert-toggle" @click="toggleTipExpanded">
+            {{ tipExpanded ? '收起' : '展开完整步骤' }}
+          </el-button>
+        </div>
+      </template>
+      <template #default>
+        <div v-if="!tipExpanded" class="alert-body-compact">
+          推荐<strong>开启自动换号</strong>。新建分身后选好<strong>「换号分组」+「手动目标号」</strong>，点<strong>「切到目标号」</strong>，等 Windsurf 弹窗里点 <strong>Log in</strong> 即自动登录。
+        </div>
+        <div v-else class="alert-body">
+          <div>每个分身使用独立 <code>--user-data-dir</code>，账号、机器码、扩展彼此隔离。建议<strong>开启「自动换号」</strong>，让管理器自动维护账号配额。</div>
+          <div class="alert-highlight">
+            <div class="alert-highlight-title">首次登录新分身的标准流程：</div>
+            <ol class="step-list">
+              <li><span class="step-tag">1</span><span>点击右上角 <strong>「新建分身」</strong>，输入名称后保存</span></li>
+              <li><span class="step-tag">2</span><span>在分身卡片里选好 <strong>「换号分组」</strong> 和 <strong>「手动目标号」</strong>（要登录的账号）</span></li>
+              <li><span class="step-tag">3</span><span>点击底部 <strong>「切到目标号」</strong>，管理器会预写认证信息并自动启动分身窗口</span></li>
+              <li><span class="step-tag">4</span><span>等待新 Windsurf 窗口弹出，在 Sign in 页面点击 <strong>「Log in」</strong> 按钮</span></li>
+              <li><span class="step-tag">5</span><span>Windsurf 会自动用刚才选好的账号完成登录，<strong>无需手动输入邮箱/密码</strong></span></li>
+            </ol>
+            <div class="alert-tip-line">⚠️ 如果忘了第 2 步直接启动，会进入 Windsurf 默认登录页 — 这时关闭分身重做即可。</div>
+          </div>
+        </div>
+      </template>
+    </el-alert>
 
     <div v-if="loading" class="profile-loading">
       <el-icon class="is-loading" size="32"><Loading /></el-icon>
@@ -50,18 +77,34 @@
         </template>
 
         <div class="profile-status">
-          <div class="status-item">
+          <div class="status-item status-item-email">
             <span class="label">实际登录账号</span>
-            <strong>{{ item.currentInfo?.email || '未检测到' }}</strong>
+            <el-tooltip
+              v-if="item.currentInfo?.email"
+              :content="item.currentInfo.email"
+              placement="top"
+              :show-after="300"
+            >
+              <strong>{{ item.currentInfo.email }}</strong>
+            </el-tooltip>
+            <strong v-else>未检测到</strong>
           </div>
-          <div class="status-item">
+          <div class="status-item status-item-plan">
             <span class="label">套餐</span>
             <strong>{{ item.currentInfo?.plan_name || '-' }}</strong>
           </div>
-          <div class="status-item">
+          <div class="status-item status-item-email">
             <span class="label">{{ item.profile.id === MAIN_PROFILE_ID ? '自动换号' : '手动目标号' }}</span>
             <strong v-if="item.profile.id === MAIN_PROFILE_ID">{{ settingsStore.settings.autoSwitchEnabled ? '已开启' : '未开启' }}</strong>
-            <strong v-else>{{ boundAccountEmail(item.profile.boundAccountId) }}</strong>
+            <el-tooltip
+              v-else-if="item.profile.boundAccountId"
+              :content="boundAccountEmail(item.profile.boundAccountId)"
+              placement="top"
+              :show-after="300"
+            >
+              <strong>{{ boundAccountEmail(item.profile.boundAccountId) }}</strong>
+            </el-tooltip>
+            <strong v-else>未绑定</strong>
           </div>
         </div>
 
@@ -79,7 +122,7 @@
                 需要先在设置中启用无感换号
               </div>
             </el-form-item>
-            <el-form-item v-if="settingsStore.settings.autoSwitchEnabled" label="换号分组">
+            <el-form-item label="换号分组">
               <el-select
                 :model-value="settingsStore.settings.autoSwitchGroup"
                 placeholder="选择分组"
@@ -94,7 +137,7 @@
               </el-select>
               <div class="form-tip">主实例会从该分组中选择可用账号自动切换</div>
             </el-form-item>
-            <el-form-item v-if="settingsStore.settings.autoSwitchEnabled" label="手动目标号">
+            <el-form-item label="手动目标号">
               <el-select
                 :model-value="settingsStore.settings.autoSwitchCurrentAccountId || ''"
                 filterable
@@ -105,22 +148,25 @@
                 <el-option
                   v-for="account in mainGroupAccounts"
                   :key="account.id"
-                  :label="accountOptionLabel(account)"
+                  :label="accountOptionLabel(account, MAIN_PROFILE_ID)"
                   :value="account.id"
                 />
               </el-select>
               <div class="form-tip">仅作为手动切号目标；自动换号始终读取上方实际登录账号判断</div>
             </el-form-item>
-            <el-form-item v-if="settingsStore.settings.autoSwitchEnabled" label="阈值">
-              <el-input-number
-                :model-value="settingsStore.settings.autoSwitchThreshold"
-                :min="0"
-                :max="99"
-                :step="1"
-                @change="updateMainAutoSwitchSettings({ autoSwitchThreshold: Number($event ?? 10) })"
-              />
+            <el-form-item label="阈值">
+              <div class="input-with-suffix">
+                <el-input-number
+                  :model-value="settingsStore.settings.autoSwitchThreshold"
+                  :min="0"
+                  :max="99"
+                  :step="1"
+                  @change="updateMainAutoSwitchSettings({ autoSwitchThreshold: Number($event ?? 5) })"
+                />
+                <span class="input-suffix">%</span>
+              </div>
             </el-form-item>
-            <el-form-item v-if="settingsStore.settings.autoSwitchEnabled" label="检测间隔">
+            <el-form-item label="检测间隔">
               <el-select
                 :model-value="settingsStore.settings.autoSwitchCheckInterval"
                 @change="updateMainAutoSwitchSettings({ autoSwitchCheckInterval: Number($event) })"
@@ -169,19 +215,22 @@
                 <el-option
                   v-for="account in profileGroupAccounts(item.profile)"
                   :key="account.id"
-                  :label="accountOptionLabel(account)"
+                  :label="accountOptionLabel(account, item.profile.id)"
                   :value="account.id"
                 />
               </el-select>
               <div class="form-tip">仅作为手动切号目标；自动换号会根据实际登录账号和分组配额判断</div>
             </el-form-item>
             <el-form-item label="阈值">
-              <el-input-number
-                :model-value="item.profile.autoSwitch.threshold"
-                :min="0"
-                :max="100"
-                @change="updateAutoSwitch(item.profile.id, item.profile.autoSwitch.enabled, item.profile.autoSwitch.group, Number($event ?? 10), item.profile.autoSwitch.checkInterval)"
-              />
+              <div class="input-with-suffix">
+                <el-input-number
+                  :model-value="item.profile.autoSwitch.threshold"
+                  :min="0"
+                  :max="100"
+                  @change="updateAutoSwitch(item.profile.id, item.profile.autoSwitch.enabled, item.profile.autoSwitch.group, Number($event ?? 5), item.profile.autoSwitch.checkInterval)"
+                />
+                <span class="input-suffix">%</span>
+              </div>
             </el-form-item>
             <el-form-item label="检测间隔">
               <el-select
@@ -299,11 +348,56 @@ const profileNameInput = ref('');
 const editingProfileId = ref('');
 let profileStatusTimer: ReturnType<typeof setInterval> | null = null;
 
+const TIP_EXPANDED_KEY = 'profile-manager:tip-expanded';
+const tipExpanded = ref<boolean>(
+  // 默认展开（首次访问看完整指南）；用户主动收起后持久化
+  localStorage.getItem(TIP_EXPANDED_KEY) !== '0',
+);
+function toggleTipExpanded() {
+  tipExpanded.value = !tipExpanded.value;
+  localStorage.setItem(TIP_EXPANDED_KEY, tipExpanded.value ? '1' : '0');
+}
+
 const accountEmailMap = computed(() => {
   const map = new Map<string, string>();
   for (const account of accountsStore.accounts) {
     map.set(account.id, account.email);
   }
+  return map;
+});
+
+const accountIdByEmail = computed(() => {
+  const map = new Map<string, string>();
+  for (const account of accountsStore.accounts) {
+    map.set(account.email.toLowerCase(), account.id);
+  }
+  return map;
+});
+
+/// account.id → { profileId, profileName }
+/// 包含：每个 profile 实际登录账号、每个分身的 boundAccountId、主实例的 autoSwitchCurrentAccountId
+const accountUsageMap = computed(() => {
+  const map = new Map<string, { profileId: string; profileName: string }>();
+  const setIfAbsent = (accountId: string, profileId: string, profileName: string) => {
+    if (!accountId) return;
+    if (!map.has(accountId)) map.set(accountId, { profileId, profileName });
+  };
+
+  for (const item of profiles.value) {
+    const profileLabel = item.profile.id === MAIN_PROFILE_ID ? '主实例' : item.profile.name;
+    if (item.currentInfo?.email) {
+      const accId = accountIdByEmail.value.get(item.currentInfo.email.toLowerCase());
+      if (accId) setIfAbsent(accId, item.profile.id, profileLabel);
+    }
+    if (item.profile.id !== MAIN_PROFILE_ID && item.profile.boundAccountId) {
+      setIfAbsent(item.profile.boundAccountId, item.profile.id, profileLabel);
+    }
+  }
+
+  if (settingsStore.settings.autoSwitchCurrentAccountId) {
+    setIfAbsent(settingsStore.settings.autoSwitchCurrentAccountId, MAIN_PROFILE_ID, '主实例');
+  }
+
   return map;
 });
 
@@ -340,11 +434,17 @@ function normalizeProfilePage() {
   }
 }
 
-function accountOptionLabel(account: Account) {
+function accountOptionLabel(account: Account, currentProfileId?: string) {
   const daily = account.daily_quota_remaining;
   const weekly = account.weekly_quota_remaining;
-  if (daily === undefined && weekly === undefined) return account.email;
-  return `${account.email} (日${daily ?? '?'}%/周${weekly ?? '?'}%)`;
+  const base = (daily === undefined && weekly === undefined)
+    ? account.email
+    : `${account.email} (日${daily ?? '?'}%/周${weekly ?? '?'}%)`;
+  const usage = accountUsageMap.value.get(account.id);
+  if (usage && usage.profileId !== currentProfileId) {
+    return `${base} 【已被${usage.profileName}使用】`;
+  }
+  return base;
 }
 
 function upsertProfileRuntime(updated: ProfileRuntimeInfo) {
@@ -471,6 +571,21 @@ async function handleLaunch(profileId: string) {
 }
 
 async function handleStop(profileId: string) {
+  const target = profiles.value.find(item => item.profile.id === profileId);
+  const targetName = target?.profile.name || '该分身';
+  try {
+    await ElMessageBox.confirm(
+      `确定要关闭 ${targetName} 吗？正在编辑的内容如未保存可能丢失。`,
+      '确认关闭',
+      {
+        confirmButtonText: '关闭',
+        cancelButtonText: '取消',
+        type: 'warning',
+      },
+    );
+  } catch {
+    return;
+  }
   actionLoading.value = `stop:${profileId}`;
   try {
     const result = await profileApi.stopProfile(profileId);
@@ -691,8 +806,182 @@ onUnmounted(() => {
 }
 
 .profile-alert {
-  margin: 18px 0;
-  border-radius: 12px;
+  margin: 14px 0;
+  border-radius: 10px;
+}
+
+.profile-alert-tip {
+  padding: 8px 12px !important;
+  border: 1px solid #fbbf24;
+  background: linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%) !important;
+}
+
+.profile-alert-tip :deep(.el-alert__content) {
+  padding: 0;
+}
+
+.profile-alert-tip :deep(.el-alert__title) {
+  font-size: 13px;
+}
+
+.alert-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.alert-title-strong {
+  color: #b45309;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+}
+
+.alert-toggle {
+  height: 22px !important;
+  padding: 0 6px !important;
+  color: #b45309 !important;
+  font-size: 12px !important;
+}
+
+.alert-toggle:hover {
+  color: #92400e !important;
+  background: rgba(251, 191, 36, 0.12) !important;
+}
+
+.alert-body-compact {
+  margin-top: 4px;
+  color: #374151;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.alert-body-compact strong {
+  color: #b45309;
+}
+
+.alert-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+  color: #374151;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.alert-body code {
+  padding: 0 4px;
+  border-radius: 3px;
+  background: rgba(180, 83, 9, 0.1);
+  color: #b45309;
+  font-family: Consolas, monospace;
+  font-size: 11.5px;
+}
+
+.alert-highlight {
+  padding: 6px 10px;
+  border-left: 3px solid #f59e0b;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.65);
+  color: #1f2937;
+}
+
+.alert-highlight-title {
+  margin-bottom: 4px;
+  color: #b45309;
+  font-size: 12.5px;
+  font-weight: 700;
+}
+
+.alert-highlight strong {
+  color: #b45309;
+}
+
+.step-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.step-list li {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 1px 0;
+  line-height: 1.5;
+}
+
+.step-tag {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  border-radius: 50%;
+  background: #f59e0b;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.alert-tip-line {
+  margin-top: 6px;
+  padding-top: 5px;
+  border-top: 1px dashed rgba(180, 83, 9, 0.25);
+  color: #92400e;
+  font-size: 11.5px;
+}
+
+:global(.dark) .profile-alert-tip {
+  border-color: rgba(251, 191, 36, 0.3);
+  background: linear-gradient(135deg, rgba(120, 53, 15, 0.2) 0%, rgba(146, 64, 14, 0.2) 100%) !important;
+}
+
+:global(.dark) .alert-title-strong,
+:global(.dark) .alert-highlight strong,
+:global(.dark) .alert-highlight-title {
+  color: #fbbf24;
+}
+
+:global(.dark) .step-tag {
+  background: #fbbf24;
+  color: #1f2937;
+}
+
+:global(.dark) .alert-tip-line {
+  border-top-color: rgba(251, 191, 36, 0.3);
+  color: #fcd34d;
+}
+
+:global(.dark) .alert-body,
+:global(.dark) .alert-body-compact {
+  color: #e5e7eb;
+}
+
+:global(.dark) .alert-body-compact strong {
+  color: #fbbf24;
+}
+
+:global(.dark) .alert-toggle {
+  color: #fbbf24 !important;
+}
+
+:global(.dark) .alert-toggle:hover {
+  background: rgba(251, 191, 36, 0.15) !important;
+}
+
+:global(.dark) .alert-body code {
+  background: rgba(251, 191, 36, 0.15);
+  color: #fbbf24;
+}
+
+:global(.dark) .alert-highlight {
+  background: rgba(255, 255, 255, 0.05);
+  color: #e5e7eb;
 }
 
 .profile-loading {
@@ -768,14 +1057,14 @@ onUnmounted(() => {
 
 .profile-status {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 10px;
+  grid-template-columns: minmax(0, 2.2fr) minmax(0, 1fr) minmax(0, 2.2fr);
+  gap: 8px;
   margin-bottom: 18px;
 }
 
 .status-item {
   min-width: 0;
-  padding: 12px;
+  padding: 10px 12px;
   border-radius: 12px;
   background: #f7f9fc;
 }
@@ -789,6 +1078,7 @@ onUnmounted(() => {
 
 .status-item strong {
   display: block;
+  min-width: 0;
   overflow: hidden;
   color: #1f2937;
   font-size: 13px;
@@ -806,6 +1096,28 @@ onUnmounted(() => {
 .profile-config :deep(.el-select),
 .profile-config :deep(.el-input-number) {
   width: 100%;
+}
+
+.input-with-suffix {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.input-with-suffix :deep(.el-input-number) {
+  flex: 1;
+}
+
+.input-suffix {
+  flex-shrink: 0;
+  color: #6b7280;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+:global(.dark) .input-suffix {
+  color: #cbd5e1;
 }
 
 .form-tip {
