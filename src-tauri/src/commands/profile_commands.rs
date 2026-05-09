@@ -7,7 +7,7 @@ use crate::commands::switch_account_commands::{
 #[cfg(target_os = "windows")]
 use crate::commands::switch_account_commands::{prepare_profile_local_state, write_windsurf_auth_direct};
 use crate::commands::windsurf_info::{get_windsurf_info_from_dir, WindsurfCurrentInfo};
-use crate::models::{main_profile, Account, AccountStatus, ProfileAutoSwitch, WindsurfProfile, MAIN_PROFILE_ID};
+use crate::models::{main_profile, main_user_data_dir, Account, AccountStatus, ProfileAutoSwitch, WindsurfProfile, MAIN_PROFILE_ID};
 use crate::repository::DataStore;
 use crate::utils::errors::{AppError, AppResult};
 use chrono::Utc;
@@ -556,6 +556,75 @@ pub async fn list_profiles(
     Ok(result)
 }
 
+/// 递归复制目录(目标已存在则合并覆盖)
+fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        let dst_child = dst.join(entry.file_name());
+        if ty.is_dir() {
+            copy_dir_recursive(&entry.path(), &dst_child)?;
+        } else if ty.is_file() {
+            std::fs::copy(entry.path(), &dst_child)?;
+        }
+    }
+    Ok(())
+}
+
+/// 从主实例复制核心编辑器配置到新分身：
+/// - `User/settings.json`、`User/keybindings.json`、`User/locale.json`
+/// - `User/snippets/` 整目录
+/// 不复制：
+/// - `User/globalStorage`（含 state.vscdb 账号、storage.json 机器码，必须独立）
+/// - `User/workspaceStorage`、`User/History`（项目状态、历史记录，独立更合理）
+/// - 扩展目录（已通过 `~/.windsurf/extensions` 全局共享）
+fn copy_main_user_settings_to_profile(profile_user_data_dir: &Path) {
+    let main_dir = match main_user_data_dir() {
+        Some(d) => d,
+        None => return,
+    };
+    let main_user = main_dir.join("User");
+    if !main_user.exists() {
+        info!("主实例 User 目录不存在,跳过配置复制: {}", main_user.display());
+        return;
+    }
+
+    let target_user = profile_user_data_dir.join("User");
+    if let Err(e) = std::fs::create_dir_all(&target_user) {
+        warn!("创建分身 User 目录失败: {}", e);
+        return;
+    }
+
+    let mut copied: Vec<&str> = Vec::new();
+    for filename in &["settings.json", "keybindings.json", "locale.json"] {
+        let src = main_user.join(filename);
+        if !src.exists() {
+            continue;
+        }
+        let dst = target_user.join(filename);
+        match std::fs::copy(&src, &dst) {
+            Ok(_) => copied.push(filename),
+            Err(e) => warn!("复制 {} 失败: {}", filename, e),
+        }
+    }
+
+    let src_snippets = main_user.join("snippets");
+    if src_snippets.exists() && src_snippets.is_dir() {
+        let dst_snippets = target_user.join("snippets");
+        match copy_dir_recursive(&src_snippets, &dst_snippets) {
+            Ok(_) => copied.push("snippets/"),
+            Err(e) => warn!("复制 snippets 目录失败: {}", e),
+        }
+    }
+
+    if copied.is_empty() {
+        info!("主实例无可复制配置,新分身使用 Windsurf 默认设置");
+    } else {
+        info!("已从主实例复制配置到新分身: {:?}", copied);
+    }
+}
+
 #[tauri::command]
 pub async fn create_profile(
     name: String,
@@ -572,6 +641,11 @@ pub async fn create_profile(
         .join(&id);
     std::fs::create_dir_all(user_data_dir.join("User").join("globalStorage"))
         .map_err(|e| format!("创建分身目录失败: {}", e))?;
+
+    // 从主实例复制 settings/keybindings/locale/snippets,让新分身继承用户的编辑器偏好
+    // (主题、禁用更新、Codeium 选项、快捷键、代码片段等)。
+    // 失败不阻塞分身创建,仅 warn。
+    copy_main_user_settings_to_profile(&user_data_dir);
 
     let profile = WindsurfProfile::new(id, trimmed.to_string(), user_data_dir);
     data_store

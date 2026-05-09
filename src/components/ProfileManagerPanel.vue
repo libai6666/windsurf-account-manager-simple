@@ -34,7 +34,13 @@
           推荐<strong>开启自动换号</strong>。新建分身后选好<strong>「换号分组」+「手动目标号」</strong>，点<strong>「切到目标号」</strong>，等 Windsurf 弹窗里点 <strong>Log in</strong> 即自动登录。
         </div>
         <div v-else class="alert-body">
-          <div>每个分身使用独立 <code>--user-data-dir</code>，账号、机器码、扩展彼此隔离。建议<strong>开启「自动换号」</strong>，让管理器自动维护账号配额。</div>
+          <div>每个分身使用独立 <code>--user-data-dir</code>，账号、机器码、扩展状态彼此隔离。建议<strong>开启「自动换号」</strong>，让管理器自动维护账号配额。</div>
+          <div class="alert-info-line">
+            ✨ 新建分身时会<strong>自动从主实例复制</strong> <code>settings.json</code> / <code>keybindings.json</code> / <code>snippets/</code>，无需重新配置主题、快捷键、禁用更新等。
+          </div>
+          <div class="alert-info-line">
+            ℹ️ 首次启动分身偶尔会弹 <code>connection to server is erroring</code> 提示，这是 Windsurf 自身扩展冷启动的已知现象，不影响登录和使用。
+          </div>
           <div class="alert-highlight">
             <div class="alert-highlight-title">首次登录新分身的标准流程：</div>
             <ol class="step-list">
@@ -899,6 +905,31 @@ onUnmounted(() => {
   font-size: 11.5px;
 }
 
+.alert-info-line {
+  padding: 5px 8px;
+  border-left: 2px solid rgba(180, 83, 9, 0.4);
+  background: rgba(255, 255, 255, 0.45);
+  border-radius: 3px;
+  color: #374151;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.alert-info-line strong {
+  color: #b45309;
+  font-weight: 600;
+}
+
+.alert-info-line code {
+  padding: 0 4px;
+  margin: 0 1px;
+  border-radius: 3px;
+  background: rgba(180, 83, 9, 0.1);
+  color: #b45309;
+  font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
+  font-size: 11px;
+}
+
 .alert-highlight {
   padding: 6px 10px;
   border-left: 3px solid #f59e0b;
@@ -980,6 +1011,21 @@ onUnmounted(() => {
 :global(.dark) .alert-body,
 :global(.dark) .alert-body-compact {
   color: #e5e7eb;
+}
+
+:global(.dark) .alert-info-line {
+  background: rgba(255, 255, 255, 0.04);
+  border-left-color: rgba(251, 191, 36, 0.45);
+  color: #e5e7eb;
+}
+
+:global(.dark) .alert-info-line strong {
+  color: #fbbf24;
+}
+
+:global(.dark) .alert-info-line code {
+  background: rgba(251, 191, 36, 0.15);
+  color: #fbbf24;
 }
 
 :global(.dark) .alert-body-compact strong {
