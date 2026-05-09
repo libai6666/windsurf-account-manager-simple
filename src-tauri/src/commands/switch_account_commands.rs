@@ -679,16 +679,21 @@ pub(crate) async fn trigger_windsurf_callback(
     
     #[cfg(target_os = "macos")]
     {
-        if let Some(exe_path) = find_windsurf_exe() {
+        let callback_target = find_macos_windsurf_cli_exe()
+            .map(|path| (path, "cli-shim"))
+            .or_else(|| find_windsurf_exe().map(|path| (path, "app-binary-fallback")));
+
+        if let Some((exe_path, target_kind)) = callback_target {
             let mut cmd = std::process::Command::new(&exe_path);
             if let Some(dir) = user_data_dir {
                 cmd.arg("--user-data-dir").arg(dir);
             }
             cmd.arg("--open-url").arg(&callback_url);
             info!(
-                "[Profile][macOS] Dispatching callback via Windsurf CLI: target={}, exe={}, arch={}",
+                "[Profile][macOS] Dispatching callback via Windsurf: target={}, exe={}, kind={}, arch={}",
                 user_data_dir.map(|p| p.display().to_string()).unwrap_or_else(|| "main".to_string()),
                 exe_path,
+                target_kind,
                 std::env::consts::ARCH
             );
             match cmd.output() {
@@ -892,6 +897,61 @@ pub(crate) fn find_windsurf_exe() -> Option<String> {
     }
 
     warn!("[Profile][macOS] Windsurf executable not found in common app bundle locations");
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn find_macos_windsurf_cli_exe() -> Option<String> {
+    let mut candidates: Vec<std::path::PathBuf> = vec![
+        std::path::PathBuf::from("/Applications/Windsurf.app/Contents/Resources/app/bin/windsurf"),
+        std::path::PathBuf::from("/Applications/Windsurf.app/Contents/Resources/app/bin/code"),
+        std::path::PathBuf::from("/usr/local/bin/windsurf"),
+        std::path::PathBuf::from("/opt/homebrew/bin/windsurf"),
+    ];
+
+    if let Ok(home) = std::env::var("HOME") {
+        candidates.push(
+            std::path::PathBuf::from(&home)
+                .join("Applications")
+                .join("Windsurf.app")
+                .join("Contents")
+                .join("Resources")
+                .join("app")
+                .join("bin")
+                .join("windsurf"),
+        );
+        candidates.push(
+            std::path::PathBuf::from(&home)
+                .join("Applications")
+                .join("Windsurf.app")
+                .join("Contents")
+                .join("Resources")
+                .join("app")
+                .join("bin")
+                .join("code"),
+        );
+        candidates.push(std::path::PathBuf::from(&home).join(".local").join("bin").join("windsurf"));
+    }
+
+    for path in candidates {
+        if path.exists() {
+            let value = path.to_string_lossy().to_string();
+            info!("[Profile][macOS] Found Windsurf CLI shim: {}", value);
+            return Some(value);
+        }
+    }
+
+    if let Ok(output) = std::process::Command::new("which").arg("windsurf").output() {
+        if output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() {
+                info!("[Profile][macOS] Found Windsurf CLI shim via PATH: {}", path);
+                return Some(path);
+            }
+        }
+    }
+
+    warn!("[Profile][macOS] Windsurf CLI shim not found, will fall back to app binary");
     None
 }
 

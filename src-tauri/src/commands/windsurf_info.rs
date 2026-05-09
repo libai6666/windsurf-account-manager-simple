@@ -1,6 +1,6 @@
 use crate::utils::errors::AppError;
 use base64::{Engine as _, engine::general_purpose};
-use log::{info, warn};
+use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::PathBuf;
@@ -201,7 +201,7 @@ fn read_current_info(db_path: &std::path::Path) -> Result<WindsurfCurrentInfo, A
         // 方式1: 尝试旧版格式（直接有 email/name 字段）
         if let Ok(legacy) = serde_json::from_str::<WindsurfAuthStatusLegacy>(auth) {
             if legacy.email.is_some() || legacy.name.is_some() {
-                info!("Parsed legacy auth format with email/name");
+                debug!("Parsed legacy auth format with email/name");
                 info.email = legacy.email;
                 info.name = legacy.name;
                 info.api_key = legacy.api_key;
@@ -217,13 +217,13 @@ fn read_current_info(db_path: &std::path::Path) -> Result<WindsurfCurrentInfo, A
                 if new_auth.api_key.is_some() {
                     info.api_key = new_auth.api_key;
                     info.is_active = true;
-                    info!("Parsed new auth format with apiKey");
+                    debug!("Parsed new auth format with apiKey");
                     
                     // 从 protobuf 提取用户名
                     if let Some(ref proto_b64) = new_auth.user_status_proto {
                         if let Ok(proto_bytes) = general_purpose::STANDARD.decode(proto_b64) {
                             let strings = extract_strings_from_protobuf(&proto_bytes);
-                            info!("Extracted strings from protobuf: {:?}", strings);
+                            debug!("Extracted strings from protobuf: {:?}", strings);
                             // 第一个有意义的字符串通常是用户名
                             for s in &strings {
                                 if s.contains('@') {

@@ -217,6 +217,48 @@ async fn wait_for_profile_account(user_data_dir: &Path, target_email: &str) -> O
     None
 }
 
+#[cfg(target_os = "macos")]
+async fn trigger_macos_profile_callback_with_retry(
+    app: &tauri::AppHandle,
+    profile: &WindsurfProfile,
+    callback_token: &str,
+    target_email: &str,
+) -> Result<Option<WindsurfCurrentInfo>, String> {
+    info!(
+        "[Profile][macOS] Waiting for profile window before callback: profile_id={}, user_data_dir={}",
+        profile.id,
+        profile.user_data_dir.display()
+    );
+    tokio::time::sleep(tokio::time::Duration::from_millis(3200)).await;
+
+    trigger_windsurf_callback(app, callback_token, Some(&profile.user_data_dir))
+        .await
+        .map_err(|e| format!("触发分身回调失败: {}", e))?;
+
+    if let Some(info) = wait_for_profile_account(&profile.user_data_dir, target_email).await {
+        info!(
+            "[Profile][macOS] Profile callback verified after first dispatch: profile_id={}, target_email={}",
+            profile.id,
+            target_email
+        );
+        return Ok(Some(info));
+    }
+
+    warn!(
+        "[Profile][macOS] First callback dispatch did not update profile auth, retrying once: profile_id={}, target_email={}, user_data_dir={}",
+        profile.id,
+        target_email,
+        profile.user_data_dir.display()
+    );
+    tokio::time::sleep(tokio::time::Duration::from_millis(1200)).await;
+
+    trigger_windsurf_callback(app, callback_token, Some(&profile.user_data_dir))
+        .await
+        .map_err(|e| format!("重试触发分身回调失败: {}", e))?;
+
+    Ok(wait_for_profile_account(&profile.user_data_dir, target_email).await)
+}
+
 /// 检查分身是否已登录（state.vscdb 存在 windsurfAuthStatus 或 auth-usages 记录）
 fn is_profile_authenticated(user_data_dir: &Path) -> bool {
     get_windsurf_info_from_dir(user_data_dir)
@@ -621,14 +663,18 @@ async fn switch_profile_to_account(
             if !was_running {
                 spawn_profile_window(profile, &exe_path)
                     .map_err(|e| format!("启动分身失败: {}", e))?;
-                tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
             }
 
-            if let Err(e) = trigger_windsurf_callback(app, &auth.callback_token, Some(&profile.user_data_dir)).await {
+            if let Err(e) = trigger_macos_profile_callback_with_retry(
+                app,
+                profile,
+                &auth.callback_token,
+                &account.email,
+            ).await {
                 error!("[Profile][macOS] Profile callback failed: {}", e);
                 return Ok(json!({
                     "success": false,
-                    "error": format!("触发分身回调失败: {}", e)
+                    "error": e
                 }));
             }
             false
