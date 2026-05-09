@@ -263,14 +263,16 @@ async fn trigger_macos_profile_callback_with_retry(
 
 #[cfg(target_os = "macos")]
 async fn wait_for_macos_extension_profile_login(profile: &WindsurfProfile, target_email: &str) -> bool {
-    let done_path = profile
+    let global_storage = profile
         .user_data_dir
         .join("User")
         .join("globalStorage")
-        .join("codeium.windsurf")
-        .join("windsurf-account-manager-profile-login.done.json");
+        .join("codeium.windsurf");
+    let done_path = global_storage.join("windsurf-account-manager-profile-login.done.json");
+    let error_path = global_storage.join("windsurf-account-manager-profile-login.error.json");
 
-    for _ in 0..30 {
+    // 60 * 500ms = 30s，给 Windsurf 启动 + 扩展激活留足够时间
+    for _ in 0..60 {
         if let Ok(content) = std::fs::read_to_string(&done_path) {
             if let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) {
                 let email_matches = value
@@ -292,12 +294,23 @@ async fn wait_for_macos_extension_profile_login(profile: &WindsurfProfile, targe
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
     }
 
-    warn!(
-        "[Profile][macOS][ExtensionLogin] Timed out waiting for Windsurf extension to consume staged profile auth: profile_id={}, target_email={}, done_path={}",
-        profile.id,
-        target_email,
-        done_path.display()
-    );
+    // 超时时把扩展自己写的 error.json 也带进日志，方便排查
+    if let Ok(content) = std::fs::read_to_string(&error_path) {
+        warn!(
+            "[Profile][macOS][ExtensionLogin] Timed out, extension reported error: profile_id={}, target_email={}, error_path={}, body={}",
+            profile.id,
+            target_email,
+            error_path.display(),
+            content.trim()
+        );
+    } else {
+        warn!(
+            "[Profile][macOS][ExtensionLogin] Timed out waiting for Windsurf extension to consume staged profile auth (no error file): profile_id={}, target_email={}, done_path={}",
+            profile.id,
+            target_email,
+            done_path.display()
+        );
+    }
     false
 }
 
