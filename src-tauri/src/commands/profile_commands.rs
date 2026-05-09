@@ -6,8 +6,6 @@ use crate::commands::switch_account_commands::{
 };
 #[cfg(target_os = "windows")]
 use crate::commands::switch_account_commands::{prepare_profile_local_state, write_windsurf_auth_direct};
-#[cfg(target_os = "macos")]
-use crate::commands::switch_account_commands::{stage_windsurf_auth_for_extension_macos, write_windsurf_auth_status_macos};
 use crate::commands::windsurf_info::{get_windsurf_info_from_dir, WindsurfCurrentInfo};
 use crate::models::{main_profile, main_user_data_dir, Account, AccountStatus, ProfileAutoSwitch, WindsurfProfile, MAIN_PROFILE_ID};
 use crate::repository::DataStore;
@@ -225,13 +223,17 @@ async fn trigger_macos_profile_callback_with_retry(
     profile: &WindsurfProfile,
     callback_token: &str,
     target_email: &str,
+    initial_delay_ms: u64,
 ) -> Result<Option<WindsurfCurrentInfo>, String> {
-    info!(
-        "[Profile][macOS] Waiting for profile window before callback: profile_id={}, user_data_dir={}",
-        profile.id,
-        profile.user_data_dir.display()
-    );
-    tokio::time::sleep(tokio::time::Duration::from_millis(3200)).await;
+    if initial_delay_ms > 0 {
+        info!(
+            "[Profile][macOS] Waiting {}ms for profile window before callback: profile_id={}, user_data_dir={}",
+            initial_delay_ms,
+            profile.id,
+            profile.user_data_dir.display()
+        );
+        tokio::time::sleep(tokio::time::Duration::from_millis(initial_delay_ms)).await;
+    }
 
     trigger_windsurf_callback(app, callback_token, Some(&profile.user_data_dir))
         .await
@@ -259,59 +261,6 @@ async fn trigger_macos_profile_callback_with_retry(
         .map_err(|e| format!("重试触发分身回调失败: {}", e))?;
 
     Ok(wait_for_profile_account(&profile.user_data_dir, target_email).await)
-}
-
-#[cfg(target_os = "macos")]
-async fn wait_for_macos_extension_profile_login(profile: &WindsurfProfile, target_email: &str) -> bool {
-    let global_storage = profile
-        .user_data_dir
-        .join("User")
-        .join("globalStorage")
-        .join("codeium.windsurf");
-    let done_path = global_storage.join("windsurf-account-manager-profile-login.done.json");
-    let error_path = global_storage.join("windsurf-account-manager-profile-login.error.json");
-
-    // 60 * 500ms = 30s，给 Windsurf 启动 + 扩展激活留足够时间
-    for _ in 0..60 {
-        if let Ok(content) = std::fs::read_to_string(&done_path) {
-            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) {
-                let email_matches = value
-                    .get("email")
-                    .and_then(|v| v.as_str())
-                    .map(|email| email.eq_ignore_ascii_case(target_email))
-                    .unwrap_or(false);
-                if email_matches {
-                    info!(
-                        "[Profile][macOS][ExtensionLogin] Windsurf extension consumed staged profile auth: profile_id={}, target_email={}, done_path={}",
-                        profile.id,
-                        target_email,
-                        done_path.display()
-                    );
-                    return true;
-                }
-            }
-        }
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-    }
-
-    // 超时时把扩展自己写的 error.json 也带进日志，方便排查
-    if let Ok(content) = std::fs::read_to_string(&error_path) {
-        warn!(
-            "[Profile][macOS][ExtensionLogin] Timed out, extension reported error: profile_id={}, target_email={}, error_path={}, body={}",
-            profile.id,
-            target_email,
-            error_path.display(),
-            content.trim()
-        );
-    } else {
-        warn!(
-            "[Profile][macOS][ExtensionLogin] Timed out waiting for Windsurf extension to consume staged profile auth (no error file): profile_id={}, target_email={}, done_path={}",
-            profile.id,
-            target_email,
-            done_path.display()
-        );
-    }
-    false
 }
 
 /// 检查分身是否已登录（state.vscdb 存在 windsurfAuthStatus 或 auth-usages 记录）
@@ -724,7 +673,7 @@ async fn switch_profile_to_account(
                 .ok_or_else(|| "找不到 Windsurf，请确认已安装到 /Applications 或 ~/Applications".to_string())?;
 
             info!(
-                "[Profile][macOS][ExtensionLogin] Preparing staged profile login: profile_id={}, was_running={}, already_authenticated={}, user_data_dir={}, arch={}",
+                "[Profile][macOS] Preparing profile callback login: profile_id={}, was_running={}, already_authenticated={}, user_data_dir={}, arch={}",
                 profile.id,
                 was_running,
                 already_authenticated,
@@ -737,60 +686,39 @@ async fn switch_profile_to_account(
             ensure_profile_local_state(profile)
                 .map_err(|e| format!("分身初始化失败: {}", e))?;
 
-            if was_running {
-                match stop_profile_processes_sync(profile) {
-                    Ok(count) => info!(
-                        "[Profile][macOS][ExtensionLogin] Stopped profile before staged login: profile_id={}, count={}",
-                        profile.id,
-                        count
-                    ),
-                    Err(e) => warn!(
-                        "[Profile][macOS][ExtensionLogin] Failed to stop profile before staged login: profile_id={}, error={}",
-                        profile.id,
-                        e
-                    ),
-                }
-            }
+            let initial_delay_ms = if was_running {
+                info!(
+                    "[Profile][macOS] Profile already running, dispatching callback directly: profile_id={}, target_email={}",
+                    profile.id,
+                    account.email
+                );
+                0
+            } else {
+                info!(
+                    "[Profile][macOS] Profile not running, launching window before callback: profile_id={}, target_email={}",
+                    profile.id,
+                    account.email
+                );
+                spawn_profile_window(profile, &exe_path)
+                    .map_err(|e| format!("启动分身失败: {}", e))?;
+                1500
+            };
 
-            let staged_path = stage_windsurf_auth_for_extension_macos(
-                &auth.register_result.api_key,
-                &auth.register_result.name,
+            if let Err(e) = trigger_macos_profile_callback_with_retry(
+                app,
+                profile,
+                &auth.callback_token,
                 &account.email,
-                &auth.register_result.api_server_url,
-                &profile.user_data_dir,
-            ).map_err(|e| format!("写入 macOS 分身登录临时文件失败: {}", e))?;
-
-            info!(
-                "[Profile][macOS][ExtensionLogin] Staged auth payload, launching profile once: profile_id={}, target_email={}, staged_path={}",
-                profile.id,
-                account.email,
-                staged_path.display()
-            );
-            spawn_profile_window(profile, &exe_path)
-                .map_err(|e| format!("启动分身失败: {}", e))?;
-
-            let extension_consumed = wait_for_macos_extension_profile_login(profile, &account.email).await;
-            if !extension_consumed {
+                initial_delay_ms,
+            ).await {
+                error!("[Profile][macOS] Profile callback failed: {}", e);
                 return Ok(json!({
                     "success": false,
-                    "error": "macOS 分身登录未被 Windsurf 扩展消费，请到设置里点击“重新打补丁”后再试"
+                    "error": e
                 }));
             }
 
-            if let Err(e) = write_windsurf_auth_status_macos(
-                &auth.register_result.api_key,
-                &auth.register_result.name,
-                &account.email,
-                &profile.user_data_dir,
-            ) {
-                warn!(
-                    "[Profile][macOS][ExtensionLogin] Failed to update visible auth status after extension login: profile_id={}, error={}",
-                    profile.id,
-                    e
-                );
-            }
-
-            true
+            false
         }
         #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
         {

@@ -281,41 +281,6 @@ pub async fn apply_seamless_patch(
         }
     }
 
-    if !bytes_contains(&modified_content, b"WindsurfAccountManager v2] Profile login applied") {
-        // 注意：以下 JS 一律不依赖 webpack minified 别名（B/I/h/u/y 等），
-        // 只用 Node 内置 require、VSCode 标准 API、字面量 secret key。
-        // 这样 Windsurf 升级后 webpack 重新打包字母变了也不会失效。
-        let extension_login_v2 = r#"async processWamProfileLogin(){try{const t=require("fs"),n=require("path");const r=this.context&&this.context.globalStorageUri&&this.context.globalStorageUri.fsPath;if(!r)return false;const a=n.join(r,"windsurf-account-manager-profile-login.json");if(!t.existsSync(a))return false;let e;try{e=JSON.parse(t.readFileSync(a,"utf-8"))}catch(s){try{t.writeFileSync(n.join(r,"windsurf-account-manager-profile-login.error.json"),JSON.stringify({stage:"parse",message:String(s&&s.stack||s),at:Date.now()}))}catch(_){}try{t.unlinkSync(a)}catch(_){}return false}if(!e||!e.apiKey||!e.name){try{t.unlinkSync(a)}catch(_){}return false}const o=e.apiServerUrl||"https://server.codeium.com",i={id:e.id||"wam-profile-login",accessToken:e.apiKey,account:{label:e.name,id:e.name},scopes:[]};try{await this.context.globalState.update("apiServerUrl",o)}catch(_){}try{await this.context.secrets.store("apiServerUrl",o)}catch(_){}try{await this.context.secrets.store("windsurf_auth.apiServerUrl",o)}catch(_){}this._cachedSessions=[i];try{await this.context.secrets.store("windsurf_auth.sessions",JSON.stringify([i]))}catch(s){try{t.writeFileSync(n.join(r,"windsurf-account-manager-profile-login.error.json"),JSON.stringify({stage:"secrets",message:String(s&&s.stack||s),at:Date.now()}))}catch(_){}return false}try{if(typeof this.restartLanguageServerIfNeeded==="function")await this.restartLanguageServerIfNeeded(o)}catch(_){}try{if(this._sessionChangeEmitter&&typeof this._sessionChangeEmitter.fire==="function")this._sessionChangeEmitter.fire({added:[i],removed:[],changed:[]})}catch(_){}try{t.writeFileSync(n.join(r,"windsurf-account-manager-profile-login.done.json"),JSON.stringify({id:e.id,email:e.email,name:e.name,doneAt:Date.now()}))}catch(_){}try{t.unlinkSync(a)}catch(_){}console.log("[WindsurfAccountManager v2] Profile login applied");return true}catch(s){try{const t=require("fs"),n=require("path");const r=this.context&&this.context.globalStorageUri&&this.context.globalStorageUri.fsPath;if(r)t.writeFileSync(n.join(r,"windsurf-account-manager-profile-login.error.json"),JSON.stringify({stage:"outer",message:String(s&&s.stack||s),at:Date.now()}))}catch(_){}console.error("[WindsurfAccountManager v2] Profile login failed:",s);return false}}startWamProfileLoginPoller(){if(this._wamPollerStarted)return;this._wamPollerStarted=true;let e=0;const t=setInterval(async()=>{e++;try{const r=await this.processWamProfileLogin();if(r||e>=60)clearInterval(t)}catch(n){if(e>=60)clearInterval(t)}},800)}"#;
-
-        // 同时支持两种已知的 initializeCachedSessions 形态：
-        // 1) 旧版：空 body 直接 await this.getSecret()
-        // 2) 通用：body 内包含 this._cachedSessions=await this.getSecret()
-        let init_pattern_old = b"async initializeCachedSessions(){this._cachedSessions=await this.getSecret()}";
-        let init_pattern_marker = b"this._cachedSessions=await this.getSecret()";
-
-        if bytes_contains(&modified_content, init_pattern_old) {
-            let replacement = format!(
-                r#"{}async initializeCachedSessions(){{this.startWamProfileLoginPoller();await this.processWamProfileLogin();this._cachedSessions=await this.getSecret()}}"#,
-                extension_login_v2
-            );
-            modified_content = replace_bytes(&modified_content, init_pattern_old, replacement.as_bytes());
-            modifications.push("macOS分身扩展登录处理器(v2)");
-        } else if bytes_contains(&modified_content, init_pattern_marker) {
-            // 通用 fallback：把 processWamProfileLogin 放到 class 里另找的位置插入。
-            // 这里取 _cachedSessions=await this.getSecret() 之前补一个 await this.processWamProfileLogin()。
-            let new_marker = b"await this.processWamProfileLogin();this._cachedSessions=await this.getSecret()";
-            modified_content = replace_bytes(&modified_content, init_pattern_marker, new_marker);
-            // 还需要把方法挂到 class，沿用一个相对稳定的注入点：constructor 的开头不容易找，
-            // 选择 "async getSecret()" 之前插入两个新方法。
-            let getsecret_anchor = b"async getSecret()";
-            if bytes_contains(&modified_content, getsecret_anchor) {
-                let replacement = format!("{}{}", extension_login_v2, std::str::from_utf8(getsecret_anchor).unwrap());
-                modified_content = replace_bytes(&modified_content, getsecret_anchor, replacement.as_bytes());
-                modifications.push("macOS分身扩展登录处理器(v2-fallback)");
-            }
-        }
-    }
-    
     // 4. 验证是否需要修改
     // 如果内容没变化，要进一步区分两种情况：
     //   a) 文件确实已经打过补丁（包含补丁特征 "Failed to handle OAuth callback"）
@@ -328,11 +293,6 @@ pub async fn apply_seamless_patch(
                 "already_patched": true,
                 "message": "补丁已经应用过了"
             }));
-        } else if is_file_patched(&extension_file) {
-            return Err(
-                "当前 Windsurf 补丁版本过旧，缺少 macOS 分身登录处理器。请点击\"重新打补丁\"从干净备份还原后重新应用。"
-                    .to_string(),
-            );
         } else {
             return Err(
                 "补丁规则未能匹配当前 Windsurf 版本的 extension.js（首次使用/Windsurf 升级后常见）。\
@@ -498,7 +458,6 @@ fn is_file_patched(file_path: &Path) -> bool {
 fn is_full_patch_installed(file_path: &Path) -> bool {
     if let Ok(content) = fs::read(file_path) {
         bytes_contains(&content, b"Failed to handle OAuth callback")
-            && bytes_contains(&content, b"WindsurfAccountManager v2] Profile login applied")
     } else {
         false
     }
@@ -576,11 +535,12 @@ pub async fn check_patch_status(
     
     // 检查是否包含补丁标识（字节级 contains）
     let has_oauth_handler = bytes_contains(&content, b"Failed to handle OAuth callback");
-    let has_extension_login = bytes_contains(&content, b"WindsurfAccountManager v2] Profile login applied");
+    let has_extension_login = bytes_contains(&content, b"WindsurfAccountManager v2] Profile login applied")
+        || bytes_contains(&content, b"WindsurfAccountManager] Profile login applied");
     let has_timeout_removed = !bytes_contains(&content, b"18e4");
     
     Ok(serde_json::json!({
-        "installed": has_oauth_handler && has_extension_login,
+        "installed": has_oauth_handler,
         "oauth_handler": has_oauth_handler,
         "extension_login": has_extension_login,
         "timeout_removed": has_timeout_removed

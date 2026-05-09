@@ -456,94 +456,6 @@ pub(crate) fn write_windsurf_auth_direct(
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
-pub(crate) fn stage_windsurf_auth_for_extension_macos(
-    api_key: &str,
-    name: &str,
-    email: &str,
-    api_server_url: &str,
-    user_data_dir: &std::path::Path,
-) -> AppResult<std::path::PathBuf> {
-    let extension_storage_dir = user_data_dir
-        .join("User")
-        .join("globalStorage")
-        .join("codeium.windsurf");
-    std::fs::create_dir_all(&extension_storage_dir)
-        .map_err(|e| AppError::FileOperation(format!("Failed to create extension globalStorage dir: {}", e)))?;
-
-    let request_path = extension_storage_dir.join("windsurf-account-manager-profile-login.json");
-    let done_path = extension_storage_dir.join("windsurf-account-manager-profile-login.done.json");
-    let _ = std::fs::remove_file(&done_path);
-
-    let payload = serde_json::json!({
-        "id": Uuid::new_v4().to_string(),
-        "apiKey": api_key,
-        "name": name,
-        "email": email,
-        "apiServerUrl": api_server_url,
-        "createdAt": Utc::now().timestamp_millis()
-    });
-    let content = serde_json::to_string(&payload)
-        .map_err(|e| AppError::Config(format!("Failed to serialize staged auth payload: {}", e)))?;
-    std::fs::write(&request_path, content)
-        .map_err(|e| AppError::FileOperation(format!("Failed to write staged auth payload: {}", e)))?;
-
-    info!(
-        "[Profile][macOS][ExtensionLogin] Staged profile auth for Windsurf extension: email={}, name={}, server={}, path={}",
-        email,
-        name,
-        api_server_url,
-        request_path.display()
-    );
-
-    Ok(request_path)
-}
-
-#[cfg(target_os = "macos")]
-pub(crate) fn write_windsurf_auth_status_macos(
-    api_key: &str,
-    name: &str,
-    email: &str,
-    user_data_dir: &std::path::Path,
-) -> AppResult<()> {
-    let db_path = user_data_dir
-        .join("User")
-        .join("globalStorage")
-        .join("state.vscdb");
-    if let Some(parent) = db_path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| AppError::FileOperation(format!("Failed to create globalStorage dir: {}", e)))?;
-    }
-    let conn = rusqlite::Connection::open(&db_path)
-        .map_err(|e| AppError::Database(format!("Failed to open state.vscdb: {}", e)))?;
-    conn.busy_timeout(std::time::Duration::from_millis(5000))
-        .map_err(|e| AppError::Database(format!("Failed to set SQLite busy timeout: {}", e)))?;
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS ItemTable (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB)",
-        [],
-    ).map_err(|e| AppError::Database(format!("Failed to ensure ItemTable: {}", e)))?;
-
-    let auth_status = serde_json::json!({
-        "apiKey": api_key,
-        "email": email,
-        "name": name
-    }).to_string();
-
-    conn.execute(
-        "INSERT OR REPLACE INTO ItemTable (key, value) VALUES ('windsurfAuthStatus', ?1)",
-        rusqlite::params![auth_status],
-    ).map_err(|e| AppError::Database(format!("Failed to update windsurfAuthStatus: {}", e)))?;
-
-    info!(
-        "[Profile][macOS][ExtensionLogin] Updated visible auth status after extension login: email={}, name={}, db={}",
-        email,
-        name,
-        db_path.display()
-    );
-
-    Ok(())
-}
-
 /// DPAPI 解密
 #[cfg(target_os = "windows")]
 fn dpapi_decrypt(data: &[u8]) -> AppResult<Vec<u8>> {
@@ -767,21 +679,16 @@ pub(crate) async fn trigger_windsurf_callback(
     
     #[cfg(target_os = "macos")]
     {
-        let callback_target = find_macos_windsurf_cli_exe()
-            .map(|path| (path, "cli-shim"))
-            .or_else(|| find_windsurf_exe().map(|path| (path, "app-binary-fallback")));
-
-        if let Some((exe_path, target_kind)) = callback_target {
+        if let Some(exe_path) = find_windsurf_exe() {
             let mut cmd = std::process::Command::new(&exe_path);
             if let Some(dir) = user_data_dir {
                 cmd.arg("--user-data-dir").arg(dir);
             }
             cmd.arg("--open-url").arg(&callback_url);
             info!(
-                "[Profile][macOS] Dispatching callback via Windsurf: target={}, exe={}, kind={}, arch={}",
+                "[Profile][macOS] Dispatching callback via Windsurf app binary: target={}, exe={}, arch={}",
                 user_data_dir.map(|p| p.display().to_string()).unwrap_or_else(|| "main".to_string()),
                 exe_path,
-                target_kind,
                 std::env::consts::ARCH
             );
             match cmd.output() {
@@ -974,72 +881,7 @@ pub(crate) fn find_windsurf_exe() -> Option<String> {
         Err(e) => warn!("[Profile][macOS] Failed to run mdfind while locating Windsurf: {}", e),
     }
 
-    if let Ok(output) = std::process::Command::new("which").arg("windsurf").output() {
-        if output.status.success() {
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !path.is_empty() {
-                info!("[Profile][macOS] Found Windsurf executable via PATH: {}", path);
-                return Some(path);
-            }
-        }
-    }
-
     warn!("[Profile][macOS] Windsurf executable not found in common app bundle locations");
-    None
-}
-
-#[cfg(target_os = "macos")]
-fn find_macos_windsurf_cli_exe() -> Option<String> {
-    let mut candidates: Vec<std::path::PathBuf> = vec![
-        std::path::PathBuf::from("/Applications/Windsurf.app/Contents/Resources/app/bin/windsurf"),
-        std::path::PathBuf::from("/Applications/Windsurf.app/Contents/Resources/app/bin/code"),
-        std::path::PathBuf::from("/usr/local/bin/windsurf"),
-        std::path::PathBuf::from("/opt/homebrew/bin/windsurf"),
-    ];
-
-    if let Ok(home) = std::env::var("HOME") {
-        candidates.push(
-            std::path::PathBuf::from(&home)
-                .join("Applications")
-                .join("Windsurf.app")
-                .join("Contents")
-                .join("Resources")
-                .join("app")
-                .join("bin")
-                .join("windsurf"),
-        );
-        candidates.push(
-            std::path::PathBuf::from(&home)
-                .join("Applications")
-                .join("Windsurf.app")
-                .join("Contents")
-                .join("Resources")
-                .join("app")
-                .join("bin")
-                .join("code"),
-        );
-        candidates.push(std::path::PathBuf::from(&home).join(".local").join("bin").join("windsurf"));
-    }
-
-    for path in candidates {
-        if path.exists() {
-            let value = path.to_string_lossy().to_string();
-            info!("[Profile][macOS] Found Windsurf CLI shim: {}", value);
-            return Some(value);
-        }
-    }
-
-    if let Ok(output) = std::process::Command::new("which").arg("windsurf").output() {
-        if output.status.success() {
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !path.is_empty() {
-                info!("[Profile][macOS] Found Windsurf CLI shim via PATH: {}", path);
-                return Some(path);
-            }
-        }
-    }
-
-    warn!("[Profile][macOS] Windsurf CLI shim not found, will fall back to app binary");
     None
 }
 
