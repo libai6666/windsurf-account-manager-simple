@@ -677,8 +677,61 @@ pub(crate) async fn trigger_windsurf_callback(
         }
     }
     
-    // macOS/Linux: 直接使用 opener 打开回调URL（分身路径在该平台暂不支持，保留主实例行为）
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(exe_path) = find_windsurf_exe() {
+            let mut cmd = std::process::Command::new(&exe_path);
+            if let Some(dir) = user_data_dir {
+                cmd.arg("--user-data-dir").arg(dir);
+            }
+            cmd.arg("--open-url").arg(&callback_url);
+            info!(
+                "[Profile][macOS] Dispatching callback via Windsurf CLI: target={}, exe={}, arch={}",
+                user_data_dir.map(|p| p.display().to_string()).unwrap_or_else(|| "main".to_string()),
+                exe_path,
+                std::env::consts::ARCH
+            );
+            match cmd.output() {
+                Ok(o) => {
+                    if !o.status.success() {
+                        warn!(
+                            "[Profile][macOS] Windsurf --open-url exited with {:?}: stdout={}, stderr={}",
+                            o.status.code(),
+                            String::from_utf8_lossy(&o.stdout).trim(),
+                            String::from_utf8_lossy(&o.stderr).trim()
+                        );
+                    } else {
+                        info!("[Profile][macOS] Successfully triggered Windsurf callback via CLI");
+                    }
+                }
+                Err(e) => {
+                    if user_data_dir.is_some() {
+                        return Err(AppError::FileOperation(format!(
+                            "Windsurf CLI failed for macOS profile callback: {}",
+                            e
+                        )));
+                    }
+                    warn!("[Profile][macOS] Windsurf CLI failed ({}), falling back to opener for main instance", e);
+                    use tauri_plugin_opener::OpenerExt;
+                    app.opener()
+                        .open_url(&callback_url, None::<&str>)
+                        .map_err(|e| AppError::FileOperation(format!("Failed to open URL: {}", e)))?;
+                }
+            }
+        } else if user_data_dir.is_some() {
+            return Err(AppError::FileOperation(
+                "Cannot dispatch macOS profile callback: Windsurf executable not found".to_string()
+            ));
+        } else {
+            warn!("[Profile][macOS] Windsurf executable not found, falling back to opener for main instance");
+            use tauri_plugin_opener::OpenerExt;
+            app.opener()
+                .open_url(&callback_url, None::<&str>)
+                .map_err(|e| AppError::FileOperation(format!("Failed to open URL: {}", e)))?;
+        }
+    }
+
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
     {
         let _ = user_data_dir; // 暂不在非 Windows 平台使用
         use tauri_plugin_opener::OpenerExt;
@@ -778,6 +831,72 @@ pub(crate) fn find_windsurf_exe() -> Option<String> {
         }
     }
     
+    None
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn find_windsurf_exe() -> Option<String> {
+    let mut candidates: Vec<std::path::PathBuf> = vec![
+        std::path::PathBuf::from("/Applications/Windsurf.app/Contents/MacOS/Windsurf"),
+    ];
+
+    if let Ok(home) = std::env::var("HOME") {
+        candidates.push(
+            std::path::PathBuf::from(&home)
+                .join("Applications")
+                .join("Windsurf.app")
+                .join("Contents")
+                .join("MacOS")
+                .join("Windsurf"),
+        );
+    }
+
+    for path in candidates {
+        if path.exists() {
+            let value = path.to_string_lossy().to_string();
+            info!("[Profile][macOS] Found Windsurf executable: {}", value);
+            return Some(value);
+        }
+    }
+
+    match std::process::Command::new("mdfind")
+        .arg("kMDItemCFBundleIdentifier == 'com.exafunction.windsurf'")
+        .output()
+    {
+        Ok(output) if output.status.success() => {
+            for line in String::from_utf8_lossy(&output.stdout).lines() {
+                let bundle = std::path::PathBuf::from(line.trim());
+                let exe = bundle.join("Contents").join("MacOS").join("Windsurf");
+                if exe.exists() {
+                    let value = exe.to_string_lossy().to_string();
+                    info!("[Profile][macOS] Found Windsurf executable via mdfind: {}", value);
+                    return Some(value);
+                }
+            }
+        }
+        Ok(output) => warn!(
+            "[Profile][macOS] mdfind failed while locating Windsurf: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ),
+        Err(e) => warn!("[Profile][macOS] Failed to run mdfind while locating Windsurf: {}", e),
+    }
+
+    if let Ok(output) = std::process::Command::new("which").arg("windsurf").output() {
+        if output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() {
+                info!("[Profile][macOS] Found Windsurf executable via PATH: {}", path);
+                return Some(path);
+            }
+        }
+    }
+
+    warn!("[Profile][macOS] Windsurf executable not found in common app bundle locations");
+    None
+}
+
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+pub(crate) fn find_windsurf_exe() -> Option<String> {
     None
 }
 

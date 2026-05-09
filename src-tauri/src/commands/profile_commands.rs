@@ -42,7 +42,16 @@ fn profiles_root_dir() -> AppResult<PathBuf> {
             .map_err(|e| AppError::Config(format!("Failed to get APPDATA: {}", e)))?;
         Ok(PathBuf::from(appdata).join("WindsurfProfiles"))
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var("HOME")
+            .map_err(|e| AppError::Config(format!("Failed to get HOME: {}", e)))?;
+        Ok(PathBuf::from(home)
+            .join("Library")
+            .join("Application Support")
+            .join("WindsurfProfiles"))
+    }
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
     {
         let home = std::env::var("HOME")
             .map_err(|e| AppError::Config(format!("Failed to get HOME: {}", e)))?;
@@ -97,7 +106,46 @@ fn list_windsurf_processes() -> Vec<WindsurfProcessInfo> {
             }
         }
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
+    {
+        let output = Command::new("ps")
+            .args(["-axo", "pid=,command="])
+            .output();
+
+        match output {
+            Ok(output) if output.status.success() => String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .filter_map(|line| {
+                    let line = line.trim();
+                    let mut parts = line.splitn(2, char::is_whitespace);
+                    let pid = parts.next()?.trim().parse::<u32>().ok()?;
+                    let command_line = parts.next().unwrap_or("").trim().to_string();
+                    let lower = command_line.to_lowercase();
+                    let is_windsurf = lower.contains("windsurf.app/contents")
+                        || lower.contains("windsurf helper")
+                        || lower.contains("/windsurf --")
+                        || lower.ends_with("/windsurf")
+                        || lower.contains("/windsurf ");
+                    if !is_windsurf || lower.contains("windsurf-account-manager") {
+                        return None;
+                    }
+                    Some(WindsurfProcessInfo { pid, command_line })
+                })
+                .collect(),
+            Ok(output) => {
+                warn!(
+                    "[Profile][macOS] Failed to query Windsurf processes: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                );
+                Vec::new()
+            }
+            Err(e) => {
+                warn!("[Profile][macOS] Failed to run ps process query: {}", e);
+                Vec::new()
+            }
+        }
+    }
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
     {
         Vec::new()
     }
@@ -202,7 +250,35 @@ fn stop_profile_processes_sync(profile: &WindsurfProfile) -> Result<usize, Strin
     Ok(pids.len())
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
+fn stop_profile_processes_sync(profile: &WindsurfProfile) -> Result<usize, String> {
+    let processes = list_windsurf_processes();
+    let pids = matching_profile_process_ids(profile, &processes);
+    if pids.is_empty() {
+        return Ok(0);
+    }
+
+    info!(
+        "[Profile][macOS] Stopping Windsurf profile processes: profile_id={}, pids={:?}, user_data_dir={}",
+        profile.id,
+        pids,
+        profile.user_data_dir.display()
+    );
+    for pid in &pids {
+        match Command::new("kill").arg("-TERM").arg(pid.to_string()).output() {
+            Err(e) => warn!("[Profile][macOS] Failed to run kill -TERM for PID {}: {}", pid, e),
+            Ok(o) if !o.status.success() => warn!(
+                "[Profile][macOS] kill -TERM returned non-zero for PID {}, code={:?}",
+                pid,
+                o.status.code()
+            ),
+            Ok(_) => {}
+        }
+    }
+    Ok(pids.len())
+}
+
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 fn stop_profile_processes_sync(_profile: &WindsurfProfile) -> Result<usize, String> {
     Err("当前平台暂不支持关闭分身进程".to_string())
 }
@@ -216,12 +292,40 @@ fn spawn_profile_window(profile: &WindsurfProfile, exe_path: &str) -> Result<(),
         command.arg("--user-data-dir").arg(&profile.user_data_dir);
         command.arg("--new-window");
     }
+    info!(
+        "[Profile][Windows] Launching Windsurf: profile_id={}, name={}, exe={}, user_data_dir={}",
+        profile.id,
+        profile.name,
+        exe_path,
+        profile.user_data_dir.display()
+    );
     command.creation_flags(0x08000000);
-    command.spawn().map_err(|e| format!("启动分身失败: {}", e))?;
+    let child = command.spawn().map_err(|e| format!("启动分身失败: {}", e))?;
+    info!("[Profile][Windows] Windsurf spawn requested: profile_id={}, pid={}", profile.id, child.id());
     Ok(())
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
+fn spawn_profile_window(profile: &WindsurfProfile, exe_path: &str) -> Result<(), String> {
+    let mut command = Command::new(exe_path);
+    if !profile.is_main() {
+        command.arg("--user-data-dir").arg(&profile.user_data_dir);
+        command.arg("--new-window");
+    }
+    info!(
+        "[Profile][macOS] Launching Windsurf: profile_id={}, name={}, exe={}, user_data_dir={}, arch={}",
+        profile.id,
+        profile.name,
+        exe_path,
+        profile.user_data_dir.display(),
+        std::env::consts::ARCH
+    );
+    let child = command.spawn().map_err(|e| format!("启动分身失败: {}", e))?;
+    info!("[Profile][macOS] Windsurf spawn requested: profile_id={}, pid={}", profile.id, child.id());
+    Ok(())
+}
+
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 fn spawn_profile_window(_profile: &WindsurfProfile, _exe_path: &str) -> Result<(), String> {
     Err("当前平台暂不支持启动分身".to_string())
 }
@@ -234,7 +338,12 @@ fn ensure_profile_local_state(profile: &WindsurfProfile) -> Result<(), String> {
         .map_err(|e| format!("生成分身 Local State 失败: {}", e))
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
+fn ensure_profile_local_state(_profile: &WindsurfProfile) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 fn ensure_profile_local_state(_profile: &WindsurfProfile) -> Result<(), String> {
     Err("当前平台暂不支持分身首登 direct-write".to_string())
 }
@@ -488,15 +597,49 @@ async fn switch_profile_to_account(
 
             spawn_profile_window(profile, &exe_path)
                 .map_err(|e| format!("启动分身失败: {}", e))?;
+            true
         }
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(target_os = "macos")]
+        {
+            let exe_path = find_windsurf_exe()
+                .ok_or_else(|| "找不到 Windsurf，请确认已安装到 /Applications 或 ~/Applications".to_string())?;
+
+            info!(
+                "[Profile][macOS] Preparing profile callback login: profile_id={}, was_running={}, already_authenticated={}, user_data_dir={}, arch={}",
+                profile.id,
+                was_running,
+                already_authenticated,
+                profile.user_data_dir.display(),
+                std::env::consts::ARCH
+            );
+
+            std::fs::create_dir_all(profile.user_data_dir.join("User").join("globalStorage"))
+                .map_err(|e| format!("创建分身目录失败: {}", e))?;
+            ensure_profile_local_state(profile)
+                .map_err(|e| format!("分身初始化失败: {}", e))?;
+
+            if !was_running {
+                spawn_profile_window(profile, &exe_path)
+                    .map_err(|e| format!("启动分身失败: {}", e))?;
+                tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
+            }
+
+            if let Err(e) = trigger_windsurf_callback(app, &auth.callback_token, Some(&profile.user_data_dir)).await {
+                error!("[Profile][macOS] Profile callback failed: {}", e);
+                return Ok(json!({
+                    "success": false,
+                    "error": format!("触发分身回调失败: {}", e)
+                }));
+            }
+            false
+        }
+        #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
         {
             return Ok(json!({
                 "success": false,
                 "error": "当前平台暂不支持分身首次登录的 direct-write 路径"
             }));
         }
-        true
     };
 
     // 切号已经执行（direct-write 写入文件 / callback URL 已投递给分身实例），
@@ -505,8 +648,12 @@ async fn switch_profile_to_account(
     let verified_info = wait_for_profile_account(&profile.user_data_dir, &account.email).await;
     if verified_info.is_none() {
         warn!(
-            "Profile {} 切号至 {} 后未在短时间内读到目标账号，等待编辑器异步生效",
-            profile.id, account.email
+            "[Profile] 切号后未在短时间内读到目标账号，等待编辑器异步生效: profile_id={}, target_email={}, user_data_dir={}, os={}, arch={}",
+            profile.id,
+            account.email,
+            profile.user_data_dir.display(),
+            std::env::consts::OS,
+            std::env::consts::ARCH
         );
     }
 
@@ -586,13 +733,21 @@ fn copy_main_user_settings_to_profile(profile_user_data_dir: &Path) {
     };
     let main_user = main_dir.join("User");
     if !main_user.exists() {
-        info!("主实例 User 目录不存在,跳过配置复制: {}", main_user.display());
+        info!(
+            "[Profile] 主实例 User 目录不存在,跳过配置复制: main_user={}, target_profile_dir={}",
+            main_user.display(),
+            profile_user_data_dir.display()
+        );
         return;
     }
 
     let target_user = profile_user_data_dir.join("User");
     if let Err(e) = std::fs::create_dir_all(&target_user) {
-        warn!("创建分身 User 目录失败: {}", e);
+        warn!(
+            "[Profile] 创建分身 User 目录失败: target_user={}, error={}",
+            target_user.display(),
+            e
+        );
         return;
     }
 
@@ -605,7 +760,13 @@ fn copy_main_user_settings_to_profile(profile_user_data_dir: &Path) {
         let dst = target_user.join(filename);
         match std::fs::copy(&src, &dst) {
             Ok(_) => copied.push(filename),
-            Err(e) => warn!("复制 {} 失败: {}", filename, e),
+            Err(e) => warn!(
+                "[Profile] 复制主实例配置失败: file={}, src={}, dst={}, error={}",
+                filename,
+                src.display(),
+                dst.display(),
+                e
+            ),
         }
     }
 
@@ -614,14 +775,28 @@ fn copy_main_user_settings_to_profile(profile_user_data_dir: &Path) {
         let dst_snippets = target_user.join("snippets");
         match copy_dir_recursive(&src_snippets, &dst_snippets) {
             Ok(_) => copied.push("snippets/"),
-            Err(e) => warn!("复制 snippets 目录失败: {}", e),
+            Err(e) => warn!(
+                "[Profile] 复制 snippets 目录失败: src={}, dst={}, error={}",
+                src_snippets.display(),
+                dst_snippets.display(),
+                e
+            ),
         }
     }
 
     if copied.is_empty() {
-        info!("主实例无可复制配置,新分身使用 Windsurf 默认设置");
+        info!(
+            "[Profile] 主实例无可复制配置,新分身使用 Windsurf 默认设置: main_user={}, target_user={}",
+            main_user.display(),
+            target_user.display()
+        );
     } else {
-        info!("已从主实例复制配置到新分身: {:?}", copied);
+        info!(
+            "[Profile] 已从主实例复制配置到新分身: copied={:?}, main_user={}, target_user={}",
+            copied,
+            main_user.display(),
+            target_user.display()
+        );
     }
 }
 
@@ -639,6 +814,14 @@ pub async fn create_profile(
     let user_data_dir = profiles_root_dir()
         .map_err(|e| e.to_string())?
         .join(&id);
+    info!(
+        "[Profile] Creating profile: id={}, name={}, user_data_dir={}, os={}, arch={}",
+        id,
+        trimmed,
+        user_data_dir.display(),
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    );
     std::fs::create_dir_all(user_data_dir.join("User").join("globalStorage"))
         .map_err(|e| format!("创建分身目录失败: {}", e))?;
 
@@ -736,24 +919,15 @@ pub async fn launch_profile(
     }
 
     let exe_path = find_windsurf_exe()
-        .ok_or_else(|| "找不到 Windsurf.exe，请确认已安装 Windsurf".to_string())?;
+        .ok_or_else(|| "找不到 Windsurf，请确认已安装 Windsurf".to_string())?;
 
     if !profile.is_main() {
         std::fs::create_dir_all(profile.user_data_dir.join("User").join("globalStorage"))
             .map_err(|e| format!("创建分身目录失败: {}", e))?;
     }
 
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        let mut command = Command::new(&exe_path);
-        if !profile.is_main() {
-            command.arg("--user-data-dir").arg(&profile.user_data_dir);
-            command.arg("--new-window");
-        }
-        command.creation_flags(0x08000000);
-        command.spawn().map_err(|e| format!("启动 Windsurf 失败: {}", e))?;
-    }
+    spawn_profile_window(&profile, &exe_path)
+        .map_err(|e| format!("启动 Windsurf 失败: {}", e))?;
 
     Ok(json!({
         "success": true,
@@ -781,42 +955,37 @@ pub async fn stop_profile(
         }));
     }
 
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        // 注意：taskkill 输出是 GBK，直接当 UTF-8 读会乱码 → 不回传 stderr，只用 exit code 与 PID 表达失败。
-        // 进程间存在父子关系，杀第一个父进程后子进程可能已经一并退出，
-        // 所以单 PID 失败不立刻 return；最后用进程列表兜底确认。
-        for pid in &pids {
-            let kill_outcome = Command::new("taskkill")
-                .arg("/PID")
-                .arg(pid.to_string())
-                .arg("/T")
-                .arg("/F")
-                .creation_flags(0x08000000)
-                .output();
-            match kill_outcome {
-                Err(e) => warn!("启动 taskkill 失败 (PID {}): {}", pid, e),
-                Ok(o) if !o.status.success() => {
-                    warn!("taskkill 返回非零 (PID {}, code {:?})，可能进程已退出", pid, o.status.code());
-                }
-                Ok(_) => {}
-            }
-        }
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        return Err("当前平台暂不支持关闭分身进程".to_string());
-    }
+    let _ = stop_profile_processes_sync(&profile)?;
 
     tokio::time::sleep(tokio::time::Duration::from_millis(700)).await;
 
     // 兜底：重新扫描进程列表，确认是否真的关掉了
     let remaining = matching_profile_process_ids(&profile, &list_windsurf_processes());
+    #[cfg(target_os = "macos")]
+    if !remaining.is_empty() {
+        warn!(
+            "[Profile][macOS] Processes still alive after TERM, trying KILL: profile_id={}, remaining={:?}",
+            profile.id,
+            remaining
+        );
+        for pid in &remaining {
+            match Command::new("kill").arg("-KILL").arg(pid.to_string()).output() {
+                Err(e) => warn!("[Profile][macOS] Failed to run kill -KILL for PID {}: {}", pid, e),
+                Ok(o) if !o.status.success() => warn!(
+                    "[Profile][macOS] kill -KILL returned non-zero for PID {}, code={:?}",
+                    pid,
+                    o.status.code()
+                ),
+                Ok(_) => {}
+            }
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    }
+
+    let remaining = matching_profile_process_ids(&profile, &list_windsurf_processes());
     if !remaining.is_empty() {
         return Err(format!(
-            "仍有 {} 个 Windsurf 进程未关闭 (PID: {:?})，请手动从任务管理器结束",
+            "仍有 {} 个 Windsurf 进程未关闭 (PID: {:?})，请手动从系统进程管理器结束",
             remaining.len(),
             remaining
         ));

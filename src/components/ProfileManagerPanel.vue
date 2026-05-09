@@ -36,7 +36,7 @@
         <div v-else class="alert-body">
           <div>每个分身使用独立 <code>--user-data-dir</code>，账号、机器码、扩展状态彼此隔离。建议<strong>开启「自动换号」</strong>，让管理器自动维护账号配额。</div>
           <div class="alert-info-line">
-            ✨ 新建分身时会<strong>自动从主实例复制</strong> <code>settings.json</code> / <code>keybindings.json</code> / <code>snippets/</code>，无需重新配置主题、快捷键、禁用更新等。
+            ✨ 新建分身时会<strong>自动从主实例复制</strong> <code>settings.json</code> / <code>keybindings.json</code> / <code>snippets/</code>，Windows / macOS 通用，无需重新配置主题、快捷键、禁用更新等。
           </div>
           <div class="alert-info-line">
             ℹ️ 首次启动分身偶尔会弹 <code>connection to server is erroring</code> 提示，这是 Windsurf 自身扩展冷启动的已知现象，不影响登录和使用。
@@ -46,7 +46,7 @@
             <ol class="step-list">
               <li><span class="step-tag">1</span><span>点击右上角 <strong>「新建分身」</strong>，输入名称后保存</span></li>
               <li><span class="step-tag">2</span><span>在分身卡片里选好 <strong>「换号分组」</strong> 和 <strong>「手动目标号」</strong>（要登录的账号）</span></li>
-              <li><span class="step-tag">3</span><span>点击底部 <strong>「切到目标号」</strong>，管理器会预写认证信息并自动启动分身窗口</span></li>
+              <li><span class="step-tag">3</span><span>点击底部 <strong>「切到目标号」</strong>，管理器会自动启动分身窗口并把登录回调定向到该分身</span></li>
               <li><span class="step-tag">4</span><span>等待新 Windsurf 窗口弹出，在 Sign in 页面点击 <strong>「Log in」</strong> 按钮</span></li>
               <li><span class="step-tag">5</span><span>Windsurf 会自动用刚才选好的账号完成登录，<strong>无需手动输入邮箱/密码</strong></span></li>
             </ol>
