@@ -4,7 +4,10 @@
       <div>
         <div class="eyebrow">Windsurf Profiles</div>
         <h1>分身管理</h1>
-        <p>为每个编辑器窗口分配独立的 user-data-dir，实现账号、状态和机器码文件隔离。</p>
+        <p>
+          适合<strong>同时开发多个项目</strong>的多账号用户：每个分身 = 一个独立的 Windsurf 实例，账号、扩展、机器码完全隔离，互不影响。
+          <span class="hero-tip">只开发一个项目用主实例就够了，无需创建分身。</span>
+        </p>
       </div>
       <div class="hero-actions">
         <el-button :icon="Refresh" :loading="loading" @click="loadProfiles">刷新</el-button>
@@ -792,10 +795,27 @@ onUnmounted(() => {
 }
 
 .profile-hero p {
-  max-width: 680px;
+  max-width: 720px;
   margin: 0;
   color: #667085;
-  font-size: 14px;
+  font-size: 13.5px;
+  line-height: 1.65;
+}
+
+.profile-hero p strong {
+  color: #1d4ed8;
+  font-weight: 600;
+}
+
+.hero-tip {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: rgba(64, 158, 255, 0.12);
+  color: #1d4ed8;
+  font-size: 12.5px;
+  white-space: nowrap;
 }
 
 .hero-actions {
@@ -1167,6 +1187,15 @@ onUnmounted(() => {
 :global(.dark) .profile-name,
 :global(.dark) .status-item strong {
   color: #edf2f7;
+}
+
+:global(.dark) .profile-hero p strong,
+:global(.dark) .hero-tip {
+  color: #93c5fd;
+}
+
+:global(.dark) .hero-tip {
+  background: rgba(147, 197, 253, 0.15);
 }
 
 :global(.dark) .profile-hero p,

@@ -28,7 +28,7 @@
         </el-menu-item>
 
         <el-menu-item index="profiles" @click="setActiveMenu('profiles')">
-          <el-icon><Connection /></el-icon>
+          <el-icon><ProfileIcon /></el-icon>
           <template #title>分身管理</template>
         </el-menu-item>
         
@@ -627,6 +627,7 @@ import TurnstileDialog from '@/components/TurnstileDialog.vue';
 import BatchTrialLinksDialog from '@/components/BatchTrialLinksDialog.vue';
 import DeviceManagerPanel from '@/components/DeviceManagerPanel.vue';
 import ProfileManagerPanel from '@/components/ProfileManagerPanel.vue';
+import ProfileIcon from '@/components/icons/ProfileIcon.vue';
 import type { TrialLinkItem } from '@/components/BatchTrialLinksDialog.vue';
 import logger from '@/utils/logger';
 
