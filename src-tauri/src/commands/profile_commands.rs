@@ -6,6 +6,8 @@ use crate::commands::switch_account_commands::{
 };
 #[cfg(target_os = "windows")]
 use crate::commands::switch_account_commands::{prepare_profile_local_state, write_windsurf_auth_direct};
+#[cfg(target_os = "macos")]
+use crate::commands::switch_account_commands::write_windsurf_auth_direct_macos;
 use crate::commands::windsurf_info::{get_windsurf_info_from_dir, WindsurfCurrentInfo};
 use crate::models::{main_profile, main_user_data_dir, Account, AccountStatus, ProfileAutoSwitch, WindsurfProfile, MAIN_PROFILE_ID};
 use crate::repository::DataStore;
@@ -317,6 +319,28 @@ fn stop_profile_processes_sync(profile: &WindsurfProfile) -> Result<usize, Strin
             Ok(_) => {}
         }
     }
+
+    std::thread::sleep(std::time::Duration::from_millis(1200));
+    let remaining = matching_profile_process_ids(profile, &list_windsurf_processes());
+    if !remaining.is_empty() {
+        warn!(
+            "[Profile][macOS] Profile processes still alive after TERM, sending KILL: profile_id={}, pids={:?}",
+            profile.id,
+            remaining
+        );
+        for pid in &remaining {
+            match Command::new("kill").arg("-KILL").arg(pid.to_string()).output() {
+                Err(e) => warn!("[Profile][macOS] Failed to run kill -KILL for PID {}: {}", pid, e),
+                Ok(o) if !o.status.success() => warn!(
+                    "[Profile][macOS] kill -KILL returned non-zero for PID {}, code={:?}",
+                    pid,
+                    o.status.code()
+                ),
+                Ok(_) => {}
+            }
+        }
+    }
+
     Ok(pids.len())
 }
 
@@ -597,7 +621,7 @@ async fn switch_profile_to_account(
     let already_authenticated = is_profile_authenticated(&profile.user_data_dir);
     let was_running = is_profile_running_from_cmds(profile, &list_windsurf_process_command_lines());
 
-    let _used_direct_write = if already_authenticated && was_running {
+    let used_direct_write = if already_authenticated && was_running {
         // 已认证且正在运行 → 走 callback URL，让正在跑的 Windsurf 实例直接接管，无需重启窗口
         if let Err(e) = trigger_windsurf_callback(app, &auth.callback_token, Some(&profile.user_data_dir)).await {
             error!("Profile callback failed: {}", e);
@@ -660,24 +684,63 @@ async fn switch_profile_to_account(
             ensure_profile_local_state(profile)
                 .map_err(|e| format!("分身初始化失败: {}", e))?;
 
-            if !was_running {
-                spawn_profile_window(profile, &exe_path)
-                    .map_err(|e| format!("启动分身失败: {}", e))?;
+            if was_running {
+                match stop_profile_processes_sync(profile) {
+                    Ok(count) => info!(
+                        "[Profile][macOS][DirectWrite] Stopped profile before writing auth: profile_id={}, count={}",
+                        profile.id,
+                        count
+                    ),
+                    Err(e) => warn!(
+                        "[Profile][macOS][DirectWrite] Failed to stop profile before writing auth: profile_id={}, error={}",
+                        profile.id,
+                        e
+                    ),
+                }
             }
 
-            if let Err(e) = trigger_macos_profile_callback_with_retry(
-                app,
-                profile,
-                &auth.callback_token,
+            match write_windsurf_auth_direct_macos(
+                &auth.register_result.api_key,
+                &auth.register_result.name,
                 &account.email,
-            ).await {
-                error!("[Profile][macOS] Profile callback failed: {}", e);
-                return Ok(json!({
-                    "success": false,
-                    "error": e
-                }));
+                &auth.register_result.api_server_url,
+                &profile.user_data_dir,
+            ) {
+                Ok(()) => {
+                    info!(
+                        "[Profile][macOS][DirectWrite] Direct-write auth succeeded, launching profile once: profile_id={}, target_email={}",
+                        profile.id,
+                        account.email
+                    );
+                    spawn_profile_window(profile, &exe_path)
+                        .map_err(|e| format!("启动分身失败: {}", e))?;
+                    true
+                }
+                Err(e) => {
+                    warn!(
+                        "[Profile][macOS][DirectWrite] Direct-write auth failed, falling back to callback: profile_id={}, error={}",
+                        profile.id,
+                        e
+                    );
+                    if !is_profile_running_from_cmds(profile, &list_windsurf_process_command_lines()) {
+                        spawn_profile_window(profile, &exe_path)
+                            .map_err(|e| format!("启动分身失败: {}", e))?;
+                    }
+                    if let Err(e) = trigger_macos_profile_callback_with_retry(
+                        app,
+                        profile,
+                        &auth.callback_token,
+                        &account.email,
+                    ).await {
+                        error!("[Profile][macOS] Profile callback failed: {}", e);
+                        return Ok(json!({
+                            "success": false,
+                            "error": e
+                        }));
+                    }
+                    false
+                }
             }
-            false
         }
         #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
         {
@@ -693,14 +756,25 @@ async fn switch_profile_to_account(
     // 即使等不到也不应判定为失败：分身可能仍在启动/处理 URL，前端 5s 轮询会兜底刷新。
     let verified_info = wait_for_profile_account(&profile.user_data_dir, &account.email).await;
     if verified_info.is_none() {
-        warn!(
-            "[Profile] 切号后未在短时间内读到目标账号，等待编辑器异步生效: profile_id={}, target_email={}, user_data_dir={}, os={}, arch={}",
-            profile.id,
-            account.email,
-            profile.user_data_dir.display(),
-            std::env::consts::OS,
-            std::env::consts::ARCH
-        );
+        if used_direct_write {
+            info!(
+                "[Profile] Direct-write completed but target email is not reflected yet: profile_id={}, target_email={}, user_data_dir={}, os={}, arch={}",
+                profile.id,
+                account.email,
+                profile.user_data_dir.display(),
+                std::env::consts::OS,
+                std::env::consts::ARCH
+            );
+        } else {
+            warn!(
+                "[Profile] 切号后未在短时间内读到目标账号，等待编辑器异步生效: profile_id={}, target_email={}, user_data_dir={}, os={}, arch={}",
+                profile.id,
+                account.email,
+                profile.user_data_dir.display(),
+                std::env::consts::OS,
+                std::env::consts::ARCH
+            );
+        }
     }
 
     let expires_at = Utc::now() + chrono::Duration::seconds(auth.expires_in.parse::<i64>().unwrap_or(3600));
