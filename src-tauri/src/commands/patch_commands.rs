@@ -280,6 +280,15 @@ pub async fn apply_seamless_patch(
             modifications.push("移除超时限制");
         }
     }
+
+    if !bytes_contains(&modified_content, b"WindsurfAccountManager] Profile login applied") {
+        let init_pattern = b"async initializeCachedSessions(){this._cachedSessions=await this.getSecret()}";
+        let extension_login = r#"async processWamProfileLogin(){try{const A=B.join(this.context.globalStorageUri.fsPath,"windsurf-account-manager-profile-login.json");if(!I.existsSync(A))return;const e=JSON.parse(I.readFileSync(A,"utf-8"));if(!e||!e.apiKey||!e.name)return;const t=e.apiServerUrl||"https://server.codeium.com",i={id:e.id||"wam-profile-login",accessToken:e.apiKey,account:{label:e.name,id:e.name},scopes:[]},n=(0,h.isStaging)((0,u.getConfig)(u.Config.API_SERVER_URL))?"apiServerUrl.staging":"apiServerUrl";await this.context.globalState.update(n,t),await this.context.secrets.store(y.getApiServerUrlSecretKey(),t),this._cachedSessions=[i],await this.context.secrets.store(y.getSessionsSecretKey(),JSON.stringify([i])),await this.restartLanguageServerIfNeeded(t),this._sessionChangeEmitter.fire({added:[i],removed:[],changed:[]});try{I.writeFileSync(B.join(this.context.globalStorageUri.fsPath,"windsurf-account-manager-profile-login.done.json"),JSON.stringify({id:e.id,email:e.email,name:e.name,doneAt:Date.now()}))}catch(A){}try{I.unlinkSync(A)}catch(A){}console.log("[WindsurfAccountManager] Profile login applied")}catch(A){console.error("[WindsurfAccountManager] Profile login failed:",A)}}async initializeCachedSessions(){await this.processWamProfileLogin(),this._cachedSessions=await this.getSecret()}"#;
+        if bytes_contains(&modified_content, init_pattern) {
+            modified_content = replace_bytes(&modified_content, init_pattern, extension_login.as_bytes());
+            modifications.push("macOS分身扩展登录处理器");
+        }
+    }
     
     // 4. 验证是否需要修改
     // 如果内容没变化，要进一步区分两种情况：
@@ -287,12 +296,17 @@ pub async fn apply_seamless_patch(
     //   b) 正则表达式未能匹配当前 Windsurf 版本（常见于首次安装最新版 Windsurf 的新用户，
     //      之前这里被错误地当作 "已打过补丁" 从而陷入死循环）
     if modified_content == content {
-        if is_file_patched(&extension_file) {
+        if is_full_patch_installed(&extension_file) {
             return Ok(serde_json::json!({
                 "success": true,
                 "already_patched": true,
                 "message": "补丁已经应用过了"
             }));
+        } else if is_file_patched(&extension_file) {
+            return Err(
+                "当前 Windsurf 补丁版本过旧，缺少 macOS 分身登录处理器。请点击\"重新打补丁\"从干净备份还原后重新应用。"
+                    .to_string(),
+            );
         } else {
             return Err(
                 "补丁规则未能匹配当前 Windsurf 版本的 extension.js（首次使用/Windsurf 升级后常见）。\
@@ -455,6 +469,15 @@ fn is_file_patched(file_path: &Path) -> bool {
     }
 }
 
+fn is_full_patch_installed(file_path: &Path) -> bool {
+    if let Ok(content) = fs::read(file_path) {
+        bytes_contains(&content, b"Failed to handle OAuth callback")
+            && bytes_contains(&content, b"WindsurfAccountManager] Profile login applied")
+    } else {
+        false
+    }
+}
+
 /// 查找最新的可用且干净的备份文件
 fn find_latest_backup(extension_dir: &Path, saved_backup_path: &Option<String>) -> Result<PathBuf, String> {
     // 1. 首先尝试使用设置中保存的备份路径
@@ -527,11 +550,13 @@ pub async fn check_patch_status(
     
     // 检查是否包含补丁标识（字节级 contains）
     let has_oauth_handler = bytes_contains(&content, b"Failed to handle OAuth callback");
+    let has_extension_login = bytes_contains(&content, b"WindsurfAccountManager] Profile login applied");
     let has_timeout_removed = !bytes_contains(&content, b"18e4");
     
     Ok(serde_json::json!({
-        "installed": has_oauth_handler,
+        "installed": has_oauth_handler && has_extension_login,
         "oauth_handler": has_oauth_handler,
+        "extension_login": has_extension_login,
         "timeout_removed": has_timeout_removed
     }))
 }

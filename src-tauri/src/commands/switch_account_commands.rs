@@ -457,153 +457,55 @@ pub(crate) fn write_windsurf_auth_direct(
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) fn write_windsurf_auth_direct_macos(
+pub(crate) fn stage_windsurf_auth_for_extension_macos(
     api_key: &str,
     name: &str,
     email: &str,
     api_server_url: &str,
     user_data_dir: &std::path::Path,
+) -> AppResult<std::path::PathBuf> {
+    let extension_storage_dir = user_data_dir
+        .join("User")
+        .join("globalStorage")
+        .join("codeium.windsurf");
+    std::fs::create_dir_all(&extension_storage_dir)
+        .map_err(|e| AppError::FileOperation(format!("Failed to create extension globalStorage dir: {}", e)))?;
+
+    let request_path = extension_storage_dir.join("windsurf-account-manager-profile-login.json");
+    let done_path = extension_storage_dir.join("windsurf-account-manager-profile-login.done.json");
+    let _ = std::fs::remove_file(&done_path);
+
+    let payload = serde_json::json!({
+        "id": Uuid::new_v4().to_string(),
+        "apiKey": api_key,
+        "name": name,
+        "email": email,
+        "apiServerUrl": api_server_url,
+        "createdAt": Utc::now().timestamp_millis()
+    });
+    let content = serde_json::to_string(&payload)
+        .map_err(|e| AppError::Config(format!("Failed to serialize staged auth payload: {}", e)))?;
+    std::fs::write(&request_path, content)
+        .map_err(|e| AppError::FileOperation(format!("Failed to write staged auth payload: {}", e)))?;
+
+    info!(
+        "[Profile][macOS][ExtensionLogin] Staged profile auth for Windsurf extension: email={}, name={}, server={}, path={}",
+        email,
+        name,
+        api_server_url,
+        request_path.display()
+    );
+
+    Ok(request_path)
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn write_windsurf_auth_status_macos(
+    api_key: &str,
+    name: &str,
+    email: &str,
+    user_data_dir: &std::path::Path,
 ) -> AppResult<()> {
-    use aes::Aes128;
-    use cbc::cipher::{block_padding::Pkcs7, BlockEncryptMut, KeyIvInit};
-    use hmac::{Hmac, Mac};
-    use sha1::Sha1;
-
-    fn hmac_sha1(key: &[u8], data: &[u8]) -> AppResult<[u8; 20]> {
-        let mut mac = Hmac::<Sha1>::new_from_slice(key)
-            .map_err(|e| AppError::Config(format!("HMAC init failed: {}", e)))?;
-        mac.update(data);
-        let result = mac.finalize().into_bytes();
-        let mut bytes = [0u8; 20];
-        bytes.copy_from_slice(&result[..]);
-        Ok(bytes)
-    }
-
-    fn derive_key(password: &str) -> AppResult<[u8; 16]> {
-        let mut salt_block = Vec::from(&b"saltysalt"[..]);
-        salt_block.extend_from_slice(&1u32.to_be_bytes());
-
-        let mut u = hmac_sha1(password.as_bytes(), &salt_block)?;
-        let mut t = u;
-        for _ in 1..1003 {
-            u = hmac_sha1(password.as_bytes(), &u)?;
-            for i in 0..t.len() {
-                t[i] ^= u[i];
-            }
-        }
-
-        let mut key = [0u8; 16];
-        key.copy_from_slice(&t[..16]);
-        Ok(key)
-    }
-
-    fn read_keychain_password() -> AppResult<(String, &'static str, &'static str)> {
-        let candidates = [
-            ("Windsurf Safe Storage", "Windsurf"),
-            ("Windsurf Safe Storage", "Windsurf.app"),
-            ("windsurf Safe Storage", "windsurf"),
-            ("Codeium Safe Storage", "Codeium"),
-            ("Chromium Safe Storage", "Chromium"),
-            ("Chrome Safe Storage", "Chrome"),
-        ];
-
-        let mut last_error = String::new();
-        for (service, account) in candidates {
-            match keyring::Entry::new(service, account).and_then(|entry| entry.get_password()) {
-                Ok(password) if !password.is_empty() => {
-                    info!(
-                        "[Profile][macOS][DirectWrite] Found Safe Storage keychain password: service={}, account={}",
-                        service,
-                        account
-                    );
-                    return Ok((password, service, account));
-                }
-                Ok(_) => {
-                    last_error = format!("empty password for service={}, account={}", service, account);
-                }
-                Err(e) => {
-                    last_error = format!("{} for service={}, account={}", e, service, account);
-                }
-            }
-
-            match std::process::Command::new("security")
-                .args(["find-generic-password", "-w", "-a", account, "-s", service])
-                .output()
-            {
-                Ok(output) if output.status.success() => {
-                    let password = String::from_utf8_lossy(&output.stdout).trim_end().to_string();
-                    if !password.is_empty() {
-                        info!(
-                            "[Profile][macOS][DirectWrite] Found Safe Storage keychain password via security: service={}, account={}",
-                            service,
-                            account
-                        );
-                        return Ok((password, service, account));
-                    }
-                    last_error = format!("security returned empty password for service={}, account={}", service, account);
-                }
-                Ok(output) => {
-                    last_error = format!(
-                        "security status={:?}, stderr={} for service={}, account={}",
-                        output.status.code(),
-                        String::from_utf8_lossy(&output.stderr).trim(),
-                        service,
-                        account
-                    );
-                }
-                Err(e) => {
-                    last_error = format!("failed to run security: {}", e);
-                }
-            }
-        }
-
-        Err(AppError::Config(format!(
-            "Unable to read Windsurf Safe Storage keychain password: {}",
-            last_error
-        )))
-    }
-
-    fn encrypt_secret(plaintext: &str, password: &str) -> AppResult<Vec<u8>> {
-        let key = derive_key(password)?;
-        let iv = [b' '; 16];
-        let mut buffer = plaintext.as_bytes().to_vec();
-        let msg_len = buffer.len();
-        let pad_len = 16 - (msg_len % 16);
-        buffer.resize(msg_len + pad_len, 0);
-
-        let encrypted = cbc::Encryptor::<Aes128>::new_from_slices(&key, &iv)
-            .map_err(|e| AppError::Config(format!("AES-CBC init failed: {}", e)))?
-            .encrypt_padded_mut::<Pkcs7>(&mut buffer, msg_len)
-            .map_err(|e| AppError::Config(format!("AES-CBC encryption failed: {}", e)))?;
-
-        let mut value = Vec::with_capacity(3 + encrypted.len());
-        value.extend_from_slice(b"v10");
-        value.extend_from_slice(encrypted);
-        Ok(value)
-    }
-
-    fn buffer_db_value(data: &[u8]) -> AppResult<String> {
-        let value = serde_json::json!({
-            "type": "Buffer",
-            "data": data.iter().map(|&b| b as u64).collect::<Vec<u64>>()
-        });
-        serde_json::to_string(&value)
-            .map_err(|e| AppError::Config(format!("Failed to serialize buffer: {}", e)))
-    }
-
-    let (password, service, account) = read_keychain_password()?;
-    let session_id = Uuid::new_v4().to_string();
-    let session_json = serde_json::json!([{
-        "id": session_id,
-        "accessToken": api_key,
-        "account": {"label": name, "id": name},
-        "scopes": []
-    }]);
-    let session_str = serde_json::to_string(&session_json)
-        .map_err(|e| AppError::Config(format!("Failed to serialize session: {}", e)))?;
-    let session_db_value = buffer_db_value(&encrypt_secret(&session_str, &password)?)?;
-    let url_db_value = buffer_db_value(&encrypt_secret(api_server_url, &password)?)?;
-
     let db_path = user_data_dir
         .join("User")
         .join("globalStorage")
@@ -612,7 +514,6 @@ pub(crate) fn write_windsurf_auth_direct_macos(
         std::fs::create_dir_all(parent)
             .map_err(|e| AppError::FileOperation(format!("Failed to create globalStorage dir: {}", e)))?;
     }
-
     let conn = rusqlite::Connection::open(&db_path)
         .map_err(|e| AppError::Database(format!("Failed to open state.vscdb: {}", e)))?;
     conn.busy_timeout(std::time::Duration::from_millis(5000))
@@ -622,32 +523,21 @@ pub(crate) fn write_windsurf_auth_direct_macos(
         [],
     ).map_err(|e| AppError::Database(format!("Failed to ensure ItemTable: {}", e)))?;
 
-    let new_auth_status = serde_json::json!({"apiKey": api_key}).to_string();
+    let auth_status = serde_json::json!({
+        "apiKey": api_key,
+        "email": email,
+        "name": name
+    }).to_string();
 
     conn.execute(
         "INSERT OR REPLACE INTO ItemTable (key, value) VALUES ('windsurfAuthStatus', ?1)",
-        rusqlite::params![new_auth_status],
+        rusqlite::params![auth_status],
     ).map_err(|e| AppError::Database(format!("Failed to update windsurfAuthStatus: {}", e)))?;
 
-    let session_secret_key = r#"secret://{"extensionId":"codeium.windsurf","key":"windsurf_auth.sessions"}"#;
-    conn.execute(
-        "INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?1, ?2)",
-        rusqlite::params![session_secret_key, session_db_value],
-    ).map_err(|e| AppError::Database(format!("Failed to update sessions secret: {}", e)))?;
-
-    let url_secret_key = r#"secret://{"extensionId":"codeium.windsurf","key":"windsurf_auth.apiServerUrl"}"#;
-    conn.execute(
-        "INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?1, ?2)",
-        rusqlite::params![url_secret_key, url_db_value],
-    ).map_err(|e| AppError::Database(format!("Failed to update apiServerUrl secret: {}", e)))?;
-
     info!(
-        "[Profile][macOS][DirectWrite] Successfully wrote auth data: email={}, name={}, server={}, keychain_service={}, keychain_account={}, db={}",
+        "[Profile][macOS][ExtensionLogin] Updated visible auth status after extension login: email={}, name={}, db={}",
         email,
         name,
-        api_server_url,
-        service,
-        account,
         db_path.display()
     );
 

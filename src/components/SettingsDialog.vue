@@ -372,6 +372,7 @@
           
           <el-form-item label="补丁状态">
             <el-tag v-if="patchStatus.installed" type="success">已安装</el-tag>
+            <el-tag v-else-if="patchStatus.oauthHandler && !patchStatus.extensionLogin" type="warning">需重新打补丁</el-tag>
             <el-tag v-else-if="patchStatus.error" type="danger">{{ patchStatus.error }}</el-tag>
             <el-tag v-else type="info">未安装</el-tag>
             <el-button 
@@ -602,6 +603,8 @@ const detectingPath = ref(false);
 const patchLoading = ref(false);
 const patchStatus = reactive({
   installed: false,
+  oauthHandler: false,
+  extensionLogin: false,
   error: '',
 });
 
@@ -734,6 +737,8 @@ async function checkPatchStatus() {
       windsurfPath: windsurfPath.value
     });
     patchStatus.installed = status.installed;
+    patchStatus.oauthHandler = Boolean(status.oauth_handler);
+    patchStatus.extensionLogin = Boolean(status.extension_login);
     patchStatus.error = status.error || '';
     
     // 同步开关状态与实际补丁状态
@@ -744,6 +749,8 @@ async function checkPatchStatus() {
     }
   } catch (error) {
     patchStatus.installed = false;
+    patchStatus.oauthHandler = false;
+    patchStatus.extensionLogin = false;
     patchStatus.error = error as string;
   }
 }
