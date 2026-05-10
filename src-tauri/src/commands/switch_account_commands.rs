@@ -606,21 +606,7 @@ pub(crate) async fn trigger_windsurf_callback(
     auth_token: &str,
     user_data_dir: Option<&std::path::Path>,
 ) -> AppResult<()> {
-    // 生成state参数
-    let state = Uuid::new_v4().to_string();
-    
-    // 构建回调URL
-    // windsurf://codeium.windsurf#access_token=<auth_token>&state=<state>&token_type=Bearer
-    let params = [
-        ("access_token", auth_token),
-        ("state", &state),
-        ("token_type", "Bearer"),
-    ];
-    
-    let fragment = serde_urlencoded::to_string(&params)
-        .map_err(|e| AppError::ApiRequest(format!("Failed to encode URL parameters: {}", e)))?;
-    
-    let callback_url = format!("windsurf://codeium.windsurf#{}", fragment);
+    let (callback_url, state) = build_windsurf_callback_url(auth_token)?;
     
     info!(
         "Triggering Windsurf callback (target={}): windsurf://codeium.windsurf#access_token=<hidden>&state={}&token_type=Bearer",
@@ -645,7 +631,7 @@ pub(crate) async fn trigger_windsurf_callback(
                 Ok(o) => {
                     if !o.status.success() {
                         let stderr = String::from_utf8_lossy(&o.stderr);
-                        warn!("Windsurf --open-url exited with {}: {}", o.status, stderr.trim());
+                        warn!("Windsurf --open-url exited with {}: exe={}, stderr={}", o.status, exe_path, stderr.trim());
                     }
                     info!("Successfully triggered Windsurf callback via CLI");
                 }
@@ -653,10 +639,10 @@ pub(crate) async fn trigger_windsurf_callback(
                     // 仅主实例可回退到系统 opener；分身一旦回退就会路由到主实例，反而破坏隔离。
                     if user_data_dir.is_some() {
                         return Err(AppError::FileOperation(format!(
-                            "Windsurf CLI failed for profile callback: {}", e
+                            "Windsurf CLI failed for profile callback: exe={}, error={}", exe_path, e
                         )));
                     }
-                    warn!("Windsurf CLI failed ({}), falling back to opener", e);
+                    warn!("Windsurf CLI failed (exe={}, error={}), falling back to opener", exe_path, e);
                     use tauri_plugin_opener::OpenerExt;
                     app.opener()
                         .open_url(&callback_url, None::<&str>)
@@ -744,6 +730,18 @@ pub(crate) async fn trigger_windsurf_callback(
     Ok(())
 }
 
+pub(crate) fn build_windsurf_callback_url(auth_token: &str) -> AppResult<(String, String)> {
+    let state = Uuid::new_v4().to_string();
+    let params = [
+        ("access_token", auth_token),
+        ("state", state.as_str()),
+        ("token_type", "Bearer"),
+    ];
+    let fragment = serde_urlencoded::to_string(&params)
+        .map_err(|e| AppError::ApiRequest(format!("Failed to encode URL parameters: {}", e)))?;
+    Ok((format!("windsurf://codeium.windsurf#{}", fragment), state))
+}
+
 
 /// 重启 Windsurf：关闭现有进程，等待退出，然后重新启动
 #[cfg(target_os = "windows")]
@@ -801,37 +799,112 @@ async fn restart_windsurf() -> bool {
 /// 查找 Windsurf 可执行文件路径
 #[cfg(target_os = "windows")]
 pub(crate) fn find_windsurf_exe() -> Option<String> {
-    let candidates = [
-        r"C:\Program Files\Windsurf\Windsurf.exe",
-        r"C:\Users\Default\AppData\Local\Programs\Windsurf\Windsurf.exe",
-    ];
-    
-    // 先检查常见路径
-    for path in &candidates {
-        if std::path::Path::new(path).exists() {
-            return Some(path.to_string());
-        }
+    let mut candidates: Vec<PathBuf> = Vec::new();
+
+    if let Some(path) = find_running_windsurf_exe_path_windows() {
+        candidates.push(path);
     }
-    
-    // 尝试从用户 LOCALAPPDATA 查找
+
     if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
-        let user_path = format!(r"{}\Programs\Windsurf\Windsurf.exe", local_app_data);
-        if std::path::Path::new(&user_path).exists() {
-            return Some(user_path);
-        }
+        candidates.push(PathBuf::from(local_app_data).join("Programs").join("Windsurf").join("Windsurf.exe"));
     }
-    
-    // 尝试 which/where 查找
+
+    if let Ok(user_profile) = std::env::var("USERPROFILE") {
+        candidates.push(PathBuf::from(user_profile).join("AppData").join("Local").join("Programs").join("Windsurf").join("Windsurf.exe"));
+    }
+
+    candidates.push(PathBuf::from(r"C:\Program Files\Windsurf\Windsurf.exe"));
+    candidates.push(PathBuf::from(r"C:\Program Files (x86)\Windsurf\Windsurf.exe"));
+    candidates.push(PathBuf::from(r"C:\Users\Default\AppData\Local\Programs\Windsurf\Windsurf.exe"));
+
     if let Ok(output) = std::process::Command::new("where").arg("Windsurf").output() {
         if output.status.success() {
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !path.is_empty() {
-                return Some(path.lines().next().unwrap_or(&path).to_string());
+            for line in String::from_utf8_lossy(&output.stdout).lines() {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() {
+                    candidates.push(PathBuf::from(trimmed));
+                }
             }
         }
     }
-    
+
+    let mut seen = std::collections::HashSet::new();
+    for path in candidates {
+        let key = path.to_string_lossy().to_lowercase();
+        if !seen.insert(key) {
+            continue;
+        }
+
+        if is_valid_windsurf_exe_windows(&path) {
+            let value = path.to_string_lossy().to_string();
+            info!("[Profile][Windows] Found Windsurf executable: {}", value);
+            return Some(value);
+        } else if path.exists() {
+            warn!("[Profile][Windows] Ignoring invalid Windsurf executable candidate: {}", path.display());
+        }
+    }
+
+    warn!("[Profile][Windows] No valid Windsurf.exe found");
     None
+}
+
+#[cfg(target_os = "windows")]
+fn is_valid_windsurf_exe_windows(path: &std::path::Path) -> bool {
+    let Some(file_name) = path.file_name().and_then(|v| v.to_str()) else {
+        return false;
+    };
+    if !file_name.eq_ignore_ascii_case("Windsurf.exe") {
+        return false;
+    }
+
+    let path_text = path.to_string_lossy().to_lowercase();
+    if path_text.contains("\\microsoft\\windowsapps\\") || path_text.contains("\\windowsapps\\") {
+        return false;
+    }
+
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() || metadata.len() < 1024 * 1024 {
+        return false;
+    }
+
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut magic = [0u8; 2];
+    use std::io::Read;
+    file.read_exact(&mut magic).is_ok() && magic == *b"MZ"
+}
+
+#[cfg(target_os = "windows")]
+fn find_running_windsurf_exe_path_windows() -> Option<PathBuf> {
+    use std::os::windows::process::CommandExt;
+
+    let script = r#"
+$p = Get-CimInstance Win32_Process -Filter "Name='Windsurf.exe'" | Select-Object -First 1
+if ($p -and $p.ExecutablePath) { $p.ExecutablePath }
+"#;
+    let output = std::process::Command::new("powershell")
+        .arg("-NoProfile")
+        .arg("-ExecutionPolicy")
+        .arg("Bypass")
+        .arg("-Command")
+        .arg(script)
+        .creation_flags(0x08000000)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if path.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(path))
+    }
 }
 
 #[cfg(target_os = "macos")]
