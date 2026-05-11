@@ -247,6 +247,59 @@ async fn wait_for_profile_account(user_data_dir: &Path, target_email: &str) -> O
 }
 
 #[cfg(target_os = "macos")]
+async fn wait_for_macos_profile_callback_readiness(
+    profile: &WindsurfProfile,
+    min_wait_ms: u64,
+    max_wait_ms: u64,
+) {
+    if min_wait_ms > 0 {
+        info!(
+            "[Profile][macOS] Waiting at least {}ms for cold profile startup before callback: profile_id={}, user_data_dir={}",
+            min_wait_ms,
+            profile.id,
+            profile.user_data_dir.display()
+        );
+        tokio::time::sleep(tokio::time::Duration::from_millis(min_wait_ms)).await;
+    }
+
+    let state_db_path = profile.state_vscdb_path();
+    let storage_json_path = profile.storage_json_path();
+    let mut waited_ms = min_wait_ms;
+
+    loop {
+        let running = is_profile_running_from_cmds(profile, &list_windsurf_process_command_lines());
+        let state_db_exists = state_db_path.exists();
+        let storage_json_exists = storage_json_path.exists();
+
+        if running && state_db_exists {
+            info!(
+                "[Profile][macOS] Profile appears ready for callback: profile_id={}, waited_ms={}, state_vscdb=true, storage_json={}",
+                profile.id,
+                waited_ms,
+                storage_json_exists
+            );
+            return;
+        }
+
+        if waited_ms >= max_wait_ms {
+            warn!(
+                "[Profile][macOS] Profile callback readiness wait reached limit: profile_id={}, waited_ms={}, running={}, state_vscdb={}, storage_json={}",
+                profile.id,
+                waited_ms,
+                running,
+                state_db_exists,
+                storage_json_exists
+            );
+            return;
+        }
+
+        let step_ms = max_wait_ms.saturating_sub(waited_ms).min(500);
+        tokio::time::sleep(tokio::time::Duration::from_millis(step_ms)).await;
+        waited_ms += step_ms;
+    }
+}
+
+#[cfg(target_os = "macos")]
 async fn trigger_macos_profile_callback_best_effort(
     app: &tauri::AppHandle,
     profile: &WindsurfProfile,
@@ -255,13 +308,7 @@ async fn trigger_macos_profile_callback_best_effort(
     initial_delay_ms: u64,
 ) -> Result<Option<WindsurfCurrentInfo>, String> {
     if initial_delay_ms > 0 {
-        info!(
-            "[Profile][macOS] Waiting {}ms for profile window before callback: profile_id={}, user_data_dir={}",
-            initial_delay_ms,
-            profile.id,
-            profile.user_data_dir.display()
-        );
-        tokio::time::sleep(tokio::time::Duration::from_millis(initial_delay_ms)).await;
+        wait_for_macos_profile_callback_readiness(profile, initial_delay_ms, 12000).await;
     }
 
     trigger_windsurf_callback(app, callback_token, Some(&profile.user_data_dir))
@@ -283,7 +330,8 @@ async fn trigger_macos_profile_callback_best_effort(
         target_email,
         profile.user_data_dir.display()
     );
-    tokio::time::sleep(tokio::time::Duration::from_millis(1200)).await;
+    let retry_delay_ms = if initial_delay_ms > 0 { 3000 } else { 1200 };
+    tokio::time::sleep(tokio::time::Duration::from_millis(retry_delay_ms)).await;
 
     trigger_windsurf_callback(app, callback_token, Some(&profile.user_data_dir))
         .await
@@ -761,7 +809,7 @@ async fn switch_profile_to_account(
                 );
                 spawn_profile_window(profile, &exe_path)
                     .map_err(|e| format!("启动分身失败: {}", e))?;
-                1500
+                5000
             };
 
             match trigger_macos_profile_callback_best_effort(
