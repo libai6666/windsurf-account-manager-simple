@@ -1178,22 +1178,19 @@ fn apply_auto_continue_sender_to_extension(windsurf_path: &str) -> Result<Option
 
 /// 查找最新的可用且干净的备份文件
 fn find_latest_backup(extension_dir: &Path, saved_backup_path: &Option<String>) -> Result<PathBuf, String> {
-    // 1. 首先尝试使用设置中保存的备份路径
+    // 1. 收集设置中保存的备份路径
+    let mut backup_files: Vec<PathBuf> = Vec::new();
     if let Some(ref saved_path) = saved_backup_path {
         let saved = PathBuf::from(saved_path);
         if saved.exists() {
-            // 验证备份文件是否是干净的
-            if !is_file_patched(&saved) {
-                return Ok(saved);
-            }
-            println!("设置中保存的备份文件已被污染（包含补丁特征）: {:?}", saved);
+            backup_files.push(saved);
         } else {
             println!("设置中保存的备份文件不存在: {:?}", saved);
         }
     }
     
     // 2. 查找目录中所有备份文件
-    let mut backup_files: Vec<PathBuf> = fs::read_dir(extension_dir)
+    let discovered_backup_files: Vec<PathBuf> = fs::read_dir(extension_dir)
         .map_err(|e| format!("读取目录失败: {}", e))?
         .filter_map(|entry| entry.ok())
         .map(|entry| entry.path())
@@ -1204,19 +1201,24 @@ fn find_latest_backup(extension_dir: &Path, saved_backup_path: &Option<String>) 
                 .unwrap_or(false)
         })
         .collect();
+    for backup in discovered_backup_files {
+        if !backup_files.contains(&backup) {
+            backup_files.push(backup);
+        }
+    }
     
     if backup_files.is_empty() {
         return Err("未找到任何备份文件，无法还原。请手动重新安装 Windsurf 或从官方下载 extension.js 文件".to_string());
     }
     
-    // 按修改时间排序（最旧的在前，因为最早的备份最可能是干净的）
+    // 按修改时间排序（最新的在前，避免 Windsurf 升级后误用旧版本 extension.js 备份）
     backup_files.sort_by(|a, b| {
         let time_a = fs::metadata(a).and_then(|m| m.modified()).ok();
         let time_b = fs::metadata(b).and_then(|m| m.modified()).ok();
-        time_a.cmp(&time_b)
+        time_b.cmp(&time_a)
     });
     
-    // 3. 查找第一个干净的备份文件（从最旧的开始）
+    // 3. 查找第一个干净的备份文件（从最新的开始）
     for backup in &backup_files {
         if !is_file_patched(backup) {
             return Ok(backup.clone());
