@@ -177,7 +177,7 @@
                   :value="group"
                 />
               </el-select>
-              <div class="form-tip">主实例会从该分组中选择可用账号自动切换</div>
+              <div class="form-tip">主实例会从该分组中选择可用的非 Free 账号自动切换</div>
             </el-form-item>
             <el-form-item label="手动目标号">
               <el-select
@@ -194,7 +194,7 @@
                   :value="account.id"
                 />
               </el-select>
-              <div class="form-tip">仅作为手动切号目标；自动换号始终读取上方实际登录账号判断</div>
+              <div class="form-tip">仅作为手动切号目标；自动换号始终读取上方实际登录账号判断，且不会选择 Free 账号</div>
             </el-form-item>
             <el-form-item label="阈值">
               <div class="input-with-suffix">
@@ -261,7 +261,7 @@
                   :value="account.id"
                 />
               </el-select>
-              <div class="form-tip">仅作为手动切号目标；自动换号会根据实际登录账号和分组配额判断</div>
+              <div class="form-tip">仅作为手动切号目标；自动换号会根据实际登录账号和分组配额判断，且不会选择 Free 账号</div>
             </el-form-item>
             <el-form-item label="阈值">
               <div class="input-with-suffix">
@@ -486,9 +486,11 @@ function normalizeProfilePage() {
 function accountOptionLabel(account: Account, currentProfileId?: string) {
   const daily = account.daily_quota_remaining;
   const weekly = account.weekly_quota_remaining;
+  const plan = account.plan_name || '未知';
+  const emailWithPlan = `${account.email} [${plan}]`;
   const base = (daily === undefined && weekly === undefined)
-    ? account.email
-    : `${account.email} (日${daily ?? '?'}%/周${weekly ?? '?'}%)`;
+    ? emailWithPlan
+    : `${emailWithPlan} (日${daily ?? '?'}%/周${weekly ?? '?'}%)`;
   const usage = accountUsageMap.value.get(account.id);
   if (usage && usage.profileId !== currentProfileId) {
     return `${base} 【已被${usage.profileName}使用】`;

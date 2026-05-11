@@ -669,6 +669,7 @@ pub(crate) async fn trigger_windsurf_callback(
             let mut cmd = std::process::Command::new(&exe_path);
             if let Some(dir) = user_data_dir {
                 cmd.arg("--user-data-dir").arg(dir);
+                cmd.arg("--reuse-window");
             }
             cmd.arg("--open-url").arg(&callback_url);
             info!(
@@ -1460,6 +1461,7 @@ pub async fn check_auto_switch(
                     a.group.as_deref() == Some(group)
                     && !matches!(a.status, crate::models::AccountStatus::Error(_))
                     && a.refresh_token.is_some()
+                    && !a.plan_name.as_ref().map(|p| p.to_lowercase().contains("free")).unwrap_or(true)
                     && !in_use.contains(&a.email.to_ascii_lowercase())
                 })
                 .collect();
@@ -1491,6 +1493,9 @@ pub async fn check_auto_switch(
             
             let mut best_candidate: Option<(Uuid, String, i32, i32, bool)> = None;
             for acc in &group_candidates {
+                if is_free_plan(acc) {
+                    continue;
+                }
                 let daily = acc.daily_quota_remaining.unwrap_or(0);
                 let weekly = acc.weekly_quota_remaining.unwrap_or(0);
                 let acc_is_free = is_free_plan(acc);
@@ -1506,6 +1511,9 @@ pub async fn check_auto_switch(
                 let cache_ttl = chrono::Duration::minutes(3);
                 let now = chrono::Utc::now();
                 for acc in &group_candidates {
+                    if is_free_plan(acc) {
+                        continue;
+                    }
                     if let Some(last_update) = acc.last_quota_update {
                         if now - last_update < cache_ttl { continue; }
                     }
@@ -1667,6 +1675,7 @@ pub async fn check_auto_switch(
             && a.id != current_uuid
             && !matches!(a.status, crate::models::AccountStatus::Error(_))
             && a.refresh_token.is_some()
+            && !a.plan_name.as_ref().map(|p| p.to_lowercase().contains("free")).unwrap_or(true)
             && !in_use.contains(&a.email.to_ascii_lowercase())
         })
         .collect();
@@ -1713,6 +1722,9 @@ pub async fn check_auto_switch(
     let mut best_candidate: Option<(Uuid, String, i32, i32, bool)> = None;
     
     for acc in &group_accounts {
+        if is_free_plan(acc) {
+            continue;
+        }
         let daily = acc.daily_quota_remaining.unwrap_or(0);
         let weekly = acc.weekly_quota_remaining.unwrap_or(0);
         let acc_is_free = is_free_plan(acc);
@@ -1734,6 +1746,9 @@ pub async fn check_auto_switch(
         
         println!("[自动换号] 缓存数据中未找到合适账号，逐个刷新分组账号配额...");
         for acc in &group_accounts {
+            if is_free_plan(acc) {
+                continue;
+            }
             // 如果账号在3分钟内已刷新过，使用缓存数据
             if let Some(last_update) = acc.last_quota_update {
                 if now - last_update < cache_ttl {

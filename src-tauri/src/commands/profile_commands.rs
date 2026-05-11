@@ -4,8 +4,6 @@ use crate::commands::switch_account_commands::{
     reset_storage_json_for_profile,
     trigger_windsurf_callback,
 };
-#[cfg(target_os = "macos")]
-use crate::commands::switch_account_commands::build_windsurf_callback_url;
 #[cfg(target_os = "windows")]
 use crate::commands::switch_account_commands::{prepare_profile_local_state, write_windsurf_auth_direct};
 use crate::commands::windsurf_info::{get_windsurf_info_from_dir, WindsurfCurrentInfo};
@@ -424,37 +422,6 @@ fn spawn_profile_window(profile: &WindsurfProfile, exe_path: &str) -> Result<(),
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
-fn spawn_profile_window_with_callback(
-    profile: &WindsurfProfile,
-    exe_path: &str,
-    callback_url: &str,
-    state: &str,
-) -> Result<(), String> {
-    let mut command = Command::new(exe_path);
-    if !profile.is_main() {
-        command.arg("--user-data-dir").arg(&profile.user_data_dir);
-        command.arg("--new-window");
-    }
-    command.arg("--open-url").arg(callback_url);
-    info!(
-        "[Profile][macOS] Launching Windsurf with callback: profile_id={}, name={}, exe={}, user_data_dir={}, state={}, arch={}",
-        profile.id,
-        profile.name,
-        exe_path,
-        profile.user_data_dir.display(),
-        state,
-        std::env::consts::ARCH
-    );
-    let child = command.spawn().map_err(|e| format!("启动分身并投递回调失败: {}", e))?;
-    info!(
-        "[Profile][macOS] Windsurf spawn with callback requested: profile_id={}, pid={}",
-        profile.id,
-        child.id()
-    );
-    Ok(())
-}
-
 #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 fn spawn_profile_window(_profile: &WindsurfProfile, _exe_path: &str) -> Result<(), String> {
     Err("当前平台暂不支持启动分身".to_string())
@@ -510,6 +477,9 @@ fn consider_candidate(
     threshold: i32,
     best: &mut Option<(Uuid, String, i32, i32, bool)>,
 ) {
+    if is_free_plan(acc) {
+        return;
+    }
     if daily > threshold && weekly > 0 {
         let acc_is_free = is_free_plan(acc);
         if is_better_candidate(daily, weekly, acc_is_free, best) {
@@ -767,17 +737,14 @@ async fn switch_profile_to_account(
                 );
                 (0, true)
             } else {
-                let (callback_url, state) = build_windsurf_callback_url(&auth.callback_token)
-                    .map_err(|e| format!("构建分身登录回调失败: {}", e))?;
                 info!(
-                    "[Profile][macOS] Profile not running, launching window with callback: profile_id={}, target_email={}, state={}",
+                    "[Profile][macOS] Profile not running, launching window before callback: profile_id={}, target_email={}",
                     profile.id,
-                    account.email,
-                    state
+                    account.email
                 );
-                spawn_profile_window_with_callback(profile, &exe_path, &callback_url, &state)
-                    .map_err(|e| format!("启动分身并投递回调失败: {}", e))?;
-                (0, false)
+                spawn_profile_window(profile, &exe_path)
+                    .map_err(|e| format!("启动分身失败: {}", e))?;
+                (1500, true)
             };
 
             if let Err(e) = trigger_macos_profile_callback_with_retry(
@@ -1322,6 +1289,7 @@ pub async fn check_profile_auto_switch(
                     a.group.as_deref() == Some(group.as_str())
                         && !matches!(a.status, AccountStatus::Error(_))
                         && a.refresh_token.as_ref().map(|t| !t.is_empty()).unwrap_or(false)
+                        && !is_free_plan(a)
                         && !in_use.contains(&a.email.to_ascii_lowercase())
                 })
                 .collect();
@@ -1428,6 +1396,7 @@ pub async fn check_profile_auto_switch(
                 && a.id != current_account.id
                 && !matches!(a.status, AccountStatus::Error(_))
                 && a.refresh_token.as_ref().map(|t| !t.is_empty()).unwrap_or(false)
+                && !is_free_plan(a)
                 && !in_use.contains(&a.email.to_ascii_lowercase())
         })
         .collect();
