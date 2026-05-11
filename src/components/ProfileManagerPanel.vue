@@ -74,10 +74,11 @@
       </div>
       <div class="auto-continue-actions">
         <el-switch
-          :model-value="autoContinueEnabled"
+          :model-value="autoContinueSwitchValue"
           active-text="开启"
           inactive-text="关闭"
           :loading="autoContinueLoading"
+          :disabled="!autoContinueBridgePatched"
           @change="setAutoContinueEnabled(Boolean($event))"
         />
         <el-button :loading="autoContinueLoading" :icon="RefreshRight" @click="runAutoContinue(true)">
@@ -85,6 +86,9 @@
         </el-button>
         <div v-if="autoContinueLastMessage" class="auto-continue-status">
           {{ autoContinueLastMessage }}
+        </div>
+        <div v-if="autoContinuePatchChecked && !autoContinueBridgePatched" class="auto-continue-warning">
+          需要先在设置中安装自动继续 Bridge 补丁，安装后才能开启
         </div>
       </div>
     </div>
@@ -372,6 +376,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Close, MoreFilled, Plus, Refresh, RefreshRight, Loading, Switch, VideoPlay } from '@element-plus/icons-vue';
+import { invoke } from '@tauri-apps/api/core';
 import { apiService, profileApi } from '@/api';
 import { useAccountsStore, useSettingsStore } from '@/store';
 import type { Account, ProfileRuntimeInfo, Settings, WindsurfProfile } from '@/types';
@@ -396,8 +401,11 @@ const AUTO_CONTINUE_ENABLED_KEY = 'profile-manager:auto-continue-enabled';
 const autoContinueEnabled = ref(Boolean(
   settingsStore.settings.autoContinueBridgeEnabled ?? (localStorage.getItem(AUTO_CONTINUE_ENABLED_KEY) === '1'),
 ));
+const autoContinueBridgePatched = ref(false);
+const autoContinuePatchChecked = ref(false);
 const autoContinueLoading = ref(false);
 const autoContinueLastMessage = ref('');
+const autoContinueSwitchValue = computed(() => autoContinueBridgePatched.value && autoContinueEnabled.value);
 const tipExpanded = ref<boolean>(
   // 默认展开（首次访问看完整指南）；用户主动收起后持久化
   localStorage.getItem(TIP_EXPANDED_KEY) !== '0',
@@ -538,8 +546,17 @@ async function runAutoContinue(showMessage = false) {
   if (autoContinueLoading.value) return;
   autoContinueLoading.value = true;
   try {
+    const bridgePatched = await refreshAutoContinuePatchStatus(false);
+    if (!bridgePatched) {
+      await forceAutoContinueDisabled('Bridge补丁未安装，自动继续已关闭；请先在设置中安装补丁后再开启');
+      if (showMessage) {
+        ElMessage.warning(autoContinueLastMessage.value);
+      }
+      return;
+    }
     const result = await profileApi.getAutoContinueBridgeStatus();
     autoContinueLastMessage.value = result.message || 'Bridge状态已刷新';
+    await syncAutoContinueEnabled(Boolean(result.config?.enabled));
     if (showMessage) {
       if (result.config?.enabled) {
         ElMessage.success(autoContinueLastMessage.value);
@@ -554,6 +571,65 @@ async function runAutoContinue(showMessage = false) {
     }
   } finally {
     autoContinueLoading.value = false;
+  }
+}
+
+async function refreshAutoContinuePatchStatus(showMessage = false) {
+  const windsurfPath = settingsStore.settings.windsurfPath;
+  if (!windsurfPath) {
+    autoContinueBridgePatched.value = false;
+    autoContinuePatchChecked.value = true;
+    autoContinueLastMessage.value = '请先在设置中检测或选择 Windsurf 路径，并安装自动继续 Bridge 补丁';
+    if (showMessage) {
+      ElMessage.warning(autoContinueLastMessage.value);
+    }
+    return false;
+  }
+
+  try {
+    const status = await invoke<any>('check_patch_status', { windsurfPath });
+    autoContinueBridgePatched.value = Boolean(status.auto_continue_bridge);
+    autoContinuePatchChecked.value = true;
+    if (!autoContinueBridgePatched.value) {
+      autoContinueLastMessage.value = 'Bridge补丁未安装，自动继续已关闭；请先在设置中安装补丁后再开启';
+      if (showMessage) {
+        ElMessage.warning(autoContinueLastMessage.value);
+      }
+      return false;
+    }
+    return true;
+  } catch (error) {
+    autoContinueBridgePatched.value = false;
+    autoContinuePatchChecked.value = true;
+    autoContinueLastMessage.value = `检查Bridge补丁失败: ${error}`;
+    if (showMessage) {
+      ElMessage.error(autoContinueLastMessage.value);
+    }
+    return false;
+  }
+}
+
+async function syncAutoContinueEnabled(enabled: boolean) {
+  autoContinueEnabled.value = enabled;
+  localStorage.setItem(AUTO_CONTINUE_ENABLED_KEY, enabled ? '1' : '0');
+  if (settingsStore.settings.autoContinueBridgeEnabled !== enabled) {
+    await settingsStore.updateSettings({
+      ...settingsStore.settings,
+      autoContinueBridgeEnabled: enabled,
+    });
+  }
+}
+
+async function forceAutoContinueDisabled(message?: string) {
+  stopAutoContinueTimer();
+  try {
+    await profileApi.setAutoContinueBridgeConfig(false);
+  } catch (error) {
+    console.warn('关闭自动继续Bridge失败:', error);
+  }
+  await syncAutoContinueEnabled(false);
+  if (message) {
+    autoContinueLastMessage.value = message;
   }
 }
 
@@ -574,6 +650,19 @@ function startAutoContinueTimer() {
 }
 
 async function setAutoContinueEnabled(enabled: boolean) {
+  if (enabled) {
+    autoContinueLoading.value = true;
+    try {
+      const bridgePatched = await refreshAutoContinuePatchStatus(false);
+      if (!bridgePatched) {
+        await forceAutoContinueDisabled('Bridge补丁未安装，无法开启自动继续；请先在设置中安装补丁');
+        ElMessage.warning(autoContinueLastMessage.value);
+        return;
+      }
+    } finally {
+      autoContinueLoading.value = false;
+    }
+  }
   autoContinueEnabled.value = enabled;
   localStorage.setItem(AUTO_CONTINUE_ENABLED_KEY, enabled ? '1' : '0');
   autoContinueLoading.value = true;
@@ -857,6 +946,7 @@ onMounted(async () => {
     loadProfiles(),
   ]);
   profileStatusTimer = setInterval(refreshProfileStatusSilently, 5000);
+  await runAutoContinue(false);
   if (autoContinueEnabled.value) {
     startAutoContinueTimer();
   }
@@ -973,7 +1063,9 @@ onUnmounted(() => {
 }
 
 .auto-continue-main {
+  flex: 1 1 auto;
   min-width: 0;
+  max-width: 560px;
 }
 
 .auto-continue-title-row {
@@ -990,6 +1082,7 @@ onUnmounted(() => {
 }
 
 .auto-continue-desc {
+  max-width: 520px;
   color: #4b5563;
   font-size: 12.5px;
   line-height: 1.6;
@@ -1017,20 +1110,29 @@ onUnmounted(() => {
 
 .auto-continue-actions {
   display: flex;
-  flex-shrink: 0;
+  flex: 0 0 430px;
   align-items: center;
   justify-content: flex-end;
-  gap: 10px;
-  min-width: 280px;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 360px;
 }
 
 .auto-continue-status {
-  max-width: 220px;
+  max-width: 150px;
   overflow: hidden;
   color: #4b5563;
   font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.auto-continue-warning {
+  flex-basis: 100%;
+  color: #b45309;
+  font-size: 11.5px;
+  line-height: 1.4;
+  text-align: right;
 }
 
 .alert-title-row {

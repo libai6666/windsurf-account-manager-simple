@@ -440,7 +440,7 @@
             </div>
           </el-form-item>
           
-          <el-form-item label="自动继续 Bridge">
+          <el-form-item label="自动继续补丁">
             <el-space wrap>
               <el-tag v-if="patchStatus.autoContinueBridge" type="success">Bridge补丁已安装</el-tag>
               <el-tag v-else type="info">Bridge补丁未安装</el-tag>
@@ -451,27 +451,27 @@
                 :loading="autoContinueBridgeLoading"
                 @click="installAutoContinueBridgePatch"
               >
-                安装/修复Bridge补丁
+                打补丁
+              </el-button>
+              <el-button
+                size="small"
+                type="warning"
+                :disabled="!windsurfPath || !patchStatus.autoContinueBridge"
+                :loading="autoContinueBridgeLoading"
+                @click="restoreAutoContinueBridgePatch"
+              >
+                还原补丁
               </el-button>
               <el-button
                 size="small"
                 :loading="autoContinueBridgeLoading"
-                @click="checkAutoContinueBridgeStatus"
+                @click="refreshAutoContinueBridgePatchStatus"
               >
-                检查Bridge
+                检查补丁
               </el-button>
             </el-space>
-            <div style="margin-top: 8px;">
-              <el-switch
-                v-model="settings.autoContinueBridgeEnabled"
-                active-text="启用Bridge"
-                inactive-text="关闭Bridge"
-                :loading="autoContinueBridgeLoading"
-                @change="handleAutoContinueBridgeEnabled"
-              />
-            </div>
             <div style="margin-top: 5px; color: #909399; font-size: 12px;">
-              Bridge 从 Windsurf 内部页面文本捕获中断提示，开启后会在当前 Cascade 输入框自动填入并提交“继续工作”。
+              这里仅用于安装或还原 Windsurf 内部 Bridge 补丁；Bridge 的开启/关闭请在分身管理页面的“自动继续工作”区域操作。
             </div>
             <div v-if="autoContinueBridgeMessage" style="margin-top: 5px; color: #67c23a; font-size: 12px;">
               {{ autoContinueBridgeMessage }}
@@ -891,27 +891,6 @@ async function checkPatchStatus() {
   }
 }
 
-async function syncAutoContinueBridgeConfig() {
-  const status = await invoke<any>('set_auto_continue_bridge_config', {
-    enabled: settings.autoContinueBridgeEnabled,
-  });
-  autoContinueBridgeMessage.value = status.message || 'Bridge配置已同步';
-}
-
-async function checkAutoContinueBridgeStatus() {
-  autoContinueBridgeLoading.value = true;
-  try {
-    const status = await invoke<any>('get_auto_continue_bridge_status');
-    const config = status.config || {};
-    settings.autoContinueBridgeEnabled = Boolean(config.enabled);
-    autoContinueBridgeMessage.value = `${status.message || 'Bridge状态已刷新'}，端口 ${status.port}`;
-  } catch (error) {
-    ElMessage.error(`检查Bridge失败: ${error}`);
-  } finally {
-    autoContinueBridgeLoading.value = false;
-  }
-}
-
 async function installAutoContinueBridgePatch() {
   if (!windsurfPath.value) {
     ElMessage.error('请先检测或设置Windsurf路径');
@@ -933,16 +912,51 @@ async function installAutoContinueBridgePatch() {
   }
 }
 
-async function handleAutoContinueBridgeEnabled(value: boolean) {
+async function restoreAutoContinueBridgePatch() {
+  if (!windsurfPath.value) {
+    ElMessage.error('请先检测或设置Windsurf路径');
+    return;
+  }
+
+  try {
+    await ElMessageBox.confirm(
+      '将只还原自动继续 Bridge 补丁，不会关闭图二里的 Bridge 开关，也不会还原无感换号补丁。还原后会重启 Windsurf，是否继续？',
+      '还原 Bridge 补丁',
+      {
+        confirmButtonText: '确定',
+        cancelButtonText: '取消',
+        type: 'warning',
+      }
+    );
+  } catch {
+    return;
+  }
+
   autoContinueBridgeLoading.value = true;
   try {
-    settings.autoContinueBridgeEnabled = value;
-    await syncAutoContinueBridgeConfig();
-    await settingsStore.updateSettings(settings);
-    ElMessage.success(value ? '自动继续Bridge已启用' : '自动继续Bridge已关闭');
+    const result = await invoke<any>('restore_auto_continue_bridge_patch', {
+      windsurfPath: windsurfPath.value,
+    });
+    if (result.success) {
+      ElMessage.success(result.message || 'Bridge补丁已还原');
+      await checkPatchStatus();
+    }
   } catch (error) {
-    settings.autoContinueBridgeEnabled = !value;
-    ElMessage.error(`同步Bridge配置失败: ${error}`);
+    ElMessage.error(`还原Bridge补丁失败: ${error}`);
+  } finally {
+    autoContinueBridgeLoading.value = false;
+  }
+}
+
+async function refreshAutoContinueBridgePatchStatus() {
+  autoContinueBridgeLoading.value = true;
+  try {
+    await checkPatchStatus();
+    autoContinueBridgeMessage.value = patchStatus.autoContinueBridge
+      ? 'Bridge补丁已安装'
+      : 'Bridge补丁未安装';
+  } catch (error) {
+    ElMessage.error(`检查Bridge补丁失败: ${error}`);
   } finally {
     autoContinueBridgeLoading.value = false;
   }

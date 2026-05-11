@@ -4,8 +4,6 @@ use crate::commands::switch_account_commands::{
     reset_storage_json_for_profile,
     trigger_windsurf_callback,
 };
-#[cfg(target_os = "macos")]
-use crate::commands::switch_account_commands::build_windsurf_callback_url;
 #[cfg(target_os = "windows")]
 use crate::commands::switch_account_commands::{prepare_profile_local_state, write_windsurf_auth_direct};
 use crate::commands::windsurf_info::{get_windsurf_info_from_dir, WindsurfCurrentInfo};
@@ -424,37 +422,6 @@ fn spawn_profile_window(profile: &WindsurfProfile, exe_path: &str) -> Result<(),
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
-fn spawn_profile_window_with_callback(
-    profile: &WindsurfProfile,
-    exe_path: &str,
-    callback_url: &str,
-    state: &str,
-) -> Result<(), String> {
-    let mut command = Command::new(exe_path);
-    if !profile.is_main() {
-        command.arg("--user-data-dir").arg(&profile.user_data_dir);
-        command.arg("--new-window");
-    }
-    command.arg("--open-url").arg(callback_url);
-    info!(
-        "[Profile][macOS] Launching Windsurf with callback: profile_id={}, name={}, exe={}, user_data_dir={}, state={}, arch={}",
-        profile.id,
-        profile.name,
-        exe_path,
-        profile.user_data_dir.display(),
-        state,
-        std::env::consts::ARCH
-    );
-    let child = command.spawn().map_err(|e| format!("启动分身并投递回调失败: {}", e))?;
-    info!(
-        "[Profile][macOS] Windsurf spawn with callback requested: profile_id={}, pid={}",
-        profile.id,
-        child.id()
-    );
-    Ok(())
-}
-
 #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 fn spawn_profile_window(_profile: &WindsurfProfile, _exe_path: &str) -> Result<(), String> {
     Err("当前平台暂不支持启动分身".to_string())
@@ -759,25 +726,22 @@ async fn switch_profile_to_account(
             ensure_profile_local_state(profile)
                 .map_err(|e| format!("分身初始化失败: {}", e))?;
 
-            let (initial_delay_ms, dispatch_callback) = if was_running {
+            let initial_delay_ms = if was_running {
                 info!(
                     "[Profile][macOS] Profile already running, dispatching callback directly: profile_id={}, target_email={}",
                     profile.id,
                     account.email
                 );
-                (0, true)
+                0
             } else {
-                let (callback_url, state) = build_windsurf_callback_url(&auth.callback_token)
-                    .map_err(|e| format!("构建分身登录回调失败: {}", e))?;
                 info!(
-                    "[Profile][macOS] Profile not running, launching window with callback: profile_id={}, target_email={}, state={}",
+                    "[Profile][macOS] Profile not running, launching window before callback: profile_id={}, target_email={}",
                     profile.id,
-                    account.email,
-                    state
+                    account.email
                 );
-                spawn_profile_window_with_callback(profile, &exe_path, &callback_url, &state)
-                    .map_err(|e| format!("启动分身并投递回调失败: {}", e))?;
-                (0, false)
+                spawn_profile_window(profile, &exe_path)
+                    .map_err(|e| format!("启动分身失败: {}", e))?;
+                1500
             };
 
             if let Err(e) = trigger_macos_profile_callback_with_retry(
@@ -786,7 +750,7 @@ async fn switch_profile_to_account(
                 &auth.callback_token,
                 &account.email,
                 initial_delay_ms,
-                dispatch_callback,
+                true,
             ).await {
                 error!("[Profile][macOS] Profile callback failed: {}", e);
                 return Ok(json!({

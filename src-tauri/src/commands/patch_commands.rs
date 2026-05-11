@@ -555,43 +555,17 @@ fn strip_appended_auto_continue_workbench_blocks(content: &[u8]) -> Vec<u8> {
 }
 
 fn build_auto_continue_extension_script() -> Vec<u8> {
-    let script = format!(
-        r#";(() => {{
-  try {{
+    let script = r#";(() => {
+  try {
     if (globalThis.__wamAutoContinueExtensionBridgeV2Installed) return;
-    Object.defineProperty(globalThis, "__wamAutoContinueExtensionBridgeV2Installed", {{ value: true, configurable: false }});
-    const base = "http://127.0.0.1:{port}/wam-auto-continue";
-    const report = (event) => {{
-      try {{
-        fetch(base + "/event", {{
-          method: "POST",
-          headers: {{ "content-type": "application/json" }},
-          body: JSON.stringify(event),
-          keepalive: true
-        }}).catch(() => {{}});
-      }} catch {{}}
-    }};
-    globalThis.addEventListener?.("error", event => report({{
-      eventType: "window_error",
-      source: "extension",
-      location: String(location.href),
-      message: String(event?.message || event?.error || "")
-    }}));
-    globalThis.addEventListener?.("unhandledrejection", event => report({{
-      eventType: "unhandledrejection",
-      source: "extension",
-      location: String(location.href),
-      message: String(event?.reason || "")
-    }}));
-    console.info("[WindsurfAccountManagerAutoContinueExtensionBridgeV2] installed");
-  }} catch (error) {{
+    Object.defineProperty(globalThis, "__wamAutoContinueExtensionBridgeV2Installed", { value: true, configurable: false });
+    console.info("[WindsurfAccountManagerAutoContinueExtensionBridgeV2] installed as workbench-send fallback marker");
+  } catch (error) {
     console.error("[WindsurfAccountManagerAutoContinueExtensionBridgeV2] failed", error);
-  }}
-}})();
-"#,
-        port = AUTO_CONTINUE_BRIDGE_PORT
-    );
-    script.into_bytes()
+  }
+})();
+"#;
+    script.as_bytes().to_vec()
 }
 
 fn build_auto_continue_workbench_script() -> Vec<u8> {
@@ -631,22 +605,48 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
       const lower = String(text || "").toLowerCase();
       return (config.markers || []).some(marker => lower.includes(String(marker).toLowerCase()));
     }};
+    const isBridgeUrl = (url) => String(url || "").startsWith(base);
+    const post = (event) => {{
+      try {{
+        fetch(base + "/event", {{
+          method: "POST",
+          headers: {{ "content-type": "application/json" }},
+          body: JSON.stringify(event),
+          keepalive: true
+        }}).catch(() => {{}});
+      }} catch {{}}
+    }};
+    const report = async (eventType, value, source, url) => {{
+      if (isBridgeUrl(url)) return;
+      const message = textOf(value);
+      if (!message) return;
+      if (eventType !== "auto_continue_test" && !hasMarker(message)) return;
+      post({{
+        eventType,
+        source,
+        url,
+        location: String(location.href),
+        message: message.slice(0, 6000)
+      }});
+    }};
+    const refreshConfig = () => fetch(base + "/config", {{ cache: "no-store" }})
+      .then(response => response.json())
+      .then(result => {{ if (result && result.config) config = {{ ...config, ...result.config }}; }})
+      .catch(() => {{}});
+    refreshConfig();
+    setInterval(refreshConfig, 5000);
     const requestJson = (method, path, body) => fetch(base + path, {{
       method,
       headers: body ? {{ "content-type": "application/json" }} : undefined,
       body: body ? JSON.stringify(body) : undefined,
       cache: "no-store"
     }}).then(response => response.text()).then(text => text ? JSON.parse(text) : {{}});
-    const post = (event) => requestJson("POST", "/event", event).catch(() => {{}});
     const reportResult = (actionId, success, error, method) => requestJson("POST", "/action-result", {{
       actionId,
       success,
       method: method || null,
       error: error ? String(error && error.message ? error.message : error) : null
     }}).catch(() => {{}});
-    const refreshConfig = () => requestJson("GET", "/config")
-      .then(result => {{ if (result && result.config) config = {{ ...config, ...result.config }}; }})
-      .catch(() => {{}});
     const isVisible = (element) => {{
       try {{
         if (!element || !(element instanceof Element)) return false;
@@ -658,11 +658,18 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
         return false;
       }}
     }};
+    const isEditable = (element) => {{
+      if (!isVisible(element)) return false;
+      if (element.closest?.("[aria-hidden='true']")) return false;
+      if (element.matches?.("textarea,input")) return !element.disabled && !element.readOnly && element.type !== "hidden";
+      return element.isContentEditable || element.getAttribute?.("role") === "textbox";
+    }};
     const visibleText = (element) => String(element?.innerText || element?.textContent || "");
     const findVisibleMarkerMessage = () => {{
+      const selectors = "[role='alert'],[aria-live],div,span,p,li";
+      const elements = Array.from(document.querySelectorAll(selectors)).filter(isVisible);
       let best = "";
       let bestScore = Number.POSITIVE_INFINITY;
-      const elements = Array.from(document.querySelectorAll("[role='alert'],[aria-live],div,span,p,li")).filter(isVisible);
       for (const element of elements) {{
         try {{
           if (element.matches?.("textarea,input,[contenteditable='true'],[role='textbox']")) continue;
@@ -679,42 +686,29 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
       }}
       return best;
     }};
-    const reportVisibleText = () => {{
-      const text = findVisibleMarkerMessage();
-      if (!text) return;
-      post({{
-        eventType: "dom_text",
-        source: "workbench-dom",
-        url: String(location.href),
-        location: String(location.href),
-        message: text.slice(0, 6000)
-      }});
+    const candidateEditors = () => {{
+      const selector = "textarea,input[type='text'],input:not([type]),[contenteditable='true'],[role='textbox']";
+      return Array.from(document.querySelectorAll(selector))
+        .filter(isEditable)
+        .map(element => {{
+          const rect = element.getBoundingClientRect();
+          const meta = String([
+            element.getAttribute("aria-label"),
+            element.getAttribute("placeholder"),
+            element.getAttribute("data-testid"),
+            element.getAttribute("class"),
+            element.id
+          ].filter(Boolean).join(" ")).toLowerCase();
+          let score = Math.min(rect.width, 900) + Math.min(rect.height, 220);
+          if (/chat|message|prompt|composer|cascade|ask|input|textarea/.test(meta)) score += 800;
+          if (element === document.activeElement || element.contains(document.activeElement)) score += 500;
+          if (rect.width < 160) score -= 600;
+          if (/search|filter|find/.test(meta)) score -= 1000;
+          return {{ element, score }};
+        }})
+        .sort((a, b) => b.score - a.score)
+        .map(item => item.element);
     }};
-    const isEditable = (element) => {{
-      if (!isVisible(element)) return false;
-      if (element.matches?.("textarea,input")) return !element.disabled && !element.readOnly && element.type !== "hidden";
-      return element.isContentEditable || element.getAttribute?.("role") === "textbox";
-    }};
-    const candidateEditors = () => Array.from(document.querySelectorAll("textarea,input[type='text'],input:not([type]),[contenteditable='true'],[role='textbox']"))
-      .filter(isEditable)
-      .map(element => {{
-        const rect = element.getBoundingClientRect();
-        const meta = String([
-          element.getAttribute("aria-label"),
-          element.getAttribute("placeholder"),
-          element.getAttribute("data-testid"),
-          element.getAttribute("class"),
-          element.id
-        ].filter(Boolean).join(" ")).toLowerCase();
-        let score = Math.min(rect.width, 900) + Math.min(rect.height, 220);
-        if (/chat|message|prompt|composer|cascade|ask|input|textarea/.test(meta)) score += 800;
-        if (element === document.activeElement || element.contains(document.activeElement)) score += 500;
-        if (rect.width < 160) score -= 600;
-        if (/search|filter|find/.test(meta)) score -= 1000;
-        return {{ element, score }};
-      }})
-      .sort((a, b) => b.score - a.score)
-      .map(item => item.element);
     const setNativeValue = (element, value) => {{
       const proto = element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
       const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
@@ -729,26 +723,61 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
         return "";
       }}
     }};
+    const clearEditor = (editor) => {{
+      editor.focus?.();
+      if (editor.matches?.("textarea,input")) {{
+        setNativeValue(editor, "");
+        editor.dispatchEvent(new InputEvent("input", {{ bubbles: true, inputType: "deleteContentBackward", data: null }}));
+        editor.dispatchEvent(new Event("change", {{ bubbles: true }}));
+        return;
+      }}
+      try {{
+        const selection = getSelection();
+        const range = document.createRange();
+        range.selectNodeContents(editor);
+        selection.removeAllRanges();
+        selection.addRange(range);
+        document.execCommand?.("delete", false);
+      }} catch {{}}
+      if (readEditorText(editor).trim()) {{
+        editor.textContent = "";
+      }}
+      editor.dispatchEvent(new InputEvent("input", {{ bubbles: true, inputType: "deleteContentBackward", data: null }}));
+    }};
     const fillEditor = (editor, text) => {{
       editor.scrollIntoView?.({{ block: "center", inline: "nearest" }});
       editor.focus?.();
+      clearEditor(editor);
       if (editor.matches?.("textarea,input")) {{
         setNativeValue(editor, text);
         editor.dispatchEvent(new InputEvent("input", {{ bubbles: true, inputType: "insertText", data: text }}));
         editor.dispatchEvent(new Event("change", {{ bubbles: true }}));
         return;
       }}
-      editor.textContent = text;
+      const selection = getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(editor);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      const inserted = document.execCommand?.("insertText", false, text);
+      if (!inserted || !visibleText(editor).includes(text)) {{
+        editor.textContent = text;
+      }}
+      if (readEditorText(editor).trim() !== text) {{
+        editor.textContent = text;
+      }}
       editor.dispatchEvent(new InputEvent("input", {{ bubbles: true, inputType: "insertText", data: text }}));
     }};
-    const clickControl = (element) => {{
-      const rect = element.getBoundingClientRect();
-      const options = {{ bubbles: true, cancelable: true, view: window, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 }};
-      try {{ element.dispatchEvent(new MouseEvent("mousedown", {{ ...options, button: 0, buttons: 1 }})); }} catch {{}}
-      try {{ element.dispatchEvent(new MouseEvent("mouseup", {{ ...options, button: 0, buttons: 0 }})); }} catch {{}}
-      try {{ element.dispatchEvent(new MouseEvent("click", {{ ...options, button: 0, buttons: 0 }})); }} catch {{}}
-      try {{ element.click?.(); }} catch {{}}
-    }};
+    const buttonLabel = (button) => String([
+      button.getAttribute?.("aria-label"),
+      button.getAttribute?.("title"),
+      button.getAttribute?.("data-testid"),
+      button.getAttribute?.("class"),
+      button.querySelector?.("[aria-label]")?.getAttribute("aria-label"),
+      button.querySelector?.("[class*='codicon']")?.getAttribute("class"),
+      button.textContent
+    ].filter(Boolean).join(" ")).toLowerCase();
+    const clickableAncestor = (element) => element?.closest?.("button,[role='button'],a,[tabindex]") || element;
     const findSubmitCandidates = (editor) => {{
       const containers = [];
       let node = editor;
@@ -759,33 +788,100 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
       }}
       buttons.push(...Array.from(document.querySelectorAll("button,[role='button'],a,[tabindex],[class*='send'],[class*='arrow-up'],[class*='codicon-send'],[class*='codicon-arrow']")));
       const editorRect = editor.getBoundingClientRect();
-      return Array.from(new Set(buttons)).filter(button => {{
-        if (!button || button === editor || !isVisible(button) || button.disabled || button.getAttribute?.("aria-disabled") === "true") return false;
-        const label = String([button.getAttribute?.("aria-label"), button.getAttribute?.("title"), button.getAttribute?.("class"), button.textContent].filter(Boolean).join(" ")).toLowerCase();
+      const container = containers.find(item => {{
+        const rect = item.getBoundingClientRect?.();
+        return rect && rect.width >= editorRect.width && rect.right >= editorRect.right;
+      }}) || editor.parentElement || editor;
+      const containerRect = container.getBoundingClientRect();
+      const pointCandidates = [];
+      for (const point of [
+        [containerRect.right - 18, editorRect.top + editorRect.height / 2],
+        [containerRect.right - 18, containerRect.bottom - 18],
+        [editorRect.right + 24, editorRect.top + editorRect.height / 2]
+      ]) {{
+        const hit = document.elementFromPoint(point[0], point[1]);
+        const clickable = clickableAncestor(hit);
+        if (clickable) pointCandidates.push(clickable);
+      }}
+      buttons.push(...pointCandidates);
+      const unique = Array.from(new Set(buttons.map(clickableAncestor))).filter(button =>
+        button &&
+        button !== editor &&
+        !editor.contains(button) &&
+        !button.contains?.(editor) &&
+        !button.matches?.("textarea,input,[contenteditable='true'],[role='textbox']") &&
+        isVisible(button) &&
+        !button.disabled &&
+        button.getAttribute?.("aria-disabled") !== "true"
+      );
+      const scored = unique.map(button => {{
         const rect = button.getBoundingClientRect();
-        const closeToEditor = Math.abs((rect.top + rect.height / 2) - (editorRect.top + editorRect.height / 2)) < 90;
-        return closeToEditor && !/mic|voice|audio|plus|attach|settings|more|menu|copy|thumb/.test(label);
-      }});
+        const label = buttonLabel(button);
+        let score = 0;
+        if (/send|submit|发送|提交/.test(label)) score += 1800;
+        if (/arrow.?up|paper|plane|codicon-arrow|codicon-send/.test(label)) score += 1200;
+        if (/mic|microphone|voice|audio|record|plus|add|attach|context|code|model|gpt|thinking|settings|more|menu|copy|thumb/.test(label)) score -= 1800;
+        const centerY = rect.top + rect.height / 2;
+        const editorCenterY = editorRect.top + editorRect.height / 2;
+        const verticalDistance = Math.abs(centerY - editorCenterY);
+        score -= verticalDistance * 4;
+        if (verticalDistance < 36) score += 650;
+        if (rect.left >= editorRect.left - 20 && rect.top >= editorRect.top - 50 && rect.bottom <= editorRect.bottom + 90) score += 350;
+        if (rect.left >= editorRect.left + editorRect.width * 0.6) score += 550;
+        if (containerRect.right - rect.right < 90) score += 900;
+        score += Math.max(0, rect.left - containerRect.left) / 4;
+        if (rect.width >= 18 && rect.width <= 64 && rect.height >= 18 && rect.height <= 64) score += 250;
+        return {{ button, score }};
+      }}).sort((a, b) => b.score - a.score);
+      return scored.filter(item => item.score > -300).map(item => item.button);
     }};
+    const clickControl = (element) => {{
+      element.scrollIntoView?.({{ block: "center", inline: "nearest" }});
+      const rect = element.getBoundingClientRect();
+      const options = {{ bubbles: true, cancelable: true, view: window, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 }};
+      try {{ element.dispatchEvent(new PointerEvent("pointerover", options)); }} catch {{}}
+      try {{ element.dispatchEvent(new PointerEvent("pointerenter", options)); }} catch {{}}
+      try {{ element.dispatchEvent(new MouseEvent("mouseover", options)); }} catch {{}}
+      try {{ element.dispatchEvent(new PointerEvent("pointerdown", {{ ...options, button: 0, buttons: 1 }})); }} catch {{}}
+      try {{ element.dispatchEvent(new MouseEvent("mousedown", {{ ...options, button: 0, buttons: 1 }})); }} catch {{}}
+      try {{ element.dispatchEvent(new PointerEvent("pointerup", {{ ...options, button: 0, buttons: 0 }})); }} catch {{}}
+      try {{ element.dispatchEvent(new MouseEvent("mouseup", {{ ...options, button: 0, buttons: 0 }})); }} catch {{}}
+      try {{ element.dispatchEvent(new MouseEvent("click", {{ ...options, button: 0, buttons: 0 }})); }} catch {{}}
+      try {{ element.click?.(); }} catch {{}}
+    }};
+    const pressEnter = (editor) => {{
+      for (const type of ["keydown", "keypress", "keyup"]) {{
+        editor.dispatchEvent(new KeyboardEvent(type, {{ key: "Enter", code: "Enter", which: 13, keyCode: 13, bubbles: true, cancelable: true }}));
+      }}
+    }};
+    const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
     const sendTextViaDom = async (text) => {{
       const editors = candidateEditors();
       if (!editors.length) throw new Error("未找到可见的 Cascade 输入框");
+      const errors = [];
       for (const editor of editors.slice(0, 4)) {{
-        fillEditor(editor, text);
-        await new Promise(resolve => setTimeout(resolve, 350));
-        const buttons = findSubmitCandidates(editor);
-        for (const button of buttons.slice(0, 6)) {{
-          clickControl(button);
-          await new Promise(resolve => setTimeout(resolve, 700));
-          if (!readEditorText(editor).includes(text)) return "dom_button";
+        try {{
+          fillEditor(editor, text);
+          await sleep(350);
+          const buttons = findSubmitCandidates(editor);
+          for (const button of buttons.slice(0, 6)) {{
+            clickControl(button);
+            await sleep(700);
+            if (!readEditorText(editor).includes(text)) {{
+              return "dom_button";
+            }}
+          }}
+          pressEnter(editor);
+          await sleep(700);
+          if (!readEditorText(editor).includes(text)) {{
+            return "dom_enter";
+          }}
+          throw new Error("已填入文本但提交后输入框未清空，可能未命中发送按钮");
+        }} catch (error) {{
+          errors.push(String(error && error.message ? error.message : error));
         }}
-        for (const type of ["keydown", "keypress", "keyup"]) {{
-          editor.dispatchEvent(new KeyboardEvent(type, {{ key: "Enter", code: "Enter", which: 13, keyCode: 13, bubbles: true, cancelable: true }}));
-        }}
-        await new Promise(resolve => setTimeout(resolve, 700));
-        if (!readEditorText(editor).includes(text)) return "dom_enter";
       }}
-      throw new Error("已填入文本但未提交成功");
+      throw new Error(errors.join(" | ") || "输入框填充失败");
     }};
     let actionRunning = false;
     const pollActions = async () => {{
@@ -797,6 +893,7 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
         for (const action of result.actions || []) {{
           try {{
             const method = await sendTextViaDom(action.text || config.continueText || "继续工作");
+            console.info("[WindsurfAccountManagerAutoContinueBridge] action sent via " + method);
             await reportResult(action.id, true, null, method);
           }} catch (error) {{
             await reportResult(action.id, false, error, null);
@@ -807,16 +904,48 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
         actionRunning = false;
       }}
     }};
-    refreshConfig();
-    setInterval(refreshConfig, 5000);
-    setInterval(reportVisibleText, 5000);
     setInterval(pollActions, 1500);
-    const scheduleScan = () => setTimeout(reportVisibleText, 800);
-    if (document.body) {{
-      new MutationObserver(scheduleScan).observe(document.body, {{ childList: true, subtree: true, characterData: true }});
+    setTimeout(pollActions, 1200);
+    let lastMessage = "";
+    let lastReportedAt = 0;
+    let scanTimer = 0;
+    const scanVisibleText = () => {{
+      scanTimer = 0;
+      try {{
+        const text = findVisibleMarkerMessage();
+        if (!text) return;
+        const now = Date.now();
+        const marker = (config.markers || []).find(item => text.toLowerCase().includes(String(item).toLowerCase()));
+        const index = marker ? text.toLowerCase().indexOf(String(marker).toLowerCase()) : 0;
+        const start = Math.max(0, index - 240);
+        const message = text.slice(start, Math.min(text.length, index + 1200));
+        if (message === lastMessage) return;
+        lastMessage = message;
+        lastReportedAt = now;
+        report("dom_text", message, "workbench-dom", String(location.href));
+      }} catch {{}}
+    }};
+    const scheduleScan = () => {{
+      if (scanTimer) return;
+      scanTimer = setTimeout(scanVisibleText, 800);
+    }};
+    const startObserver = () => {{
+      try {{
+        if (!document.body || globalThis.__wamAutoContinueDomObserver) return;
+        const observer = new MutationObserver(scheduleScan);
+        observer.observe(document.body, {{ childList: true, subtree: true, characterData: true }});
+        Object.defineProperty(globalThis, "__wamAutoContinueDomObserver", {{ value: observer, configurable: false }});
+        scheduleScan();
+      }} catch {{}}
+    }};
+    if (document.readyState === "loading") {{
+      document.addEventListener("DOMContentLoaded", startObserver, {{ once: true }});
+    }} else {{
+      startObserver();
     }}
-    globalThis.addEventListener?.("error", event => post({{ eventType: "window_error", source: "window_error", url: String(location.href), location: String(location.href), message: textOf(event?.message || event?.error) }}));
-    globalThis.addEventListener?.("unhandledrejection", event => post({{ eventType: "unhandledrejection", source: "unhandledrejection", url: String(location.href), location: String(location.href), message: textOf(event?.reason) }}));
+    setInterval(scheduleScan, 5000);
+    globalThis.addEventListener?.("error", event => report("window_error", event?.message || event?.error, "window_error", String(location.href)));
+    globalThis.addEventListener?.("unhandledrejection", event => report("unhandledrejection", event?.reason, "unhandledrejection", String(location.href)));
     console.info("[WindsurfAccountManagerAutoContinueBridge] installed");
   }} catch (error) {{
     console.error("[WindsurfAccountManagerAutoContinueBridge] failed", error);
