@@ -669,7 +669,6 @@ pub(crate) async fn trigger_windsurf_callback(
             let mut cmd = std::process::Command::new(&exe_path);
             if let Some(dir) = user_data_dir {
                 cmd.arg("--user-data-dir").arg(dir);
-                cmd.arg("--reuse-window");
             }
             cmd.arg("--open-url").arg(&callback_url);
             info!(
