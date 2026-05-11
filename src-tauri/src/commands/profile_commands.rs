@@ -4,8 +4,6 @@ use crate::commands::switch_account_commands::{
     reset_storage_json_for_profile,
     trigger_windsurf_callback,
 };
-#[cfg(target_os = "macos")]
-use crate::commands::switch_account_commands::build_windsurf_callback_url;
 #[cfg(target_os = "windows")]
 use crate::commands::switch_account_commands::{prepare_profile_local_state, write_windsurf_auth_direct};
 use crate::commands::windsurf_info::{get_windsurf_info_from_dir, WindsurfCurrentInfo};
@@ -249,31 +247,57 @@ async fn wait_for_profile_account(user_data_dir: &Path, target_email: &str) -> O
 }
 
 #[cfg(target_os = "macos")]
-fn spawn_macos_profile_window_with_callback(
-    profile: &WindsurfProfile,
-    exe_path: &str,
-    callback_url: &str,
-    state: &str,
-) -> Result<(), String> {
-    let mut command = Command::new(exe_path);
-    if !profile.is_main() {
-        command.arg("--user-data-dir").arg(&profile.user_data_dir);
+async fn wait_for_macos_profile_process(profile: &WindsurfProfile, timeout_ms: u64) -> bool {
+    let started = std::time::Instant::now();
+    loop {
+        if is_profile_running_from_cmds(profile, &list_windsurf_process_command_lines()) {
+            return true;
+        }
+        if started.elapsed() >= std::time::Duration::from_millis(timeout_ms) {
+            return false;
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
     }
-    command.arg("--open-url").arg(callback_url);
-    info!(
-        "[Profile][macOS] Launching Windsurf with callback: profile_id={}, name={}, exe={}, user_data_dir={}, state={}, arch={}",
+}
+
+#[cfg(target_os = "macos")]
+async fn trigger_macos_profile_callback_with_retry(
+    app: &tauri::AppHandle,
+    profile: &WindsurfProfile,
+    callback_token: &str,
+    target_email: &str,
+) -> Result<(), String> {
+    const MAX_ATTEMPTS: usize = 8;
+    for attempt in 1..=MAX_ATTEMPTS {
+        info!(
+            "[Profile][macOS] Dispatching profile callback: profile_id={}, target_email={}, attempt={}/{}, user_data_dir={}",
+            profile.id,
+            target_email,
+            attempt,
+            MAX_ATTEMPTS,
+            profile.user_data_dir.display()
+        );
+        trigger_windsurf_callback(app, callback_token, Some(&profile.user_data_dir))
+            .await
+            .map_err(|e| format!("触发分身回调失败: {}", e))?;
+        if wait_for_profile_account(&profile.user_data_dir, target_email).await.is_some() {
+            info!(
+                "[Profile][macOS] Profile callback verified: profile_id={}, target_email={}, attempt={}",
+                profile.id,
+                target_email,
+                attempt
+            );
+            return Ok(());
+        }
+        if attempt < MAX_ATTEMPTS {
+            tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
+        }
+    }
+    warn!(
+        "[Profile][macOS] Profile callback not reflected after retries: profile_id={}, target_email={}, user_data_dir={}",
         profile.id,
-        profile.name,
-        exe_path,
-        profile.user_data_dir.display(),
-        state,
-        std::env::consts::ARCH
-    );
-    let child = command.spawn().map_err(|e| format!("启动分身并投递回调失败: {}", e))?;
-    info!(
-        "[Profile][macOS] Windsurf callback launch requested: profile_id={}, pid={}",
-        profile.id,
-        child.id()
+        target_email,
+        profile.user_data_dir.display()
     );
     Ok(())
 }
@@ -395,7 +419,6 @@ fn spawn_profile_window(profile: &WindsurfProfile, exe_path: &str) -> Result<(),
     let mut command = Command::new(exe_path);
     if !profile.is_main() {
         command.arg("--user-data-dir").arg(&profile.user_data_dir);
-        command.arg("--new-window");
     }
     info!(
         "[Profile][macOS] Launching Windsurf: profile_id={}, name={}, exe={}, user_data_dir={}, arch={}",
@@ -407,6 +430,30 @@ fn spawn_profile_window(profile: &WindsurfProfile, exe_path: &str) -> Result<(),
     );
     let child = command.spawn().map_err(|e| format!("启动分身失败: {}", e))?;
     info!("[Profile][macOS] Windsurf spawn requested: profile_id={}, pid={}", profile.id, child.id());
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn spawn_profile_window_new_window(profile: &WindsurfProfile, exe_path: &str) -> Result<(), String> {
+    let mut command = Command::new(exe_path);
+    if !profile.is_main() {
+        command.arg("--user-data-dir").arg(&profile.user_data_dir);
+        command.arg("--new-window");
+    }
+    info!(
+        "[Profile][macOS] Launching Windsurf with new-window fallback: profile_id={}, name={}, exe={}, user_data_dir={}, arch={}",
+        profile.id,
+        profile.name,
+        exe_path,
+        profile.user_data_dir.display(),
+        std::env::consts::ARCH
+    );
+    let child = command.spawn().map_err(|e| format!("启动分身失败: {}", e))?;
+    info!(
+        "[Profile][macOS] Windsurf new-window fallback requested: profile_id={}, pid={}",
+        profile.id,
+        child.id()
+    );
     Ok(())
 }
 
@@ -729,16 +776,51 @@ async fn switch_profile_to_account(
                 tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
             } else {
                 info!(
-                    "[Profile][macOS] Profile not running, launching with callback: profile_id={}, target_email={}",
+                    "[Profile][macOS] Profile not running, launching before callback: profile_id={}, target_email={}",
                     profile.id,
                     account.email
                 );
             }
 
-            let (callback_url, state) = build_windsurf_callback_url(&auth.callback_token)
-                .map_err(|e| format!("构建分身登录回调失败: {}", e))?;
-            if let Err(e) = spawn_macos_profile_window_with_callback(profile, &exe_path, &callback_url, &state) {
-                error!("[Profile][macOS] Profile callback launch failed: {}", e);
+            if let Err(e) = spawn_profile_window(profile, &exe_path) {
+                error!("[Profile][macOS] Profile launch before callback failed: {}", e);
+                return Ok(json!({
+                    "success": false,
+                    "error": e
+                }));
+            }
+            if wait_for_macos_profile_process(profile, 5000).await {
+                tokio::time::sleep(tokio::time::Duration::from_millis(1800)).await;
+            } else {
+                warn!(
+                    "[Profile][macOS] Profile process not detected after normal launch, trying new-window fallback: profile_id={}, user_data_dir={}",
+                    profile.id,
+                    profile.user_data_dir.display()
+                );
+                if let Err(e) = spawn_profile_window_new_window(profile, &exe_path) {
+                    error!("[Profile][macOS] Profile new-window fallback failed: {}", e);
+                    return Ok(json!({
+                        "success": false,
+                        "error": e
+                    }));
+                }
+                if wait_for_macos_profile_process(profile, 8000).await {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
+                } else {
+                    warn!(
+                        "[Profile][macOS] Profile process still not detected before callback retries: profile_id={}, user_data_dir={}",
+                        profile.id,
+                        profile.user_data_dir.display()
+                    );
+                }
+            }
+            if let Err(e) = trigger_macos_profile_callback_with_retry(
+                app,
+                profile,
+                &auth.callback_token,
+                &account.email,
+            ).await {
+                error!("[Profile][macOS] Profile callback failed: {}", e);
                 return Ok(json!({
                     "success": false,
                     "error": e
