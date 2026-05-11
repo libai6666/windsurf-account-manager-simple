@@ -1,214 +1,79 @@
-[2026-05-11 22:32:42.269] [INFO] [windsurf_account_manager_lib::commands::auto_continue_commands] Auto continue bridge listening on http://127.0.0.1:38478
-[2026-05-11 22:32:47.940] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("Mason King"), email=Some("windsurf2.026.0212+ov5nr@gmail.com"), plan=Some("Pro"), version=Some("2.2.17")
-[2026-05-11 22:32:48.132] [INFO] [windsurf_account_manager_lib::services::auth_service] [refresh_session_with_auth1] Refreshing session via WindsurfPostAuth...
-[2026-05-11 22:32:48.135] [INFO] [windsurf_account_manager_lib::services::auth_service] [refresh_session_with_auth1] Refreshing session via WindsurfPostAuth...
-[2026-05-11 22:32:48.135] [INFO] [windsurf_account_manager_lib::services::auth_service] [refresh_session_with_auth1] Refreshing session via WindsurfPostAuth...
-[2026-05-11 22:32:48.135] [INFO] [windsurf_account_manager_lib::services::auth_service] [refresh_session_with_auth1] Refreshing session via WindsurfPostAuth...
-[2026-05-11 22:32:48.135] [INFO] [windsurf_account_manager_lib::services::auth_service] [refresh_session_with_auth1] Refreshing session via WindsurfPostAuth...
-[2026-05-11 22:32:48.135] [INFO] [windsurf_account_manager_lib::services::auth_service] [refresh_session_with_auth1] Refreshing session via WindsurfPostAuth...
-[2026-05-11 22:32:48.135] [INFO] [windsurf_account_manager_lib::services::auth_service] [refresh_session_with_auth1] Refreshing session via WindsurfPostAuth...
-[2026-05-11 22:32:48.135] [INFO] [windsurf_account_manager_lib::services::auth_service] [refresh_session_with_auth1] Refreshing session via WindsurfPostAuth...
-[2026-05-11 22:32:48.135] [INFO] [windsurf_account_manager_lib::services::auth_service] [refresh_session_with_auth1] Refreshing session via WindsurfPostAuth...
-[2026-05-11 22:32:48.136] [INFO] [windsurf_account_manager_lib::services::auth_service] [refresh_session_with_auth1] Refreshing session via WindsurfPostAuth...
-[2026-05-11 22:32:48.136] [INFO] [windsurf_account_manager_lib::services::auth_service] [refresh_session_with_auth1] Refreshing session via WindsurfPostAuth...
-[2026-05-11 22:32:50.154] [INFO] [windsurf_account_manager_lib::commands::patch_commands] [Patch][Status] windsurf_path=/Applications/Windsurf.app, extension_file=/Applications/Windsurf.app/Contents/Resources/app/extensions/windsurf/dist/extension.js, workbench_file=/Applications/Windsurf.app/Contents/Resources/app/out/vs/workbench/workbench.desktop.main.js, installed=true, current_oauth_handler=false, oauth_handler=true, timeout_removed=false, auto_continue_bridge=true, auto_continue_sender=true, auto_continue_detector=true, workbench_checksum_current=Some(true)
-[2026-05-11 22:32:50.422] [INFO] [windsurf_account_manager_lib::services::windsurf_service] [GetPlanStatus] Status code: 200, token_prefix=devin-session-token$eyJhb..., response_size=1799 bytes
-[2026-05-11 22:32:50.456] [INFO] [windsurf_account_manager_lib::services::windsurf_service] [GetPlanStatus] Status code: 200, token_prefix=devin-session-token$eyJhb..., response_size=1787 bytes
-[2026-05-11 22:32:50.501] [INFO] [windsurf_account_manager_lib::services::windsurf_service] [GetPlanStatus] Status code: 200, token_prefix=devin-session-token$eyJhb..., response_size=1787 bytes
-[2026-05-11 22:32:50.616] [INFO] [windsurf_account_manager_lib::services::windsurf_service] [GetPlanStatus] Status code: 200, token_prefix=devin-session-token$eyJhb..., response_size=1785 bytes
-[2026-05-11 22:32:50.649] [INFO] [windsurf_account_manager_lib::services::windsurf_service] [GetPlanStatus] Status code: 200, token_prefix=devin-session-token$eyJhb..., response_size=1787 bytes
-[2026-05-11 22:32:50.662] [INFO] [windsurf_account_manager_lib::services::windsurf_service] [GetPlanStatus] Status code: 200, token_prefix=devin-session-token$eyJhb..., response_size=1787 bytes
-[2026-05-11 22:32:50.683] [INFO] [windsurf_account_manager_lib::services::windsurf_service] [GetPlanStatus] Status code: 200, token_prefix=devin-session-token$eyJhb..., response_size=1785 bytes
-[2026-05-11 22:32:50.738] [INFO] [windsurf_account_manager_lib::services::windsurf_service] [GetPlanStatus] Status code: 200, token_prefix=devin-session-token$eyJhb..., response_size=1799 bytes
-[2026-05-11 22:32:51.004] [INFO] [windsurf_account_manager_lib::services::windsurf_service] [GetPlanStatus] Status code: 200, token_prefix=devin-session-token$eyJhb..., response_size=1797 bytes
-[2026-05-11 22:32:51.023] [INFO] [windsurf_account_manager_lib::services::windsurf_service] [GetPlanStatus] Status code: 200, token_prefix=devin-session-token$eyJhb..., response_size=1787 bytes
-[2026-05-11 22:32:51.413] [INFO] [windsurf_account_manager_lib::services::windsurf_service] [GetPlanStatus] Status code: 200, token_prefix=devin-session-token$eyJhb..., response_size=1787 bytes
-[2026-05-11 22:32:57.163] [INFO] [windsurf_account_manager_lib::commands::patch_commands] [Patch][Seamless] apply requested: windsurf_path=/Applications/Windsurf.app, extension_file=/Applications/Windsurf.app/Contents/Resources/app/extensions/windsurf/dist/extension.js, force=true, patched_any=true, current=false
-[2026-05-11 22:32:57.230] [INFO] [windsurf_account_manager_lib::commands::patch_commands] [Patch][Seamless] restored clean backup before reapply: backup_file=/Applications/Windsurf.app/Contents/Resources/app/extensions/windsurf/dist/extension.js.backup.20260511_215139, extension_file=/Applications/Windsurf.app/Contents/Resources/app/extensions/windsurf/dist/extension.js
-[2026-05-11 22:32:57.257] [INFO] [windsurf_account_manager_lib::commands::patch_commands] [Patch][Seamless] matched OAuth handler: variant=new, extension_file=/Applications/Windsurf.app/Contents/Resources/app/extensions/windsurf/dist/extension.js
-[2026-05-11 22:32:57.266] [INFO] [windsurf_account_manager_lib::commands::patch_commands] [Patch][Seamless] applied: extension_file=/Applications/Windsurf.app/Contents/Resources/app/extensions/windsurf/dist/extension.js, backup_file=/Applications/Windsurf.app/Contents/Resources/app/extensions/windsurf/dist/extension.js.backup.20260511_223257, force=true, restored_from_backup=Some("/Applications/Windsurf.app/Contents/Resources/app/extensions/windsurf/dist/extension.js.backup.20260511_215139"), modifications=["OAuth回调处理器(新版格式)"], marker=WindsurfAccountManagerSeamlessOAuthPatchV2
-[2026-05-11 22:32:59.995] [INFO] [windsurf_account_manager_lib::commands::patch_commands] [Patch][Status] windsurf_path=/Applications/Windsurf.app, extension_file=/Applications/Windsurf.app/Contents/Resources/app/extensions/windsurf/dist/extension.js, workbench_file=/Applications/Windsurf.app/Contents/Resources/app/out/vs/workbench/workbench.desktop.main.js, installed=true, current_oauth_handler=true, oauth_handler=true, timeout_removed=false, auto_continue_bridge=false, auto_continue_sender=false, auto_continue_detector=true, workbench_checksum_current=Some(true)
-[2026-05-11 22:33:04.523] [INFO] [windsurf_account_manager_lib::commands::patch_commands] [Patch][Bridge] apply requested: windsurf_path=/Applications/Windsurf.app
-[2026-05-11 22:33:05.052] [INFO] [windsurf_account_manager_lib::commands::patch_commands] [Patch][Bridge] apply completed: windsurf_path=/Applications/Windsurf.app, already_patched=false, workbench_changed=false, extension_changed=true, workbench_backup_file=None, extension_backup_file=Some("/Applications/Windsurf.app/Contents/Resources/app/extensions/windsurf/dist/extension.js.backup.auto_continue_extension.20260511_223305")
-[2026-05-11 22:33:06.161] [INFO] [windsurf_account_manager_lib::services::windsurf_service] [GetPlanStatus] Status code: 200, token_prefix=devin-session-token$eyJhb..., response_size=1787 bytes
-[2026-05-11 22:33:06.221] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:33:07.598] [INFO] [windsurf_account_manager_lib::commands::patch_commands] [Patch][Status] windsurf_path=/Applications/Windsurf.app, extension_file=/Applications/Windsurf.app/Contents/Resources/app/extensions/windsurf/dist/extension.js, workbench_file=/Applications/Windsurf.app/Contents/Resources/app/out/vs/workbench/workbench.desktop.main.js, installed=true, current_oauth_handler=true, oauth_handler=true, timeout_removed=false, auto_continue_bridge=true, auto_continue_sender=true, auto_continue_detector=true, workbench_checksum_current=Some(true)
-[2026-05-11 22:33:15.910] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:33:18.834] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:33:30.551] [INFO] [windsurf_account_manager_lib::commands::profile_commands] [Profile] Creating profile: id=bdb1e2d2-8e69-4cb2-9db5-b5895de4b1b0, name=测试1, user_data_dir=/Users/duoo/Library/Application Support/WindsurfProfiles/bdb1e2d2-8e69-4cb2-9db5-b5895de4b1b0, os=macos, arch=x86_64
-[2026-05-11 22:33:30.551] [INFO] [windsurf_account_manager_lib::commands::profile_commands] [Profile] 已从主实例复制配置到新分身: copied=["settings.json", "snippets/"], main_user=/Users/duoo/Library/Application Support/Windsurf/User, target_user=/Users/duoo/Library/Application Support/WindsurfProfiles/bdb1e2d2-8e69-4cb2-9db5-b5895de4b1b0/User
-[2026-05-11 22:33:32.103] [INFO] [windsurf_account_manager_lib::commands::patch_commands] [Patch][Status] windsurf_path=/Applications/Windsurf.app, extension_file=/Applications/Windsurf.app/Contents/Resources/app/extensions/windsurf/dist/extension.js, workbench_file=/Applications/Windsurf.app/Contents/Resources/app/out/vs/workbench/workbench.desktop.main.js, installed=true, current_oauth_handler=true, oauth_handler=true, timeout_removed=false, auto_continue_bridge=true, auto_continue_sender=true, auto_continue_detector=true, workbench_checksum_current=Some(true)
-[2026-05-11 22:33:39.515] [INFO] [windsurf_account_manager_lib::commands::profile_commands] Switching profile '测试1' to account w.indsurf2026021.2+4dflh@gmail.com
-[2026-05-11 22:33:39.515] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] Using devin-auth flow (auth1_ token detected)...
-[2026-05-11 22:33:39.515] [INFO] [windsurf_account_manager_lib::services::auth_service] [refresh_ott] Refreshing OTT with auth1_token...
-[2026-05-11 22:33:40.978] [INFO] [windsurf_account_manager_lib::services::auth_service] [GetOneTimeAuthToken refresh] Trying GetOneTimeAuthToken variant=web_backend_session_x_auth body_prefix=devin-session-token$...
-[2026-05-11 22:33:41.592] [INFO] [windsurf_account_manager_lib::services::auth_service] [GetOneTimeAuthToken refresh] variant=web_backend_session_x_auth succeeded
-[2026-05-11 22:33:41.593] [INFO] [windsurf_account_manager_lib::services::auth_service] [refresh_ott] OK: OTT=ott$8zwGOcf2k6H70XU8...
-[2026-05-11 22:33:43.026] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] RegisterUser SUCCESS (via devin-auth): apiKey=devin-session-token$..., name=Karen Hernandez, server=https://server.self-serve.windsurf.com
-[2026-05-11 22:33:43.026] [INFO] [windsurf_account_manager_lib::services::auth_service] [GetOneTimeAuthToken] Trying GetOneTimeAuthToken variant=web_backend_session_x_auth body_prefix=devin-session-token$...
-[2026-05-11 22:33:43.434] [INFO] [windsurf_account_manager_lib::services::auth_service] [GetOneTimeAuthToken] variant=web_backend_session_x_auth succeeded
-[2026-05-11 22:33:43.434] [INFO] [windsurf_account_manager_lib::services::auth_service] [get_fresh_ott] New OTT=ott$ljtkeGUcQFVmpOCC...
-[2026-05-11 22:33:43.435] [WARN] [windsurf_account_manager_lib::commands::switch_account_commands] storage.json not found for profile '测试1' at "/Users/duoo/Library/Application Support/WindsurfProfiles/bdb1e2d2-8e69-4cb2-9db5-b5895de4b1b0/User/globalStorage/storage.json"; skip (profile may not have been launched yet)
-[2026-05-11 22:33:43.492] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] [Profile][macOS] Found Windsurf executable: /Applications/Windsurf.app/Contents/MacOS/Windsurf
-[2026-05-11 22:33:43.492] [INFO] [windsurf_account_manager_lib::commands::profile_commands] [Profile][macOS] Preparing profile callback login: profile_id=bdb1e2d2-8e69-4cb2-9db5-b5895de4b1b0, was_running=false, already_authenticated=false, user_data_dir=/Users/duoo/Library/Application Support/WindsurfProfiles/bdb1e2d2-8e69-4cb2-9db5-b5895de4b1b0, arch=x86_64
-[2026-05-11 22:33:43.492] [INFO] [windsurf_account_manager_lib::commands::profile_commands] [Profile][macOS] Profile not running, launching window before callback: profile_id=bdb1e2d2-8e69-4cb2-9db5-b5895de4b1b0, target_email=w.indsurf2026021.2+4dflh@gmail.com
-[2026-05-11 22:33:43.492] [INFO] [windsurf_account_manager_lib::commands::profile_commands] [Profile][macOS] Launching Windsurf: profile_id=bdb1e2d2-8e69-4cb2-9db5-b5895de4b1b0, name=测试1, exe=/Applications/Windsurf.app/Contents/MacOS/Windsurf, user_data_dir=/Users/duoo/Library/Application Support/WindsurfProfiles/bdb1e2d2-8e69-4cb2-9db5-b5895de4b1b0, arch=x86_64
-[2026-05-11 22:33:43.492] [INFO] [windsurf_account_manager_lib::commands::profile_commands] [Profile][macOS] Windsurf spawn requested: profile_id=bdb1e2d2-8e69-4cb2-9db5-b5895de4b1b0, pid=30182
-[2026-05-11 22:33:43.492] [INFO] [windsurf_account_manager_lib::commands::profile_commands] [Profile][macOS] Waiting 1500ms for profile window before callback: profile_id=bdb1e2d2-8e69-4cb2-9db5-b5895de4b1b0, user_data_dir=/Users/duoo/Library/Application Support/WindsurfProfiles/bdb1e2d2-8e69-4cb2-9db5-b5895de4b1b0
-[2026-05-11 22:33:43.493] [INFO] [windsurf_account_manager_lib::services::windsurf_service] [GetPlanStatus] Status code: 200, token_prefix=devin-session-token$eyJhb..., response_size=1787 bytes
-[2026-05-11 22:33:44.994] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] Triggering Windsurf callback (target=/Users/duoo/Library/Application Support/WindsurfProfiles/bdb1e2d2-8e69-4cb2-9db5-b5895de4b1b0): windsurf://codeium.windsurf#access_token=<hidden>&state=398345e2-47bf-4bb9-816a-72ec27625abc&token_type=Bearer
-[2026-05-11 22:33:44.994] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] [Profile][macOS] Found Windsurf executable: /Applications/Windsurf.app/Contents/MacOS/Windsurf
-[2026-05-11 22:33:44.994] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] [Profile][macOS] Dispatching callback via Windsurf app binary: target=/Users/duoo/Library/Application Support/WindsurfProfiles/bdb1e2d2-8e69-4cb2-9db5-b5895de4b1b0, exe=/Applications/Windsurf.app/Contents/MacOS/Windsurf, arch=x86_64
-[2026-05-11 22:33:46.976] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] [Profile][macOS] Successfully triggered Windsurf callback via CLI
-[2026-05-11 22:33:46.976] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] Successfully triggered Windsurf callback
-[2026-05-11 22:33:46.977] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:33:47.480] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:33:47.982] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:33:48.484] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:33:48.986] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:33:49.489] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:33:50.011] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:33:50.513] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:33:51.015] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:33:51.519] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:33:52.020] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:33:52.302] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:33:52.525] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:33:53.027] [WARN] [windsurf_account_manager_lib::commands::profile_commands] [Profile] 切号后未在短时间内读到目标账号，等待编辑器异步生效: profile_id=bdb1e2d2-8e69-4cb2-9db5-b5895de4b1b0, target_email=w.indsurf2026021.2+4dflh@gmail.com, user_data_dir=/Users/duoo/Library/Application Support/WindsurfProfiles/bdb1e2d2-8e69-4cb2-9db5-b5895de4b1b0, os=macos, arch=x86_64
-[2026-05-11 22:33:53.203] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:33:54.094] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:33:59.057] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:34:02.378] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:34:03.542] [INFO] [windsurf_account_manager_lib::commands::patch_commands] [Patch][Status] windsurf_path=/Applications/Windsurf.app, extension_file=/Applications/Windsurf.app/Contents/Resources/app/extensions/windsurf/dist/extension.js, workbench_file=/Applications/Windsurf.app/Contents/Resources/app/out/vs/workbench/workbench.desktop.main.js, installed=true, current_oauth_handler=true, oauth_handler=true, timeout_removed=false, auto_continue_bridge=true, auto_continue_sender=true, auto_continue_detector=true, workbench_checksum_current=Some(true)
-[2026-05-11 22:34:04.133] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:34:09.290] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:34:12.722] [INFO] [windsurf_account_manager_lib::services::windsurf_service] [GetPlanStatus] Status code: 200, token_prefix=devin-session-token$eyJhb..., response_size=1787 bytes
-[2026-05-11 22:34:12.812] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:34:14.138] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:34:19.136] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:34:22.263] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:34:22.266] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:34:22.267] [INFO] [windsurf_account_manager_lib::commands::profile_commands] Switching profile '测试1' to account w.i.ndsurf20260212+0yjku@gmail.com
-[2026-05-11 22:34:22.267] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] Using devin-auth flow (auth1_ token detected)...
-[2026-05-11 22:34:22.267] [INFO] [windsurf_account_manager_lib::services::auth_service] [refresh_ott] Refreshing OTT with auth1_token...
-[2026-05-11 22:34:24.147] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:34:25.216] [INFO] [windsurf_account_manager_lib::services::auth_service] [GetOneTimeAuthToken refresh] Trying GetOneTimeAuthToken variant=web_backend_session_x_auth body_prefix=devin-session-token$...
-[2026-05-11 22:34:26.444] [INFO] [windsurf_account_manager_lib::services::auth_service] [GetOneTimeAuthToken refresh] variant=web_backend_session_x_auth succeeded
-[2026-05-11 22:34:26.444] [INFO] [windsurf_account_manager_lib::services::auth_service] [refresh_ott] OK: OTT=ott$tY81WbIE4FS7g4Wu...
-[2026-05-11 22:34:27.468] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] RegisterUser SUCCESS (via devin-auth): apiKey=devin-session-token$..., name=Mason White, server=https://server.self-serve.windsurf.com
-[2026-05-11 22:34:27.468] [INFO] [windsurf_account_manager_lib::services::auth_service] [GetOneTimeAuthToken] Trying GetOneTimeAuthToken variant=web_backend_session_x_auth body_prefix=devin-session-token$...
-[2026-05-11 22:34:27.741] [INFO] [windsurf_account_manager_lib::services::auth_service] [GetOneTimeAuthToken] variant=web_backend_session_x_auth succeeded
-[2026-05-11 22:34:27.741] [INFO] [windsurf_account_manager_lib::services::auth_service] [get_fresh_ott] New OTT=ott$LnISfRFhYqjD-1sL...
-[2026-05-11 22:34:27.748] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] Reset machine IDs for profile '测试1' (storage.json only, HKLM unchanged)
-[2026-05-11 22:34:27.748] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:34:27.824] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] [Profile][macOS] Found Windsurf executable: /Applications/Windsurf.app/Contents/MacOS/Windsurf
-[2026-05-11 22:34:27.824] [INFO] [windsurf_account_manager_lib::commands::profile_commands] [Profile][macOS] Preparing profile callback login: profile_id=bdb1e2d2-8e69-4cb2-9db5-b5895de4b1b0, was_running=true, already_authenticated=false, user_data_dir=/Users/duoo/Library/Application Support/WindsurfProfiles/bdb1e2d2-8e69-4cb2-9db5-b5895de4b1b0, arch=x86_64
-[2026-05-11 22:34:27.824] [INFO] [windsurf_account_manager_lib::commands::profile_commands] [Profile][macOS] Profile already running, dispatching callback directly: profile_id=bdb1e2d2-8e69-4cb2-9db5-b5895de4b1b0, target_email=w.i.ndsurf20260212+0yjku@gmail.com
-[2026-05-11 22:34:27.824] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] Triggering Windsurf callback (target=/Users/duoo/Library/Application Support/WindsurfProfiles/bdb1e2d2-8e69-4cb2-9db5-b5895de4b1b0): windsurf://codeium.windsurf#access_token=<hidden>&state=668049b9-2eae-4184-8cd8-fe4bc3435e29&token_type=Bearer
-[2026-05-11 22:34:27.824] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] [Profile][macOS] Found Windsurf executable: /Applications/Windsurf.app/Contents/MacOS/Windsurf
-[2026-05-11 22:34:27.824] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] [Profile][macOS] Dispatching callback via Windsurf app binary: target=/Users/duoo/Library/Application Support/WindsurfProfiles/bdb1e2d2-8e69-4cb2-9db5-b5895de4b1b0, exe=/Applications/Windsurf.app/Contents/MacOS/Windsurf, arch=x86_64
-[2026-05-11 22:34:29.334] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:34:29.968] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] [Profile][macOS] Successfully triggered Windsurf callback via CLI
-[2026-05-11 22:34:29.968] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] Successfully triggered Windsurf callback
-[2026-05-11 22:34:29.969] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:34:30.471] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:34:30.973] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:34:31.476] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:34:31.979] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:34:32.482] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:34:32.984] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:34:33.158] [INFO] [windsurf_account_manager_lib::commands::patch_commands] [Patch][Status] windsurf_path=/Applications/Windsurf.app, extension_file=/Applications/Windsurf.app/Contents/Resources/app/extensions/windsurf/dist/extension.js, workbench_file=/Applications/Windsurf.app/Contents/Resources/app/out/vs/workbench/workbench.desktop.main.js, installed=true, current_oauth_handler=true, oauth_handler=true, timeout_removed=false, auto_continue_bridge=true, auto_continue_sender=true, auto_continue_detector=true, workbench_checksum_current=Some(true)
-[2026-05-11 22:34:33.486] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:34:33.990] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:34:34.494] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:34:34.823] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:34:34.996] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:34:35.500] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:34:36.001] [WARN] [windsurf_account_manager_lib::commands::profile_commands] [Profile] 切号后未在短时间内读到目标账号，等待编辑器异步生效: profile_id=bdb1e2d2-8e69-4cb2-9db5-b5895de4b1b0, target_email=w.i.ndsurf20260212+0yjku@gmail.com, user_data_dir=/Users/duoo/Library/Application Support/WindsurfProfiles/bdb1e2d2-8e69-4cb2-9db5-b5895de4b1b0, os=macos, arch=x86_64
-[2026-05-11 22:34:39.812] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:34:43.239] [INFO] [windsurf_account_manager_lib::services::windsurf_service] [GetPlanStatus] Status code: 200, token_prefix=devin-session-token$eyJhb..., response_size=1787 bytes
-[2026-05-11 22:34:43.338] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:34:44.966] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:34:46.041] [INFO] [windsurf_account_manager_lib::commands::profile_commands] Switching profile '测试1' to account w.i.ndsurf20260212+0yjku@gmail.com
-[2026-05-11 22:34:46.041] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] Using devin-auth flow (auth1_ token detected)...
-[2026-05-11 22:34:46.041] [INFO] [windsurf_account_manager_lib::services::auth_service] [refresh_ott] Refreshing OTT with auth1_token...
-[2026-05-11 22:34:46.719] [INFO] [windsurf_account_manager_lib::services::auth_service] [GetOneTimeAuthToken refresh] Trying GetOneTimeAuthToken variant=web_backend_session_x_auth body_prefix=devin-session-token$...
-[2026-05-11 22:34:47.128] [INFO] [windsurf_account_manager_lib::services::auth_service] [GetOneTimeAuthToken refresh] variant=web_backend_session_x_auth succeeded
-[2026-05-11 22:34:47.128] [INFO] [windsurf_account_manager_lib::services::auth_service] [refresh_ott] OK: OTT=ott$WA_t688oC7gQBvLl...
-[2026-05-11 22:34:47.539] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] RegisterUser SUCCESS (via devin-auth): apiKey=devin-session-token$..., name=Mason White, server=https://server.self-serve.windsurf.com
-[2026-05-11 22:34:47.540] [INFO] [windsurf_account_manager_lib::services::auth_service] [GetOneTimeAuthToken] Trying GetOneTimeAuthToken variant=web_backend_session_x_auth body_prefix=devin-session-token$...
-[2026-05-11 22:34:48.051] [INFO] [windsurf_account_manager_lib::services::auth_service] [GetOneTimeAuthToken] variant=web_backend_session_x_auth succeeded
-[2026-05-11 22:34:48.051] [INFO] [windsurf_account_manager_lib::services::auth_service] [get_fresh_ott] New OTT=ott$mywqmUzcmcogiXvm...
-[2026-05-11 22:34:48.057] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] Reset machine IDs for profile '测试1' (storage.json only, HKLM unchanged)
-[2026-05-11 22:34:48.060] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:34:48.128] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] [Profile][macOS] Found Windsurf executable: /Applications/Windsurf.app/Contents/MacOS/Windsurf
-[2026-05-11 22:34:48.128] [INFO] [windsurf_account_manager_lib::commands::profile_commands] [Profile][macOS] Preparing profile callback login: profile_id=bdb1e2d2-8e69-4cb2-9db5-b5895de4b1b0, was_running=true, already_authenticated=false, user_data_dir=/Users/duoo/Library/Application Support/WindsurfProfiles/bdb1e2d2-8e69-4cb2-9db5-b5895de4b1b0, arch=x86_64
-[2026-05-11 22:34:48.129] [INFO] [windsurf_account_manager_lib::commands::profile_commands] [Profile][macOS] Profile already running, dispatching callback directly: profile_id=bdb1e2d2-8e69-4cb2-9db5-b5895de4b1b0, target_email=w.i.ndsurf20260212+0yjku@gmail.com
-[2026-05-11 22:34:48.129] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] Triggering Windsurf callback (target=/Users/duoo/Library/Application Support/WindsurfProfiles/bdb1e2d2-8e69-4cb2-9db5-b5895de4b1b0): windsurf://codeium.windsurf#access_token=<hidden>&state=19ac20fe-9581-403c-ad6c-9b3c50f012f5&token_type=Bearer
-[2026-05-11 22:34:48.129] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] [Profile][macOS] Found Windsurf executable: /Applications/Windsurf.app/Contents/MacOS/Windsurf
-[2026-05-11 22:34:48.129] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] [Profile][macOS] Dispatching callback via Windsurf app binary: target=/Users/duoo/Library/Application Support/WindsurfProfiles/bdb1e2d2-8e69-4cb2-9db5-b5895de4b1b0, exe=/Applications/Windsurf.app/Contents/MacOS/Windsurf, arch=x86_64
-[2026-05-11 22:34:50.101] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] [Profile][macOS] Successfully triggered Windsurf callback via CLI
-[2026-05-11 22:34:50.101] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] Successfully triggered Windsurf callback
-[2026-05-11 22:34:50.102] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:34:50.605] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:34:51.107] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:34:51.611] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:34:52.112] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:34:52.615] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:34:52.818] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:34:52.821] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:34:53.117] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:34:53.619] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:34:54.122] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:34:54.624] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:34:55.126] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:34:55.630] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:34:56.132] [WARN] [windsurf_account_manager_lib::commands::profile_commands] [Profile] 切号后未在短时间内读到目标账号，等待编辑器异步生效: profile_id=bdb1e2d2-8e69-4cb2-9db5-b5895de4b1b0, target_email=w.i.ndsurf20260212+0yjku@gmail.com, user_data_dir=/Users/duoo/Library/Application Support/WindsurfProfiles/bdb1e2d2-8e69-4cb2-9db5-b5895de4b1b0, os=macos, arch=x86_64
-[2026-05-11 22:34:56.330] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:34:59.930] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:35:02.882] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:35:03.254] [INFO] [windsurf_account_manager_lib::commands::patch_commands] [Patch][Status] windsurf_path=/Applications/Windsurf.app, extension_file=/Applications/Windsurf.app/Contents/Resources/app/extensions/windsurf/dist/extension.js, workbench_file=/Applications/Windsurf.app/Contents/Resources/app/out/vs/workbench/workbench.desktop.main.js, installed=true, current_oauth_handler=true, oauth_handler=true, timeout_removed=false, auto_continue_bridge=true, auto_continue_sender=true, auto_continue_detector=true, workbench_checksum_current=Some(true)
-[2026-05-11 22:35:04.822] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:35:09.829] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:35:13.551] [INFO] [windsurf_account_manager_lib::services::windsurf_service] [GetPlanStatus] Status code: 200, token_prefix=devin-session-token$eyJhb..., response_size=1787 bytes
-[2026-05-11 22:35:13.637] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:35:15.103] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:35:19.838] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:35:22.855] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:35:22.858] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:35:22.859] [INFO] [windsurf_account_manager_lib::commands::profile_commands] Switching profile '测试1' to account w.i.ndsurf20260212+0yjku@gmail.com
-[2026-05-11 22:35:22.859] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] Using devin-auth flow (auth1_ token detected)...
-[2026-05-11 22:35:22.859] [INFO] [windsurf_account_manager_lib::services::auth_service] [refresh_ott] Refreshing OTT with auth1_token...
-[2026-05-11 22:35:25.017] [INFO] [windsurf_account_manager_lib::services::auth_service] [GetOneTimeAuthToken refresh] Trying GetOneTimeAuthToken variant=web_backend_session_x_auth body_prefix=devin-session-token$...
-[2026-05-11 22:35:26.041] [INFO] [windsurf_account_manager_lib::services::auth_service] [GetOneTimeAuthToken refresh] variant=web_backend_session_x_auth succeeded
-[2026-05-11 22:35:26.041] [INFO] [windsurf_account_manager_lib::services::auth_service] [refresh_ott] OK: OTT=ott$mreRFIPwY28PoJf8...
-[2026-05-11 22:35:26.083] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:35:27.067] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] RegisterUser SUCCESS (via devin-auth): apiKey=devin-session-token$..., name=Mason White, server=https://server.self-serve.windsurf.com
-[2026-05-11 22:35:27.067] [INFO] [windsurf_account_manager_lib::services::auth_service] [GetOneTimeAuthToken] Trying GetOneTimeAuthToken variant=web_backend_session_x_auth body_prefix=devin-session-token$...
-[2026-05-11 22:35:27.475] [INFO] [windsurf_account_manager_lib::services::auth_service] [GetOneTimeAuthToken] variant=web_backend_session_x_auth succeeded
-[2026-05-11 22:35:27.475] [INFO] [windsurf_account_manager_lib::services::auth_service] [get_fresh_ott] New OTT=ott$y5OXYea1rbU6B3jR...
-[2026-05-11 22:35:27.477] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] Reset machine IDs for profile '测试1' (storage.json only, HKLM unchanged)
-[2026-05-11 22:35:27.479] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:35:27.556] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] [Profile][macOS] Found Windsurf executable: /Applications/Windsurf.app/Contents/MacOS/Windsurf
-[2026-05-11 22:35:27.556] [INFO] [windsurf_account_manager_lib::commands::profile_commands] [Profile][macOS] Preparing profile callback login: profile_id=bdb1e2d2-8e69-4cb2-9db5-b5895de4b1b0, was_running=true, already_authenticated=false, user_data_dir=/Users/duoo/Library/Application Support/WindsurfProfiles/bdb1e2d2-8e69-4cb2-9db5-b5895de4b1b0, arch=x86_64
-[2026-05-11 22:35:27.556] [INFO] [windsurf_account_manager_lib::commands::profile_commands] [Profile][macOS] Profile already running, dispatching callback directly: profile_id=bdb1e2d2-8e69-4cb2-9db5-b5895de4b1b0, target_email=w.i.ndsurf20260212+0yjku@gmail.com
-[2026-05-11 22:35:27.556] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] Triggering Windsurf callback (target=/Users/duoo/Library/Application Support/WindsurfProfiles/bdb1e2d2-8e69-4cb2-9db5-b5895de4b1b0): windsurf://codeium.windsurf#access_token=<hidden>&state=4de3afe7-6a03-43da-abd8-d61231371d96&token_type=Bearer
-[2026-05-11 22:35:27.556] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] [Profile][macOS] Found Windsurf executable: /Applications/Windsurf.app/Contents/MacOS/Windsurf
-[2026-05-11 22:35:27.556] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] [Profile][macOS] Dispatching callback via Windsurf app binary: target=/Users/duoo/Library/Application Support/WindsurfProfiles/bdb1e2d2-8e69-4cb2-9db5-b5895de4b1b0, exe=/Applications/Windsurf.app/Contents/MacOS/Windsurf, arch=x86_64
-[2026-05-11 22:35:29.581] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] [Profile][macOS] Successfully triggered Windsurf callback via CLI
-[2026-05-11 22:35:29.581] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] Successfully triggered Windsurf callback
-[2026-05-11 22:35:29.582] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:35:30.083] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:35:30.587] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:35:31.089] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:35:31.592] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:35:31.661] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:35:32.094] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:35:32.598] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:35:33.100] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:35:33.162] [INFO] [windsurf_account_manager_lib::commands::patch_commands] [Patch][Status] windsurf_path=/Applications/Windsurf.app, extension_file=/Applications/Windsurf.app/Contents/Resources/app/extensions/windsurf/dist/extension.js, workbench_file=/Applications/Windsurf.app/Contents/Resources/app/out/vs/workbench/workbench.desktop.main.js, installed=true, current_oauth_handler=true, oauth_handler=true, timeout_removed=false, auto_continue_bridge=true, auto_continue_sender=true, auto_continue_detector=true, workbench_checksum_current=Some(true)
-[2026-05-11 22:35:33.604] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:35:34.106] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:35:34.608] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:35:35.112] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
-[2026-05-11 22:35:35.613] [WARN] [windsurf_account_manager_lib::commands::profile_commands] [Profile] 切号后未在短时间内读到目标账号，等待编辑器异步生效: profile_id=bdb1e2d2-8e69-4cb2-9db5-b5895de4b1b0, target_email=w.i.ndsurf20260212+0yjku@gmail.com, user_data_dir=/Users/duoo/Library/Application Support/WindsurfProfiles/bdb1e2d2-8e69-4cb2-9db5-b5895de4b1b0, os=macos, arch=x86_64
+[2026-05-11 23:08:10.151] [INFO] [windsurf_account_manager_lib::commands::auto_continue_commands] Auto continue bridge listening on http://127.0.0.1:38478
+[2026-05-11 23:08:15.722] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("Mason White"), email=Some("w.i.ndsurf20260212+0yjku@gmail.com"), plan=Some("Pro"), version=Some("2.2.17")
+[2026-05-11 23:08:17.528] [INFO] [windsurf_account_manager_lib::commands::patch_commands] [Patch][Status] windsurf_path=/Applications/Windsurf.app, extension_file=/Applications/Windsurf.app/Contents/Resources/app/extensions/windsurf/dist/extension.js, workbench_file=/Applications/Windsurf.app/Contents/Resources/app/out/vs/workbench/workbench.desktop.main.js, installed=true, current_oauth_handler=true, oauth_handler=true, timeout_removed=false, auto_continue_bridge=true, auto_continue_sender=true, auto_continue_detector=true, workbench_checksum_current=Some(true)
+[2026-05-11 23:08:26.291] [INFO] [windsurf_account_manager_lib::commands::patch_commands] [Patch][Seamless] restore requested: windsurf_path=/Applications/Windsurf.app, extension_file=/Applications/Windsurf.app/Contents/Resources/app/extensions/windsurf/dist/extension.js, backup_file=/Applications/Windsurf.app/Contents/Resources/app/extensions/windsurf/dist/extension.js.backup.20260511_224915
+[2026-05-11 23:08:26.376] [INFO] [windsurf_account_manager_lib::commands::patch_commands] [Patch][macOS] Requesting graceful Windsurf quit before restart
+[2026-05-11 23:08:26.723] [INFO] [windsurf_account_manager_lib::services::windsurf_service] [GetPlanStatus] Status code: 200, token_prefix=devin-session-token$eyJhb..., response_size=1787 bytes
+[2026-05-11 23:08:27.844] [INFO] [windsurf_account_manager_lib::commands::patch_commands] [Patch][Status] windsurf_path=/Applications/Windsurf.app, extension_file=/Applications/Windsurf.app/Contents/Resources/app/extensions/windsurf/dist/extension.js, workbench_file=/Applications/Windsurf.app/Contents/Resources/app/out/vs/workbench/workbench.desktop.main.js, installed=false, current_oauth_handler=false, oauth_handler=false, timeout_removed=false, auto_continue_bridge=false, auto_continue_sender=false, auto_continue_detector=true, workbench_checksum_current=Some(true)
+[2026-05-11 23:08:33.617] [INFO] [windsurf_account_manager_lib::commands::patch_commands] [Patch][Seamless] apply requested: windsurf_path=/Applications/Windsurf.app, extension_file=/Applications/Windsurf.app/Contents/Resources/app/extensions/windsurf/dist/extension.js, force=true, patched_any=false, current=false
+[2026-05-11 23:08:33.645] [INFO] [windsurf_account_manager_lib::commands::patch_commands] [Patch][Seamless] matched OAuth handler: variant=new, extension_file=/Applications/Windsurf.app/Contents/Resources/app/extensions/windsurf/dist/extension.js
+[2026-05-11 23:08:33.663] [INFO] [windsurf_account_manager_lib::commands::patch_commands] [Patch][Seamless] applied: extension_file=/Applications/Windsurf.app/Contents/Resources/app/extensions/windsurf/dist/extension.js, backup_file=/Applications/Windsurf.app/Contents/Resources/app/extensions/windsurf/dist/extension.js.backup.20260511_230833, force=true, restored_from_backup=None, modifications=["OAuth回调处理器(新版格式)"], marker=WindsurfAccountManagerSeamlessOAuthPatchV2
+[2026-05-11 23:08:33.759] [INFO] [windsurf_account_manager_lib::commands::patch_commands] [Patch][macOS] Requesting graceful Windsurf quit before restart
+[2026-05-11 23:08:35.493] [INFO] [windsurf_account_manager_lib::commands::patch_commands] [Patch][Status] windsurf_path=/Applications/Windsurf.app, extension_file=/Applications/Windsurf.app/Contents/Resources/app/extensions/windsurf/dist/extension.js, workbench_file=/Applications/Windsurf.app/Contents/Resources/app/out/vs/workbench/workbench.desktop.main.js, installed=true, current_oauth_handler=true, oauth_handler=true, timeout_removed=false, auto_continue_bridge=false, auto_continue_sender=false, auto_continue_detector=true, workbench_checksum_current=Some(true)
+[2026-05-11 23:08:40.991] [INFO] [windsurf_account_manager_lib::commands::patch_commands] [Patch][Bridge] apply requested: windsurf_path=/Applications/Windsurf.app
+[2026-05-11 23:08:42.040] [INFO] [windsurf_account_manager_lib::commands::patch_commands] [Patch][Bridge] apply completed: windsurf_path=/Applications/Windsurf.app, already_patched=false, workbench_changed=false, extension_changed=true, workbench_backup_file=None, extension_backup_file=Some("/Applications/Windsurf.app/Contents/Resources/app/extensions/windsurf/dist/extension.js.backup.auto_continue_extension.20260511_230842")
+[2026-05-11 23:08:42.166] [INFO] [windsurf_account_manager_lib::commands::patch_commands] [Patch][macOS] Requesting graceful Windsurf quit before restart
+[2026-05-11 23:08:43.861] [INFO] [windsurf_account_manager_lib::commands::patch_commands] [Patch][Status] windsurf_path=/Applications/Windsurf.app, extension_file=/Applications/Windsurf.app/Contents/Resources/app/extensions/windsurf/dist/extension.js, workbench_file=/Applications/Windsurf.app/Contents/Resources/app/out/vs/workbench/workbench.desktop.main.js, installed=true, current_oauth_handler=true, oauth_handler=true, timeout_removed=false, auto_continue_bridge=true, auto_continue_sender=true, auto_continue_detector=true, workbench_checksum_current=Some(true)
+[2026-05-11 23:08:57.247] [INFO] [windsurf_account_manager_lib::commands::profile_commands] [Profile] Creating profile: id=560ea90f-5f0e-48fe-804e-7de9c2873cec, name=测试2, user_data_dir=/Users/duoo/Library/Application Support/WindsurfProfiles/560ea90f-5f0e-48fe-804e-7de9c2873cec, os=macos, arch=x86_64
+[2026-05-11 23:08:57.249] [INFO] [windsurf_account_manager_lib::commands::profile_commands] [Profile] 已从主实例复制配置到新分身: copied=["settings.json", "snippets/"], main_user=/Users/duoo/Library/Application Support/Windsurf/User, target_user=/Users/duoo/Library/Application Support/WindsurfProfiles/560ea90f-5f0e-48fe-804e-7de9c2873cec/User
+[2026-05-11 23:09:03.473] [INFO] [windsurf_account_manager_lib::services::windsurf_service] [GetPlanStatus] Status code: 200, token_prefix=devin-session-token$eyJhb..., response_size=1787 bytes
+[2026-05-11 23:09:03.893] [INFO] [windsurf_account_manager_lib::commands::profile_commands] Switching profile '测试2' to account wi.ndsurf2026.021.2+7r3n3@gmail.com
+[2026-05-11 23:09:03.893] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] Using devin-auth flow (auth1_ token detected)...
+[2026-05-11 23:09:03.893] [INFO] [windsurf_account_manager_lib::services::auth_service] [refresh_ott] Refreshing OTT with auth1_token...
+[2026-05-11 23:09:05.143] [INFO] [windsurf_account_manager_lib::services::auth_service] [GetOneTimeAuthToken refresh] Trying GetOneTimeAuthToken variant=web_backend_session_x_auth body_prefix=devin-session-token$...
+[2026-05-11 23:09:06.750] [INFO] [windsurf_account_manager_lib::services::auth_service] [GetOneTimeAuthToken refresh] variant=web_backend_session_x_auth succeeded
+[2026-05-11 23:09:06.750] [INFO] [windsurf_account_manager_lib::services::auth_service] [refresh_ott] OK: OTT=ott$UPemwydasRLDp81n...
+[2026-05-11 23:09:07.979] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] RegisterUser SUCCESS (via devin-auth): apiKey=devin-session-token$..., name=Wyatt Rivera, server=https://server.self-serve.windsurf.com
+[2026-05-11 23:09:07.979] [INFO] [windsurf_account_manager_lib::services::auth_service] [GetOneTimeAuthToken] Trying GetOneTimeAuthToken variant=web_backend_session_x_auth body_prefix=devin-session-token$...
+[2026-05-11 23:09:08.238] [INFO] [windsurf_account_manager_lib::services::auth_service] [GetOneTimeAuthToken] variant=web_backend_session_x_auth succeeded
+[2026-05-11 23:09:08.238] [INFO] [windsurf_account_manager_lib::services::auth_service] [get_fresh_ott] New OTT=ott$sXZQkO3pYvbBQj2l...
+[2026-05-11 23:09:08.238] [WARN] [windsurf_account_manager_lib::commands::switch_account_commands] storage.json not found for profile '测试2' at "/Users/duoo/Library/Application Support/WindsurfProfiles/560ea90f-5f0e-48fe-804e-7de9c2873cec/User/globalStorage/storage.json"; skip (profile may not have been launched yet)
+[2026-05-11 23:09:08.295] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] [Profile][macOS] Found Windsurf executable: /Applications/Windsurf.app/Contents/MacOS/Windsurf
+[2026-05-11 23:09:08.295] [INFO] [windsurf_account_manager_lib::commands::profile_commands] [Profile][macOS] Preparing profile callback login: profile_id=560ea90f-5f0e-48fe-804e-7de9c2873cec, was_running=false, already_authenticated=false, user_data_dir=/Users/duoo/Library/Application Support/WindsurfProfiles/560ea90f-5f0e-48fe-804e-7de9c2873cec, arch=x86_64
+[2026-05-11 23:09:08.295] [INFO] [windsurf_account_manager_lib::commands::profile_commands] [Profile][macOS] Profile not running, launching window before callback: profile_id=560ea90f-5f0e-48fe-804e-7de9c2873cec, target_email=wi.ndsurf2026.021.2+7r3n3@gmail.com
+[2026-05-11 23:09:08.295] [INFO] [windsurf_account_manager_lib::commands::profile_commands] [Profile][macOS] Launching Windsurf: profile_id=560ea90f-5f0e-48fe-804e-7de9c2873cec, name=测试2, exe=/Applications/Windsurf.app/Contents/MacOS/Windsurf, user_data_dir=/Users/duoo/Library/Application Support/WindsurfProfiles/560ea90f-5f0e-48fe-804e-7de9c2873cec, arch=x86_64
+[2026-05-11 23:09:08.295] [INFO] [windsurf_account_manager_lib::commands::profile_commands] [Profile][macOS] Windsurf spawn requested: profile_id=560ea90f-5f0e-48fe-804e-7de9c2873cec, pid=32283
+[2026-05-11 23:09:08.295] [INFO] [windsurf_account_manager_lib::commands::profile_commands] [Profile][macOS] Waiting 1500ms for profile window before callback: profile_id=560ea90f-5f0e-48fe-804e-7de9c2873cec, user_data_dir=/Users/duoo/Library/Application Support/WindsurfProfiles/560ea90f-5f0e-48fe-804e-7de9c2873cec
+[2026-05-11 23:09:09.805] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] Triggering Windsurf callback (target=/Users/duoo/Library/Application Support/WindsurfProfiles/560ea90f-5f0e-48fe-804e-7de9c2873cec): windsurf://codeium.windsurf#access_token=<hidden>&state=ef5eae3e-3fda-424b-82e6-35e9f404cc84&token_type=Bearer
+[2026-05-11 23:09:09.807] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] [Profile][macOS] Found Windsurf executable: /Applications/Windsurf.app/Contents/MacOS/Windsurf
+[2026-05-11 23:09:09.807] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] [Profile][macOS] Dispatching callback via Windsurf app binary: target=/Users/duoo/Library/Application Support/WindsurfProfiles/560ea90f-5f0e-48fe-804e-7de9c2873cec, exe=/Applications/Windsurf.app/Contents/MacOS/Windsurf, arch=x86_64
+[2026-05-11 23:09:11.765] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] [Profile][macOS] Successfully triggered Windsurf callback via CLI
+[2026-05-11 23:09:11.765] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] Successfully triggered Windsurf callback
+[2026-05-11 23:09:11.766] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
+[2026-05-11 23:09:12.266] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
+[2026-05-11 23:09:12.424] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
+[2026-05-11 23:09:12.768] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
+[2026-05-11 23:09:13.271] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
+[2026-05-11 23:09:13.791] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
+[2026-05-11 23:09:14.333] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
+[2026-05-11 23:09:14.835] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
+[2026-05-11 23:09:15.339] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
+[2026-05-11 23:09:15.842] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
+[2026-05-11 23:09:16.346] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
+[2026-05-11 23:09:16.854] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
+[2026-05-11 23:09:17.357] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
+[2026-05-11 23:09:17.866] [WARN] [windsurf_account_manager_lib::commands::profile_commands] [Profile] 切号后未在短时间内读到目标账号，等待编辑器异步生效: profile_id=560ea90f-5f0e-48fe-804e-7de9c2873cec, target_email=wi.ndsurf2026.021.2+7r3n3@gmail.com, user_data_dir=/Users/duoo/Library/Application Support/WindsurfProfiles/560ea90f-5f0e-48fe-804e-7de9c2873cec, os=macos, arch=x86_64
+[2026-05-11 23:09:18.187] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
+[2026-05-11 23:09:21.787] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
+[2026-05-11 23:09:22.465] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
+[2026-05-11 23:09:26.832] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
+[2026-05-11 23:09:32.069] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
+[2026-05-11 23:09:32.886] [INFO] [windsurf_account_manager_lib::services::windsurf_service] [GetPlanStatus] Status code: 200, token_prefix=devin-session-token$eyJhb..., response_size=1787 bytes
+[2026-05-11 23:09:33.130] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
+[2026-05-11 23:09:36.785] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
+[2026-05-11 23:09:41.785] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
+[2026-05-11 23:09:42.448] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
+[2026-05-11 23:09:46.780] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
+[2026-05-11 23:09:51.789] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
+[2026-05-11 23:09:52.462] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
+[2026-05-11 23:09:56.780] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
+[2026-05-11 23:10:01.780] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
+[2026-05-11 23:10:02.664] [INFO] [windsurf_account_manager_lib::services::windsurf_service] [GetPlanStatus] Status code: 200, token_prefix=devin-session-token$eyJhb..., response_size=1787 bytes
+[2026-05-11 23:10:02.809] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
+[2026-05-11 23:10:06.782] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
+[2026-05-11 23:10:11.779] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
+[2026-05-11 23:10:12.475] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
+[2026-05-11 23:10:16.893] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
+[2026-05-11 23:10:21.795] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
+[2026-05-11 23:10:22.514] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
+[2026-05-11 23:10:27.125] [WARN] [windsurf_account_manager_lib::commands::windsurf_info] Could not detect active Windsurf session
