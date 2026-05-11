@@ -680,12 +680,21 @@ pub(crate) async fn trigger_windsurf_callback(
             match cmd.output() {
                 Ok(o) => {
                     if !o.status.success() {
+                        let stdout = String::from_utf8_lossy(&o.stdout);
+                        let stderr = String::from_utf8_lossy(&o.stderr);
                         warn!(
                             "[Profile][macOS] Windsurf --open-url exited with {:?}: stdout={}, stderr={}",
                             o.status.code(),
-                            String::from_utf8_lossy(&o.stdout).trim(),
-                            String::from_utf8_lossy(&o.stderr).trim()
+                            stdout.trim(),
+                            stderr.trim()
                         );
+                        if user_data_dir.is_some() {
+                            return Err(AppError::FileOperation(format!(
+                                "Windsurf CLI exited with {:?} for macOS profile callback: {}",
+                                o.status.code(),
+                                stderr.trim()
+                            )));
+                        }
                     } else {
                         info!("[Profile][macOS] Successfully triggered Windsurf callback via CLI");
                     }

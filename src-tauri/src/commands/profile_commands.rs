@@ -1060,29 +1060,6 @@ pub async fn stop_profile(
 
     tokio::time::sleep(tokio::time::Duration::from_millis(700)).await;
 
-    // 兜底：重新扫描进程列表，确认是否真的关掉了
-    let remaining = matching_profile_process_ids(&profile, &list_windsurf_processes());
-    #[cfg(target_os = "macos")]
-    if !remaining.is_empty() {
-        warn!(
-            "[Profile][macOS] Processes still alive after TERM, trying KILL: profile_id={}, remaining={:?}",
-            profile.id,
-            remaining
-        );
-        for pid in &remaining {
-            match Command::new("kill").arg("-KILL").arg(pid.to_string()).output() {
-                Err(e) => warn!("[Profile][macOS] Failed to run kill -KILL for PID {}: {}", pid, e),
-                Ok(o) if !o.status.success() => warn!(
-                    "[Profile][macOS] kill -KILL returned non-zero for PID {}, code={:?}",
-                    pid,
-                    o.status.code()
-                ),
-                Ok(_) => {}
-            }
-        }
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-    }
-
     let remaining = matching_profile_process_ids(&profile, &list_windsurf_processes());
     if !remaining.is_empty() {
         return Err(format!(

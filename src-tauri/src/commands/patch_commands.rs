@@ -18,6 +18,18 @@ const AUTO_CONTINUE_WORKBENCH_MARKER: &[u8] = b"WindsurfAccountManagerAutoContin
 const AUTO_CONTINUE_LEGACY_SENDER_MARKER: &[u8] = b"WindsurfAccountManagerAutoContinueSenderBridge";
 const AUTO_CONTINUE_EXTENSION_MARKER: &[u8] = b"WindsurfAccountManagerAutoContinueExtensionBridgeV2";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RestartWindsurfResult {
+    Restarted,
+    ManualRestartRequired,
+}
+
+impl RestartWindsurfResult {
+    fn manual_restart_required(self) -> bool {
+        matches!(self, Self::ManualRestartRequired)
+    }
+}
+
 /// 获取 extension.js 相对路径（跨平台）
 fn get_extension_js_relative_path() -> PathBuf {
     #[cfg(target_os = "macos")]
@@ -448,7 +460,7 @@ pub async fn apply_seamless_patch(
     data_store.update_settings(settings).await.map_err(|e| e.to_string())?;
     
     // 8. 重启Windsurf
-    restart_windsurf(Some(&windsurf_path)).await?;
+    let restart_result = restart_windsurf(Some(&windsurf_path)).await?;
     
     Ok(serde_json::json!({
         "success": true,
@@ -456,8 +468,11 @@ pub async fn apply_seamless_patch(
         "backup_file": backup_file.to_string_lossy().to_string(),
         "restored_from_backup": restored_from_backup,
         "forced": force,
+        "manual_restart_required": restart_result.manual_restart_required(),
         "seamless_patch_marker": SEAMLESS_PATCH_MARKER,
-        "message": if force {
+        "message": if restart_result.manual_restart_required() {
+            "补丁已重新应用，请手动完全退出并重新打开 Windsurf"
+        } else if force {
             "补丁已重新应用，Windsurf正在重启"
         } else {
             "补丁应用成功，Windsurf正在重启"
@@ -500,11 +515,16 @@ pub async fn restore_seamless_patch(
     data_store.update_settings(settings).await.map_err(|e| e.to_string())?;
     
     // 重启Windsurf
-    restart_windsurf(Some(&windsurf_path)).await?;
+    let restart_result = restart_windsurf(Some(&windsurf_path)).await?;
     
     Ok(serde_json::json!({
         "success": true,
-        "message": "补丁已还原，Windsurf正在重启",
+        "manual_restart_required": restart_result.manual_restart_required(),
+        "message": if restart_result.manual_restart_required() {
+            "补丁已还原，请手动完全退出并重新打开 Windsurf"
+        } else {
+            "补丁已还原，Windsurf正在重启"
+        },
         "backup_used": backup_path.to_string_lossy().to_string()
     }))
 }
@@ -528,25 +548,33 @@ pub async fn apply_auto_continue_bridge_patch(
         workbench_backup_file,
         extension_backup_file
     );
-    if !already_patched {
-        restart_windsurf(Some(&windsurf_path)).await?;
-    }
+    let restart_result = if !already_patched {
+        restart_windsurf(Some(&windsurf_path)).await?
+    } else {
+        RestartWindsurfResult::Restarted
+    };
+
+    let manual_restart_required = restart_result.manual_restart_required();
+    let message = if already_patched {
+        "自动继续 Bridge 补丁已安装，workbench 校验已同步"
+    } else if manual_restart_required {
+        "自动继续 Bridge 补丁已安装，请手动完全退出并重新打开 Windsurf"
+    } else if workbench_changed && extension_changed {
+        "自动继续 Bridge 检测/发送补丁已安装，workbench 校验已同步，Windsurf 正在重启"
+    } else if workbench_changed {
+        "自动继续 Bridge 检测补丁已安装，workbench 校验已同步，Windsurf 正在重启"
+    } else {
+        "自动继续 Bridge 扩展补丁已安装，Windsurf 正在重启"
+    };
 
     Ok(serde_json::json!({
         "success": true,
         "already_patched": already_patched,
+        "manual_restart_required": manual_restart_required,
         "backup_file": extension_backup_file.clone().or_else(|| workbench_backup_file.clone()),
         "workbench_backup_file": workbench_backup_file,
         "extension_backup_file": extension_backup_file,
-        "message": if already_patched {
-            "自动继续 Bridge 补丁已安装，workbench 校验已同步"
-        } else if workbench_changed && extension_changed {
-            "自动继续 Bridge 检测/发送补丁已安装，workbench 校验已同步，Windsurf 正在重启"
-        } else if workbench_changed {
-            "自动继续 Bridge 检测补丁已安装，workbench 校验已同步，Windsurf 正在重启"
-        } else {
-            "自动继续 Bridge 扩展补丁已安装，Windsurf 正在重启"
-        }
+        "message": message
     }))
 }
 
@@ -597,24 +625,28 @@ pub async fn restore_auto_continue_bridge_patch(
         extension_changed,
         checksum_changed.is_some()
     );
-    if changed {
-        restart_windsurf(Some(&windsurf_path)).await?;
-    }
+    let restart_result = if changed {
+        restart_windsurf(Some(&windsurf_path)).await?
+    } else {
+        RestartWindsurfResult::Restarted
+    };
+    let manual_restart_required = restart_result.manual_restart_required();
 
     Ok(serde_json::json!({
         "success": true,
-        "already_restored": !workbench_changed && !extension_changed,
-        "workbench_restored": workbench_changed,
-        "extension_restored": extension_changed,
-        "checksum_updated": checksum_changed.is_some(),
+        "changed": changed,
+        "manual_restart_required": manual_restart_required,
         "message": if changed {
-            "自动继续 Bridge 补丁已还原，Windsurf 正在重启"
+            if manual_restart_required {
+                "自动继续 Bridge 补丁已还原，请手动完全退出并重新打开 Windsurf"
+            } else {
+                "自动继续 Bridge 补丁已还原，Windsurf 正在重启"
+            }
         } else {
-            "自动继续 Bridge 补丁未安装或已还原"
+            "自动继续 Bridge 补丁未发现需要还原的内容"
         }
     }))
 }
-
 /// 字节级 contains：在 haystack 中查找 needle 子序列
 fn bytes_contains(haystack: &[u8], needle: &[u8]) -> bool {
     if needle.is_empty() {
@@ -1383,7 +1415,7 @@ pub async fn check_patch_status(
 
 /// 重启Windsurf
 /// windsurf_path: 可选的Windsurf安装路径，优先使用此路径直接启动
-async fn restart_windsurf(windsurf_path: Option<&str>) -> Result<(), String> {
+async fn restart_windsurf(windsurf_path: Option<&str>) -> Result<RestartWindsurfResult, String> {
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
@@ -1408,7 +1440,7 @@ async fn restart_windsurf(windsurf_path: Option<&str>) -> Result<(), String> {
                     .spawn() {
                     Ok(_) => {
                         println!("通过已知路径启动Windsurf: {:?}", exe_path);
-                        return Ok(());
+                        return Ok(RestartWindsurfResult::Restarted);
                     }
                     Err(e) => {
                         println!("直接启动失败，尝试快捷方式: {}", e);
@@ -1429,7 +1461,7 @@ async fn restart_windsurf(windsurf_path: Option<&str>) -> Result<(), String> {
                     .map_err(|e| format!("启动Windsurf失败: {}", e))?;
                 
                 println!("通过快捷方式启动Windsurf: {:?}", shortcut);
-                return Ok(());
+                return Ok(RestartWindsurfResult::Restarted);
             }
         }
         
@@ -1438,13 +1470,36 @@ async fn restart_windsurf(windsurf_path: Option<&str>) -> Result<(), String> {
     
     #[cfg(target_os = "macos")]
     {
-        // 1. 关闭Windsurf
-        Command::new("pkill")
-            .args(&["-f", "Windsurf"])
-            .output()
-            .map_err(|e| format!("关闭Windsurf失败: {}", e))?;
-        
-        std::thread::sleep(std::time::Duration::from_secs(2));
+        if is_windsurf_running_macos() {
+            info!("[Patch][macOS] Requesting graceful Windsurf quit before restart");
+            match Command::new("osascript")
+                .arg("-e")
+                .arg("tell application \"Windsurf\" to quit")
+                .output()
+            {
+                Ok(output) if output.status.success() => {}
+                Ok(output) => warn!(
+                    "[Patch][macOS] osascript quit returned non-zero: code={:?}, stderr={}",
+                    output.status.code(),
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ),
+                Err(e) => warn!("[Patch][macOS] Failed to request graceful quit: {}", e),
+            }
+
+            let mut exited = false;
+            for _ in 0..20 {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                if !is_windsurf_running_macos() {
+                    exited = true;
+                    break;
+                }
+            }
+
+            if !exited {
+                warn!("[Patch][macOS] Windsurf did not exit after graceful quit request; manual restart required");
+                return Ok(RestartWindsurfResult::ManualRestartRequired);
+            }
+        }
         
         // 2. 优先使用已知路径启动
         if let Some(path) = windsurf_path {
@@ -1455,7 +1510,7 @@ async fn restart_windsurf(windsurf_path: Option<&str>) -> Result<(), String> {
                     .spawn() {
                     Ok(_) => {
                         println!("通过已知路径启动Windsurf: {:?}", app_path);
-                        return Ok(());
+                        return Ok(RestartWindsurfResult::Restarted);
                     }
                     Err(e) => {
                         println!("直接启动失败，尝试默认方式: {}", e);
@@ -1470,7 +1525,7 @@ async fn restart_windsurf(windsurf_path: Option<&str>) -> Result<(), String> {
             .spawn()
             .map_err(|e| format!("启动Windsurf失败: {}", e))?;
         
-        return Ok(());
+        return Ok(RestartWindsurfResult::Restarted);
     }
     
     #[cfg(target_os = "linux")]
@@ -1490,7 +1545,7 @@ async fn restart_windsurf(windsurf_path: Option<&str>) -> Result<(), String> {
                 match Command::new(&exe_path).spawn() {
                     Ok(_) => {
                         println!("通过已知路径启动Windsurf: {:?}", exe_path);
-                        return Ok(());
+                        return Ok(RestartWindsurfResult::Restarted);
                     }
                     Err(e) => {
                         println!("直接启动失败，尝试默认方式: {}", e);
@@ -1504,11 +1559,30 @@ async fn restart_windsurf(windsurf_path: Option<&str>) -> Result<(), String> {
             .spawn()
             .map_err(|e| format!("启动Windsurf失败: {}", e))?;
         
-        return Ok(());
+        return Ok(RestartWindsurfResult::Restarted);
     }
     
     #[allow(unreachable_code)]
     Err("不支持的操作系统".to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn is_windsurf_running_macos() -> bool {
+    Command::new("ps")
+        .args(["-axo", "command="])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| {
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .any(|line| {
+                    line.contains("/Windsurf.app/")
+                        || line.contains("Contents/MacOS/Windsurf")
+                        || line.contains("Windsurf Helper")
+                })
+        })
+        .unwrap_or(false)
 }
 
 /// 获取快捷方式搜索目录列表 (Windows)
