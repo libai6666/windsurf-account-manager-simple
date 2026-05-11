@@ -5,12 +5,15 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use regex::bytes::Regex;
 use chrono::Local;
+use log::{info, warn};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use tauri::State;
 use crate::repository::DataStore;
 use crate::commands::auto_continue_commands::AUTO_CONTINUE_BRIDGE_PORT;
 
+const SEAMLESS_PATCH_MARKER: &str = "WindsurfAccountManagerSeamlessOAuthPatchV2";
+const SEAMLESS_OAUTH_ERROR_MARKER: &[u8] = b"Failed to handle OAuth callback";
 const AUTO_CONTINUE_WORKBENCH_MARKER: &[u8] = b"WindsurfAccountManagerAutoContinueBridge";
 const AUTO_CONTINUE_LEGACY_SENDER_MARKER: &[u8] = b"WindsurfAccountManagerAutoContinueSenderBridge";
 const AUTO_CONTINUE_EXTENSION_MARKER: &[u8] = b"WindsurfAccountManagerAutoContinueExtensionBridgeV2";
@@ -217,9 +220,19 @@ pub async fn apply_seamless_patch(
     
     let force = force.unwrap_or(false);
     let mut restored_from_backup: Option<String> = None;
+    let already_patched_any = is_file_patched(&extension_file);
+    let already_current = is_full_patch_installed(&extension_file);
+    info!(
+        "[Patch][Seamless] apply requested: windsurf_path={}, extension_file={}, force={}, patched_any={}, current={}",
+        windsurf_path,
+        extension_file.display(),
+        force,
+        already_patched_any,
+        already_current
+    );
     
     // force 模式：先用最干净的备份覆盖当前文件，再走正常的打补丁流程
-    if force && is_file_patched(&extension_file) {
+    if force && already_patched_any {
         let extension_dir = extension_file.parent()
             .ok_or("无法获取扩展目录")?
             .to_path_buf();
@@ -232,6 +245,11 @@ pub async fn apply_seamless_patch(
         let backup_path = find_latest_backup(&extension_dir, &saved_backup)?;
         fs::copy(&backup_path, &extension_file)
             .map_err(|e| format!("还原备份失败: {} (备份文件: {:?})", e, backup_path))?;
+        info!(
+            "[Patch][Seamless] restored clean backup before reapply: backup_file={}, extension_file={}",
+            backup_path.display(),
+            extension_file.display()
+        );
         restored_from_backup = Some(backup_path.to_string_lossy().to_string());
     }
     
@@ -291,8 +309,8 @@ pub async fn apply_seamless_patch(
 
         if vars_consistent && !var_name1.is_empty() && !module_name.is_empty() {
             let replacement = format!(
-                r#"this._uriHandler.event(async {}=>{{if("/refresh-authentication-session"==={}.path){{(0,{}.refreshAuthenticationSession)()}}else{{try{{const t=new URLSearchParams({}.fragment).get("access_token");if(null===t)throw new Error("No token");await this.handleAuthToken(t)}}catch(e){{console.error("[Windsurf] Failed to handle OAuth callback:",e)}}}}}})"#,
-                var_name1, var_name1, module_name, var_name1
+                r#"this._uriHandler.event(async {}=>{{if("/refresh-authentication-session"==={}.path){{(0,{}.refreshAuthenticationSession)()}}else{{try{{const t=new URLSearchParams({}.fragment).get("access_token");if(null===t)throw new Error("No token");console.info("[{}] Profile login applied");await this.handleAuthToken(t)}}catch(e){{console.error("[Windsurf] Failed to handle OAuth callback:",e)}}}}}})"#,
+                var_name1, var_name1, module_name, var_name1, SEAMLESS_PATCH_MARKER
             );
 
             // 字节级替换：取整段匹配的字节切片，构造新的 Vec<u8>
@@ -303,6 +321,11 @@ pub async fn apply_seamless_patch(
             } else {
                 "OAuth回调处理器"
             });
+            info!(
+                "[Patch][Seamless] matched OAuth handler: variant={}, extension_file={}",
+                variant,
+                extension_file.display()
+            );
         }
     }
     
@@ -330,13 +353,27 @@ pub async fn apply_seamless_patch(
     //   b) 正则表达式未能匹配当前 Windsurf 版本（常见于首次安装最新版 Windsurf 的新用户，
     //      之前这里被错误地当作 "已打过补丁" 从而陷入死循环）
     if modified_content == content {
-        if is_full_patch_installed(&extension_file) {
+        if has_current_seamless_patch(&content) {
+            info!(
+                "[Patch][Seamless] no changes needed, current patch marker already installed: extension_file={}",
+                extension_file.display()
+            );
             return Ok(serde_json::json!({
                 "success": true,
                 "already_patched": true,
+                "forced": force,
+                "restored_from_backup": restored_from_backup,
+                "seamless_patch_marker": SEAMLESS_PATCH_MARKER,
                 "message": "补丁已经应用过了"
             }));
         } else {
+            warn!(
+                "[Patch][Seamless] patch rules did not match current extension.js: extension_file={}, force={}, patched_any={}, current_marker={}",
+                extension_file.display(),
+                force,
+                has_any_seamless_patch(&content),
+                has_current_seamless_patch(&content)
+            );
             return Err(
                 "补丁规则未能匹配当前 Windsurf 版本的 extension.js（首次使用/Windsurf 升级后常见）。\
                 请确认 Windsurf 版本，或点击\"重新打补丁\"按钮尝试从备份还原后再应用。"
@@ -393,6 +430,15 @@ pub async fn apply_seamless_patch(
     // 6. 写入修改后的文件
     fs::write(&extension_file, &modified_content)
         .map_err(|e| format!("写入文件失败: {}", e))?;
+    info!(
+        "[Patch][Seamless] applied: extension_file={}, backup_file={}, force={}, restored_from_backup={:?}, modifications={:?}, marker={}",
+        extension_file.display(),
+        backup_file.display(),
+        force,
+        restored_from_backup,
+        modifications,
+        SEAMLESS_PATCH_MARKER
+    );
     
     // 7. 保存补丁状态到设置
     let mut settings = data_store.get_settings().await.map_err(|e| e.to_string())?;
@@ -410,6 +456,7 @@ pub async fn apply_seamless_patch(
         "backup_file": backup_file.to_string_lossy().to_string(),
         "restored_from_backup": restored_from_backup,
         "forced": force,
+        "seamless_patch_marker": SEAMLESS_PATCH_MARKER,
         "message": if force {
             "补丁已重新应用，Windsurf正在重启"
         } else {
@@ -436,7 +483,12 @@ pub async fn restore_seamless_patch(
     // 尝试找到可用的备份文件
     let backup_path = find_latest_backup(&extension_dir, &settings.patch_backup_path)?;
     
-    println!("使用备份文件还原: {:?}", backup_path);
+    info!(
+        "[Patch][Seamless] restore requested: windsurf_path={}, extension_file={}, backup_file={}",
+        windsurf_path,
+        extension_file.display(),
+        backup_path.display()
+    );
     
     // 还原备份文件
     fs::copy(&backup_path, &extension_file)
@@ -461,11 +513,21 @@ pub async fn restore_seamless_patch(
 pub async fn apply_auto_continue_bridge_patch(
     windsurf_path: String,
 ) -> Result<serde_json::Value, String> {
+    info!("[Patch][Bridge] apply requested: windsurf_path={}", windsurf_path);
     let workbench_backup_file = apply_auto_continue_bridge_to_workbench(&windsurf_path)?;
     let extension_backup_file = apply_auto_continue_sender_to_extension(&windsurf_path)?;
     let already_patched = workbench_backup_file.is_none() && extension_backup_file.is_none();
     let workbench_changed = workbench_backup_file.is_some();
     let extension_changed = extension_backup_file.is_some();
+    info!(
+        "[Patch][Bridge] apply completed: windsurf_path={}, already_patched={}, workbench_changed={}, extension_changed={}, workbench_backup_file={:?}, extension_backup_file={:?}",
+        windsurf_path,
+        already_patched,
+        workbench_changed,
+        extension_changed,
+        workbench_backup_file,
+        extension_backup_file
+    );
     if !already_patched {
         restart_windsurf(Some(&windsurf_path)).await?;
     }
@@ -492,6 +554,7 @@ pub async fn apply_auto_continue_bridge_patch(
 pub async fn restore_auto_continue_bridge_patch(
     windsurf_path: String,
 ) -> Result<serde_json::Value, String> {
+    info!("[Patch][Bridge] restore requested: windsurf_path={}", windsurf_path);
     let windsurf_root = PathBuf::from(&windsurf_path);
     let workbench_file = windsurf_root.join(get_workbench_js_relative_path());
     let extension_file = windsurf_root.join(get_extension_js_relative_path());
@@ -526,6 +589,14 @@ pub async fn restore_auto_continue_bridge_patch(
     }
 
     let changed = workbench_changed || extension_changed || checksum_changed.is_some();
+    info!(
+        "[Patch][Bridge] restore completed: windsurf_path={}, changed={}, workbench_restored={}, extension_restored={}, checksum_updated={}",
+        windsurf_path,
+        changed,
+        workbench_changed,
+        extension_changed,
+        checksum_changed.is_some()
+    );
     if changed {
         restart_windsurf(Some(&windsurf_path)).await?;
     }
@@ -579,7 +650,7 @@ fn is_file_patched(file_path: &Path) -> bool {
     // 按字节读取，避免 UTF-8 校验失败导致这里直接判定为"未打补丁"，
     // 进而错误地把一个其实已经打过补丁的文件当成"干净的备份"返回。
     if let Ok(content) = fs::read(file_path) {
-        bytes_contains(&content, b"Failed to handle OAuth callback")
+        has_any_seamless_patch(&content)
     } else {
         false
     }
@@ -587,10 +658,18 @@ fn is_file_patched(file_path: &Path) -> bool {
 
 fn is_full_patch_installed(file_path: &Path) -> bool {
     if let Ok(content) = fs::read(file_path) {
-        bytes_contains(&content, b"Failed to handle OAuth callback")
+        has_current_seamless_patch(&content)
     } else {
         false
     }
+}
+
+fn has_any_seamless_patch(content: &[u8]) -> bool {
+    bytes_contains(content, SEAMLESS_OAUTH_ERROR_MARKER)
+}
+
+fn has_current_seamless_patch(content: &[u8]) -> bool {
+    bytes_contains(content, SEAMLESS_PATCH_MARKER.as_bytes())
 }
 
 fn is_auto_continue_extension_installed(file_path: &Path) -> bool {
@@ -1250,9 +1329,11 @@ pub async fn check_patch_status(
         .map_err(|e| format!("读取文件失败: {}", e))?;
     
     // 检查是否包含补丁标识（字节级 contains）
-    let has_oauth_handler = bytes_contains(&content, b"Failed to handle OAuth callback");
+    let has_oauth_handler = has_any_seamless_patch(&content);
+    let has_current_oauth_handler = has_current_seamless_patch(&content);
     let has_extension_login = bytes_contains(&content, b"WindsurfAccountManager v2] Profile login applied")
-        || bytes_contains(&content, b"WindsurfAccountManager] Profile login applied");
+        || bytes_contains(&content, b"WindsurfAccountManager] Profile login applied")
+        || has_current_oauth_handler;
     let has_timeout_removed = !bytes_contains(&content, b"18e4");
     let workbench_content = if workbench_file.exists() {
         Some(fs::read(&workbench_file).map_err(|e| format!("读取 workbench 文件失败: {}", e))?)
@@ -1269,13 +1350,30 @@ pub async fn check_patch_status(
         None
     };
     let has_auto_continue_extension = is_auto_continue_extension_installed(&extension_file);
+    let has_auto_continue_bridge = has_auto_continue_extension && has_auto_continue_workbench && workbench_checksum_current.unwrap_or(true);
+    info!(
+        "[Patch][Status] windsurf_path={}, extension_file={}, workbench_file={}, installed={}, current_oauth_handler={}, oauth_handler={}, timeout_removed={}, auto_continue_bridge={}, auto_continue_sender={}, auto_continue_detector={}, workbench_checksum_current={:?}",
+        windsurf_path,
+        extension_file.display(),
+        workbench_file.display(),
+        has_oauth_handler,
+        has_current_oauth_handler,
+        has_oauth_handler,
+        has_timeout_removed,
+        has_auto_continue_bridge,
+        has_auto_continue_extension,
+        has_auto_continue_workbench,
+        workbench_checksum_current
+    );
     
     Ok(serde_json::json!({
         "installed": has_oauth_handler,
         "oauth_handler": has_oauth_handler,
+        "current_oauth_handler": has_current_oauth_handler,
+        "seamless_patch_marker": SEAMLESS_PATCH_MARKER,
         "extension_login": has_extension_login,
         "timeout_removed": has_timeout_removed,
-        "auto_continue_bridge": has_auto_continue_extension && has_auto_continue_workbench && workbench_checksum_current.unwrap_or(true),
+        "auto_continue_bridge": has_auto_continue_bridge,
         "auto_continue_detector": has_auto_continue_workbench,
         "auto_continue_sender": has_auto_continue_extension,
         "auto_continue_workbench_dirty": has_auto_continue_workbench && !workbench_checksum_current.unwrap_or(true),

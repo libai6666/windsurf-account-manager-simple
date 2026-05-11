@@ -371,7 +371,8 @@
           </el-form-item>
           
           <el-form-item label="补丁状态">
-            <el-tag v-if="patchStatus.installed" type="success">已安装</el-tag>
+            <el-tag v-if="patchStatus.currentOauthHandler" type="success">V2已安装</el-tag>
+            <el-tag v-else-if="patchStatus.installed" type="warning">旧版补丁</el-tag>
             <el-tag v-else-if="patchStatus.error" type="danger">{{ patchStatus.error }}</el-tag>
             <el-tag v-else type="info">未安装</el-tag>
             <el-button 
@@ -393,7 +394,7 @@
               重新打补丁
             </el-button>
             <div style="margin-top: 5px; color: #909399; font-size: 12px;">
-              若首次开启无感换号提示"补丁已经应用过了"但状态仍为"未安装"，可点击"重新打补丁"强制覆盖。
+              若显示旧版补丁或登录回调未生效，可点击"重新打补丁"强制覆盖。
             </div>
           </el-form-item>
 
@@ -644,6 +645,7 @@ const patchLoading = ref(false);
 const patchStatus = reactive({
   installed: false,
   oauthHandler: false,
+  currentOauthHandler: false,
   autoContinueBridge: false,
   error: '',
 });
@@ -792,15 +794,17 @@ async function checkPatchStatus() {
     const status = await invoke<any>('check_patch_status', {
       windsurfPath: windsurfPath.value
     });
-    patchStatus.installed = status.installed;
+    const currentOauthHandler = Boolean(status.current_oauth_handler);
+    patchStatus.installed = Boolean(status.installed);
     patchStatus.oauthHandler = Boolean(status.oauth_handler);
+    patchStatus.currentOauthHandler = currentOauthHandler;
     patchStatus.autoContinueBridge = Boolean(status.auto_continue_bridge);
     patchStatus.error = status.error || '';
 
     let shouldSaveSettings = false;
     
-    if (status.installed !== settings.seamlessSwitchEnabled) {
-      settings.seamlessSwitchEnabled = status.installed;
+    if (currentOauthHandler !== settings.seamlessSwitchEnabled) {
+      settings.seamlessSwitchEnabled = currentOauthHandler;
       shouldSaveSettings = true;
     }
 
@@ -815,6 +819,7 @@ async function checkPatchStatus() {
   } catch (error) {
     patchStatus.installed = false;
     patchStatus.oauthHandler = false;
+    patchStatus.currentOauthHandler = false;
     patchStatus.autoContinueBridge = false;
     patchStatus.error = error as string;
   }

@@ -246,130 +246,6 @@ async fn wait_for_profile_account(user_data_dir: &Path, target_email: &str) -> O
     None
 }
 
-#[cfg(target_os = "macos")]
-enum ProfileAuthWaitResult {
-    Verified(WindsurfCurrentInfo),
-    Partial(WindsurfCurrentInfo),
-    Missing,
-}
-
-#[cfg(target_os = "macos")]
-fn profile_info_name_matches(info: &WindsurfCurrentInfo, target_name: &str) -> bool {
-    !target_name.trim().is_empty()
-        && info
-            .name
-            .as_deref()
-            .map(|name| name.eq_ignore_ascii_case(target_name))
-            .unwrap_or(false)
-}
-
-#[cfg(target_os = "macos")]
-async fn wait_for_profile_auth_state(
-    user_data_dir: &Path,
-    target_email: &str,
-    target_name: &str,
-    attempts: usize,
-) -> ProfileAuthWaitResult {
-    let mut partial_info: Option<WindsurfCurrentInfo> = None;
-    for attempt in 0..attempts {
-        if let Ok(info) = get_windsurf_info_from_dir(user_data_dir) {
-            if info.email.as_deref().map(|email| email.eq_ignore_ascii_case(target_email)).unwrap_or(false) {
-                return ProfileAuthWaitResult::Verified(info);
-            }
-            if partial_info.is_none() && profile_info_name_matches(&info, target_name) {
-                partial_info = Some(info);
-            }
-        }
-        if attempt + 1 < attempts {
-            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-        }
-    }
-    partial_info
-        .map(ProfileAuthWaitResult::Partial)
-        .unwrap_or(ProfileAuthWaitResult::Missing)
-}
-
-#[cfg(target_os = "macos")]
-async fn trigger_macos_profile_callback_with_retry(
-    app: &tauri::AppHandle,
-    profile: &WindsurfProfile,
-    callback_token: &str,
-    target_email: &str,
-    target_name: &str,
-    initial_delay_ms: u64,
-    dispatch_first_callback: bool,
-) -> Result<ProfileAuthWaitResult, String> {
-    if initial_delay_ms > 0 {
-        info!(
-            "[Profile][macOS] Waiting {}ms for profile window before callback: profile_id={}, user_data_dir={}",
-            initial_delay_ms,
-            profile.id,
-            profile.user_data_dir.display()
-        );
-        tokio::time::sleep(tokio::time::Duration::from_millis(initial_delay_ms)).await;
-    }
-
-    if dispatch_first_callback {
-        trigger_windsurf_callback(app, callback_token, Some(&profile.user_data_dir))
-            .await
-            .map_err(|e| format!("触发分身回调失败: {}", e))?;
-    }
-    let first_state = wait_for_profile_auth_state(&profile.user_data_dir, target_email, target_name, 12).await;
-    match &first_state {
-        ProfileAuthWaitResult::Verified(_) => {
-            info!(
-                "[Profile][macOS] Profile callback verified after first dispatch: profile_id={}, target_email={}",
-                profile.id,
-                target_email
-            );
-            return Ok(first_state);
-        }
-        ProfileAuthWaitResult::Partial(info) => {
-            warn!(
-                "[Profile][macOS] Profile callback was partially consumed after first attempt: profile_id={}, target_email={}, observed_name={:?}",
-                profile.id,
-                target_email,
-                info.name.as_deref()
-            );
-        }
-        ProfileAuthWaitResult::Missing => {}
-    }
-
-    warn!(
-        "[Profile][macOS] First callback attempt did not update profile auth, retrying once: profile_id={}, target_email={}, user_data_dir={}, first_dispatch={}",
-        profile.id,
-        target_email,
-        profile.user_data_dir.display(),
-        dispatch_first_callback
-    );
-    tokio::time::sleep(tokio::time::Duration::from_millis(1200)).await;
-
-    trigger_windsurf_callback(app, callback_token, Some(&profile.user_data_dir))
-        .await
-        .map_err(|e| format!("重试触发分身回调失败: {}", e))?;
-
-    let retry_state = wait_for_profile_auth_state(&profile.user_data_dir, target_email, target_name, 12).await;
-    match &retry_state {
-        ProfileAuthWaitResult::Verified(_) => {
-            info!(
-                "[Profile][macOS] Profile callback verified after retry: profile_id={}, target_email={}",
-                profile.id,
-                target_email
-            );
-        }
-        ProfileAuthWaitResult::Partial(info) => {
-            warn!(
-                "[Profile][macOS] Profile callback retry reached partial auth state: profile_id={}, target_email={}, observed_name={:?}",
-                profile.id,
-                target_email,
-                info.name.as_deref()
-            );
-        }
-        ProfileAuthWaitResult::Missing => {}
-    }
-    Ok(retry_state)
-}
-
 /// 检查分身是否已登录（state.vscdb 存在 windsurfAuthStatus 或 auth-usages 记录）
 fn is_profile_authenticated(user_data_dir: &Path) -> bool {
     get_windsurf_info_from_dir(user_data_dir)
@@ -746,11 +622,6 @@ async fn switch_profile_to_account(
     let already_authenticated = is_profile_authenticated(&profile.user_data_dir);
     let was_running = is_profile_running_from_cmds(profile, &list_windsurf_process_command_lines());
 
-    #[cfg(target_os = "macos")]
-    let mut preverified_info: Option<WindsurfCurrentInfo> = None;
-    #[cfg(not(target_os = "macos"))]
-    let preverified_info: Option<WindsurfCurrentInfo> = None;
-
     let used_file_based_login = if already_authenticated && was_running && !cfg!(target_os = "macos") {
         // 已认证且正在运行 → 走 callback URL，让正在跑的 Windsurf 实例直接接管，无需重启窗口
         if let Err(e) = trigger_windsurf_callback(app, &auth.callback_token, Some(&profile.user_data_dir)).await {
@@ -832,58 +703,23 @@ async fn switch_profile_to_account(
                 1500
             };
 
-            preverified_info = match trigger_macos_profile_callback_with_retry(
-                app,
-                profile,
-                &auth.callback_token,
-                &account.email,
-                &auth.register_result.name,
-                initial_delay_ms,
-                true,
-            ).await {
-                Ok(ProfileAuthWaitResult::Verified(info)) => Some(info),
-                Ok(ProfileAuthWaitResult::Partial(info)) => {
-                    let observed_name = info.name.unwrap_or_else(|| "unknown".to_string());
-                    let error = format!(
-                        "Windsurf 分身已部分消费登录回调，但没有生成完整认证状态: profile_id={}, target_email={}, observed_name={}",
-                        profile.id,
-                        account.email,
-                        observed_name
-                    );
-                    error!("[Profile][macOS] {}", error);
-                    return Ok(json!({
-                        "success": false,
-                        "error": error,
-                        "profile_id": profile.id,
-                        "account_id": account_id,
-                        "email": account.email,
-                        "auth_state": "partial_consumed"
-                    }));
-                }
-                Ok(ProfileAuthWaitResult::Missing) => {
-                    let error = format!(
-                        "Windsurf 分身未消费登录回调，已尝试启动分身并定向重试，请确认 Windsurf 已完全重启且无感换号补丁已应用: profile_id={}, target_email={}",
-                        profile.id,
-                        account.email
-                    );
-                    error!("[Profile][macOS] {}", error);
-                    return Ok(json!({
-                        "success": false,
-                        "error": error,
-                        "profile_id": profile.id,
-                        "account_id": account_id,
-                        "email": account.email,
-                        "auth_state": "missing"
-                    }));
-                }
-                Err(e) => {
-                    error!("[Profile][macOS] Profile callback failed: {}", e);
-                    return Ok(json!({
-                        "success": false,
-                        "error": e
-                    }));
-                }
-            };
+            if initial_delay_ms > 0 {
+                info!(
+                    "[Profile][macOS] Waiting {}ms for profile window before callback: profile_id={}, user_data_dir={}",
+                    initial_delay_ms,
+                    profile.id,
+                    profile.user_data_dir.display()
+                );
+                tokio::time::sleep(tokio::time::Duration::from_millis(initial_delay_ms)).await;
+            }
+
+            if let Err(e) = trigger_windsurf_callback(app, &auth.callback_token, Some(&profile.user_data_dir)).await {
+                error!("[Profile][macOS] Profile callback failed: {}", e);
+                return Ok(json!({
+                    "success": false,
+                    "error": e
+                }));
+            }
 
             false
         }
@@ -899,11 +735,7 @@ async fn switch_profile_to_account(
     // 切号已经执行（direct-write 写入文件 / callback URL 已投递给分身实例），
     // 这里的 wait 只是尝试在短时间内拿到最新的 state.vscdb 解析结果。
     // 即使等不到也不应判定为失败：分身可能仍在启动/处理 URL，前端 5s 轮询会兜底刷新。
-    let verified_info = if preverified_info.is_some() {
-        preverified_info
-    } else {
-        wait_for_profile_account(&profile.user_data_dir, &account.email).await
-    };
+    let verified_info = wait_for_profile_account(&profile.user_data_dir, &account.email).await;
     if verified_info.is_none() {
         if used_file_based_login {
             info!(
