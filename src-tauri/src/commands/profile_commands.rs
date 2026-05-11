@@ -247,59 +247,48 @@ async fn wait_for_profile_account(user_data_dir: &Path, target_email: &str) -> O
 }
 
 #[cfg(target_os = "macos")]
-async fn wait_for_macos_profile_process(profile: &WindsurfProfile, timeout_ms: u64) -> bool {
-    let started = std::time::Instant::now();
-    loop {
-        if is_profile_running_from_cmds(profile, &list_windsurf_process_command_lines()) {
-            return true;
-        }
-        if started.elapsed() >= std::time::Duration::from_millis(timeout_ms) {
-            return false;
-        }
-        tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
-    }
-}
-
-#[cfg(target_os = "macos")]
 async fn trigger_macos_profile_callback_with_retry(
     app: &tauri::AppHandle,
     profile: &WindsurfProfile,
     callback_token: &str,
     target_email: &str,
-) -> Result<(), String> {
-    const MAX_ATTEMPTS: usize = 8;
-    for attempt in 1..=MAX_ATTEMPTS {
+    initial_delay_ms: u64,
+) -> Result<Option<WindsurfCurrentInfo>, String> {
+    if initial_delay_ms > 0 {
         info!(
-            "[Profile][macOS] Dispatching profile callback: profile_id={}, target_email={}, attempt={}/{}, user_data_dir={}",
+            "[Profile][macOS] Waiting {}ms for profile window before callback: profile_id={}, user_data_dir={}",
+            initial_delay_ms,
             profile.id,
-            target_email,
-            attempt,
-            MAX_ATTEMPTS,
             profile.user_data_dir.display()
         );
-        trigger_windsurf_callback(app, callback_token, Some(&profile.user_data_dir))
-            .await
-            .map_err(|e| format!("触发分身回调失败: {}", e))?;
-        if wait_for_profile_account(&profile.user_data_dir, target_email).await.is_some() {
-            info!(
-                "[Profile][macOS] Profile callback verified: profile_id={}, target_email={}, attempt={}",
-                profile.id,
-                target_email,
-                attempt
-            );
-            return Ok(());
-        }
-        if attempt < MAX_ATTEMPTS {
-            tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
-        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(initial_delay_ms)).await;
     }
+
+    trigger_windsurf_callback(app, callback_token, Some(&profile.user_data_dir))
+        .await
+        .map_err(|e| format!("触发分身回调失败: {}", e))?;
+    if let Some(info) = wait_for_profile_account(&profile.user_data_dir, target_email).await {
+        info!(
+            "[Profile][macOS] Profile callback verified after first dispatch: profile_id={}, target_email={}",
+            profile.id,
+            target_email
+        );
+        return Ok(Some(info));
+    }
+
     warn!(
-        "[Profile][macOS] Profile callback not reflected after retries: profile_id={}, target_email={}, user_data_dir={}",
+        "[Profile][macOS] First callback dispatch did not update profile auth, retrying once: profile_id={}, target_email={}, user_data_dir={}",
         profile.id,
         target_email,
         profile.user_data_dir.display()
     );
-    Ok(())
+    tokio::time::sleep(tokio::time::Duration::from_millis(1200)).await;
+
+    trigger_windsurf_callback(app, callback_token, Some(&profile.user_data_dir))
+        .await
+        .map_err(|e| format!("重试触发分身回调失败: {}", e))?;
+
+    Ok(wait_for_profile_account(&profile.user_data_dir, target_email).await)
 }
 
 /// 检查分身是否已登录（state.vscdb 存在 windsurfAuthStatus 或 auth-usages 记录）
@@ -419,6 +408,7 @@ fn spawn_profile_window(profile: &WindsurfProfile, exe_path: &str) -> Result<(),
     let mut command = Command::new(exe_path);
     if !profile.is_main() {
         command.arg("--user-data-dir").arg(&profile.user_data_dir);
+        command.arg("--new-window");
     }
     info!(
         "[Profile][macOS] Launching Windsurf: profile_id={}, name={}, exe={}, user_data_dir={}, arch={}",
@@ -430,30 +420,6 @@ fn spawn_profile_window(profile: &WindsurfProfile, exe_path: &str) -> Result<(),
     );
     let child = command.spawn().map_err(|e| format!("启动分身失败: {}", e))?;
     info!("[Profile][macOS] Windsurf spawn requested: profile_id={}, pid={}", profile.id, child.id());
-    Ok(())
-}
-
-#[cfg(target_os = "macos")]
-fn spawn_profile_window_new_window(profile: &WindsurfProfile, exe_path: &str) -> Result<(), String> {
-    let mut command = Command::new(exe_path);
-    if !profile.is_main() {
-        command.arg("--user-data-dir").arg(&profile.user_data_dir);
-        command.arg("--new-window");
-    }
-    info!(
-        "[Profile][macOS] Launching Windsurf with new-window fallback: profile_id={}, name={}, exe={}, user_data_dir={}, arch={}",
-        profile.id,
-        profile.name,
-        exe_path,
-        profile.user_data_dir.display(),
-        std::env::consts::ARCH
-    );
-    let child = command.spawn().map_err(|e| format!("启动分身失败: {}", e))?;
-    info!(
-        "[Profile][macOS] Windsurf new-window fallback requested: profile_id={}, pid={}",
-        profile.id,
-        child.id()
-    );
     Ok(())
 }
 
@@ -764,61 +730,30 @@ async fn switch_profile_to_account(
             ensure_profile_local_state(profile)
                 .map_err(|e| format!("分身初始化失败: {}", e))?;
 
-            if was_running {
+            let initial_delay_ms = if was_running {
                 info!(
-                    "[Profile][macOS] Profile already running, restarting profile with callback: profile_id={}, target_email={}",
+                    "[Profile][macOS] Profile already running, dispatching callback directly: profile_id={}, target_email={}",
                     profile.id,
                     account.email
                 );
-                if let Err(e) = stop_profile_processes_sync(profile) {
-                    warn!("[Profile][macOS] stop profile before callback launch failed: {}", e);
-                }
-                tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
+                0
             } else {
                 info!(
-                    "[Profile][macOS] Profile not running, launching before callback: profile_id={}, target_email={}",
+                    "[Profile][macOS] Profile not running, launching window before callback: profile_id={}, target_email={}",
                     profile.id,
                     account.email
                 );
-            }
+                spawn_profile_window(profile, &exe_path)
+                    .map_err(|e| format!("启动分身失败: {}", e))?;
+                1500
+            };
 
-            if let Err(e) = spawn_profile_window(profile, &exe_path) {
-                error!("[Profile][macOS] Profile launch before callback failed: {}", e);
-                return Ok(json!({
-                    "success": false,
-                    "error": e
-                }));
-            }
-            if wait_for_macos_profile_process(profile, 5000).await {
-                tokio::time::sleep(tokio::time::Duration::from_millis(1800)).await;
-            } else {
-                warn!(
-                    "[Profile][macOS] Profile process not detected after normal launch, trying new-window fallback: profile_id={}, user_data_dir={}",
-                    profile.id,
-                    profile.user_data_dir.display()
-                );
-                if let Err(e) = spawn_profile_window_new_window(profile, &exe_path) {
-                    error!("[Profile][macOS] Profile new-window fallback failed: {}", e);
-                    return Ok(json!({
-                        "success": false,
-                        "error": e
-                    }));
-                }
-                if wait_for_macos_profile_process(profile, 8000).await {
-                    tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
-                } else {
-                    warn!(
-                        "[Profile][macOS] Profile process still not detected before callback retries: profile_id={}, user_data_dir={}",
-                        profile.id,
-                        profile.user_data_dir.display()
-                    );
-                }
-            }
             if let Err(e) = trigger_macos_profile_callback_with_retry(
                 app,
                 profile,
                 &auth.callback_token,
                 &account.email,
+                initial_delay_ms,
             ).await {
                 error!("[Profile][macOS] Profile callback failed: {}", e);
                 return Ok(json!({
