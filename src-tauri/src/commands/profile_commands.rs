@@ -249,14 +249,58 @@ async fn wait_for_profile_account(user_data_dir: &Path, target_email: &str) -> O
 }
 
 #[cfg(target_os = "macos")]
+enum ProfileAuthWaitResult {
+    Verified(WindsurfCurrentInfo),
+    Partial(WindsurfCurrentInfo),
+    Missing,
+}
+
+#[cfg(target_os = "macos")]
+fn profile_info_name_matches(info: &WindsurfCurrentInfo, target_name: &str) -> bool {
+    !target_name.trim().is_empty()
+        && info
+            .name
+            .as_deref()
+            .map(|name| name.eq_ignore_ascii_case(target_name))
+            .unwrap_or(false)
+}
+
+#[cfg(target_os = "macos")]
+async fn wait_for_profile_auth_state(
+    user_data_dir: &Path,
+    target_email: &str,
+    target_name: &str,
+    attempts: usize,
+) -> ProfileAuthWaitResult {
+    let mut partial_info: Option<WindsurfCurrentInfo> = None;
+    for attempt in 0..attempts {
+        if let Ok(info) = get_windsurf_info_from_dir(user_data_dir) {
+            if info.email.as_deref().map(|email| email.eq_ignore_ascii_case(target_email)).unwrap_or(false) {
+                return ProfileAuthWaitResult::Verified(info);
+            }
+            if partial_info.is_none() && profile_info_name_matches(&info, target_name) {
+                partial_info = Some(info);
+            }
+        }
+        if attempt + 1 < attempts {
+            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        }
+    }
+    partial_info
+        .map(ProfileAuthWaitResult::Partial)
+        .unwrap_or(ProfileAuthWaitResult::Missing)
+}
+
+#[cfg(target_os = "macos")]
 async fn trigger_macos_profile_callback_with_retry(
     app: &tauri::AppHandle,
     profile: &WindsurfProfile,
     callback_token: &str,
     target_email: &str,
+    target_name: &str,
     initial_delay_ms: u64,
     dispatch_first_callback: bool,
-) -> Result<Option<WindsurfCurrentInfo>, String> {
+) -> Result<ProfileAuthWaitResult, String> {
     if initial_delay_ms > 0 {
         info!(
             "[Profile][macOS] Waiting {}ms for profile window before callback: profile_id={}, user_data_dir={}",
@@ -272,13 +316,25 @@ async fn trigger_macos_profile_callback_with_retry(
             .await
             .map_err(|e| format!("触发分身回调失败: {}", e))?;
     }
-    if let Some(info) = wait_for_profile_account(&profile.user_data_dir, target_email).await {
-        info!(
-            "[Profile][macOS] Profile callback verified after first dispatch: profile_id={}, target_email={}",
-            profile.id,
-            target_email
-        );
-        return Ok(Some(info));
+    let first_state = wait_for_profile_auth_state(&profile.user_data_dir, target_email, target_name, 12).await;
+    match &first_state {
+        ProfileAuthWaitResult::Verified(_) => {
+            info!(
+                "[Profile][macOS] Profile callback verified after first dispatch: profile_id={}, target_email={}",
+                profile.id,
+                target_email
+            );
+            return Ok(first_state);
+        }
+        ProfileAuthWaitResult::Partial(info) => {
+            warn!(
+                "[Profile][macOS] Profile callback was partially consumed after first attempt: profile_id={}, target_email={}, observed_name={:?}",
+                profile.id,
+                target_email,
+                info.name.as_deref()
+            );
+        }
+        ProfileAuthWaitResult::Missing => {}
     }
 
     warn!(
@@ -294,7 +350,65 @@ async fn trigger_macos_profile_callback_with_retry(
         .await
         .map_err(|e| format!("重试触发分身回调失败: {}", e))?;
 
-    Ok(wait_for_profile_account(&profile.user_data_dir, target_email).await)
+    let retry_state = wait_for_profile_auth_state(&profile.user_data_dir, target_email, target_name, 12).await;
+    match &retry_state {
+        ProfileAuthWaitResult::Verified(_) => {
+            info!(
+                "[Profile][macOS] Profile callback verified after retry: profile_id={}, target_email={}",
+                profile.id,
+                target_email
+            );
+        }
+        ProfileAuthWaitResult::Partial(info) => {
+            warn!(
+                "[Profile][macOS] Profile callback retry reached partial auth state: profile_id={}, target_email={}, observed_name={:?}",
+                profile.id,
+                target_email,
+                info.name.as_deref()
+            );
+        }
+        ProfileAuthWaitResult::Missing => {}
+    }
+    Ok(retry_state)
+}
+
+#[cfg(target_os = "macos")]
+async fn trigger_macos_profile_fresh_callback_retry(
+    app: &tauri::AppHandle,
+    profile: &WindsurfProfile,
+    callback_token: &str,
+    target_email: &str,
+    target_name: &str,
+) -> Result<ProfileAuthWaitResult, String> {
+    tokio::time::sleep(tokio::time::Duration::from_millis(1200)).await;
+    info!(
+        "[Profile][macOS] Dispatching fresh OTT callback after partial auth: profile_id={}, target_email={}",
+        profile.id,
+        target_email
+    );
+    trigger_windsurf_callback(app, callback_token, Some(&profile.user_data_dir))
+        .await
+        .map_err(|e| format!("触发 fresh OTT 分身回调失败: {}", e))?;
+    let state = wait_for_profile_auth_state(&profile.user_data_dir, target_email, target_name, 30).await;
+    match &state {
+        ProfileAuthWaitResult::Verified(_) => {
+            info!(
+                "[Profile][macOS] Fresh OTT callback verified profile auth: profile_id={}, target_email={}",
+                profile.id,
+                target_email
+            );
+        }
+        ProfileAuthWaitResult::Partial(info) => {
+            warn!(
+                "[Profile][macOS] Fresh OTT callback still only reached partial auth state: profile_id={}, target_email={}, observed_name={:?}",
+                profile.id,
+                target_email,
+                info.name.as_deref()
+            );
+        }
+        ProfileAuthWaitResult::Missing => {}
+    }
+    Ok(state)
 }
 
 /// 检查分身是否已登录（state.vscdb 存在 windsurfAuthStatus 或 auth-usages 记录）
@@ -704,6 +818,8 @@ async fn switch_profile_to_account(
     let mut preverified_info: Option<WindsurfCurrentInfo> = None;
     #[cfg(not(target_os = "macos"))]
     let preverified_info: Option<WindsurfCurrentInfo> = None;
+    #[cfg(target_os = "macos")]
+    let mut macos_fresh_auth = None;
 
     let used_file_based_login = if already_authenticated && was_running && !cfg!(target_os = "macos") {
         // 已认证且正在运行 → 走 callback URL，让正在跑的 Windsurf 实例直接接管，无需重启窗口
@@ -793,11 +909,97 @@ async fn switch_profile_to_account(
                 profile,
                 &auth.callback_token,
                 &account.email,
+                &auth.register_result.name,
                 initial_delay_ms,
                 dispatch_first_callback,
             ).await {
-                Ok(Some(info)) => Some(info),
-                Ok(None) => {
+                Ok(ProfileAuthWaitResult::Verified(info)) => Some(info),
+                Ok(ProfileAuthWaitResult::Partial(info)) => {
+                    let observed_name = info.name.unwrap_or_else(|| "unknown".to_string());
+                    warn!(
+                        "[Profile][macOS] Profile callback reached partial auth, requesting fresh OTT retry: profile_id={}, target_email={}, observed_name={}",
+                        profile.id,
+                        account.email,
+                        observed_name
+                    );
+                    let retry_refresh_token = auth.refresh_token.clone().unwrap_or_else(|| refresh_token.clone());
+                    let fresh_auth = match get_auth_token_for_account(store, target_id, &account.email, &retry_refresh_token).await {
+                        Ok(auth) => auth,
+                        Err(e) => {
+                            let error = format!(
+                                "Windsurf 分身已部分消费登录回调，但重新获取 fresh OTT 失败: profile_id={}, target_email={}, observed_name={}, error={}",
+                                profile.id,
+                                account.email,
+                                observed_name,
+                                e
+                            );
+                            error!("[Profile][macOS] {}", error);
+                            return Ok(json!({
+                                "success": false,
+                                "error": error,
+                                "profile_id": profile.id,
+                                "account_id": account_id,
+                                "email": account.email,
+                                "auth_state": "partial_consumed"
+                            }));
+                        }
+                    };
+                    match trigger_macos_profile_fresh_callback_retry(
+                        app,
+                        profile,
+                        &fresh_auth.callback_token,
+                        &account.email,
+                        &fresh_auth.register_result.name,
+                    ).await {
+                        Ok(ProfileAuthWaitResult::Verified(info)) => {
+                            macos_fresh_auth = Some(fresh_auth);
+                            Some(info)
+                        }
+                        Ok(ProfileAuthWaitResult::Partial(info)) => {
+                            let observed_name = info.name.unwrap_or_else(|| "unknown".to_string());
+                            let error = format!(
+                                "Windsurf 分身已部分消费登录回调，但 fresh OTT 重试后仍未生成完整认证状态: profile_id={}, target_email={}, observed_name={}",
+                                profile.id,
+                                account.email,
+                                observed_name
+                            );
+                            error!("[Profile][macOS] {}", error);
+                            return Ok(json!({
+                                "success": false,
+                                "error": error,
+                                "profile_id": profile.id,
+                                "account_id": account_id,
+                                "email": account.email,
+                                "auth_state": "partial_consumed"
+                            }));
+                        }
+                        Ok(ProfileAuthWaitResult::Missing) => {
+                            let error = format!(
+                                "Windsurf 分身已部分消费登录回调，但 fresh OTT 重试后未检测到认证状态: profile_id={}, target_email={}, observed_name={}",
+                                profile.id,
+                                account.email,
+                                observed_name
+                            );
+                            error!("[Profile][macOS] {}", error);
+                            return Ok(json!({
+                                "success": false,
+                                "error": error,
+                                "profile_id": profile.id,
+                                "account_id": account_id,
+                                "email": account.email,
+                                "auth_state": "fresh_retry_missing"
+                            }));
+                        }
+                        Err(e) => {
+                            error!("[Profile][macOS] Fresh OTT callback retry failed: {}", e);
+                            return Ok(json!({
+                                "success": false,
+                                "error": e
+                            }));
+                        }
+                    }
+                }
+                Ok(ProfileAuthWaitResult::Missing) => {
                     let error = format!(
                         "Windsurf 分身未消费登录回调，已尝试启动携带回调和定向重试，请确认 Windsurf 已完全重启且无感换号补丁已应用: profile_id={}, target_email={}",
                         profile.id,
@@ -831,6 +1033,9 @@ async fn switch_profile_to_account(
             }));
         }
     };
+
+    #[cfg(target_os = "macos")]
+    let auth = macos_fresh_auth.unwrap_or(auth);
 
     // 切号已经执行（direct-write 写入文件 / callback URL 已投递给分身实例），
     // 这里的 wait 只是尝试在短时间内拿到最新的 state.vscdb 解析结果。
