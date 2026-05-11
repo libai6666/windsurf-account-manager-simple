@@ -740,11 +740,13 @@
 
 <script setup lang="ts">
 
-import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 
 import { ElMessage, ElMessageBox } from 'element-plus';
 
 import { Close, MoreFilled, Plus, Refresh, RefreshRight, Loading, Switch, VideoPlay } from '@element-plus/icons-vue';
+
+import { invoke } from '@tauri-apps/api/core';
 
 import { apiService, profileApi } from '@/api';
 
@@ -787,6 +789,8 @@ let autoContinueTimer: ReturnType<typeof setInterval> | null = null;
 const TIP_EXPANDED_KEY = 'profile-manager:tip-expanded';
 
 const AUTO_CONTINUE_ENABLED_KEY = 'profile-manager:auto-continue-enabled';
+
+const AUTO_CONTINUE_PATCH_REQUIRED_MESSAGE = 'Bridge补丁未安装或已还原，请先在设置中打补丁后再开启自动继续工作';
 
 const autoContinueEnabled = ref(Boolean(
 
@@ -1082,6 +1086,10 @@ async function runAutoContinue(showMessage = false) {
 
   try {
 
+    const patchReady = await ensureAutoContinueBridgePatchInstalled(showMessage);
+
+    if (!patchReady) return;
+
     const result = await profileApi.getAutoContinueBridgeStatus();
 
     autoContinueLastMessage.value = result.message || 'Bridge状态已刷新';
@@ -1154,13 +1162,21 @@ function startAutoContinueTimer() {
 
 async function setAutoContinueEnabled(enabled: boolean) {
 
-  autoContinueEnabled.value = enabled;
-
-  localStorage.setItem(AUTO_CONTINUE_ENABLED_KEY, enabled ? '1' : '0');
-
   autoContinueLoading.value = true;
 
   try {
+
+    if (enabled) {
+
+      const patchReady = await ensureAutoContinueBridgePatchInstalled(true);
+
+      if (!patchReady) return;
+
+    }
+
+    autoContinueEnabled.value = enabled;
+
+    localStorage.setItem(AUTO_CONTINUE_ENABLED_KEY, enabled ? '1' : '0');
 
     const result = await profileApi.setAutoContinueBridgeConfig(enabled);
 
@@ -1190,7 +1206,7 @@ async function setAutoContinueEnabled(enabled: boolean) {
 
   }
 
-  if (enabled) {
+  if (autoContinueEnabled.value) {
 
     startAutoContinueTimer();
 
@@ -1201,6 +1217,126 @@ async function setAutoContinueEnabled(enabled: boolean) {
   }
 
 }
+
+
+
+async function disableAutoContinueForMissingPatch(message = AUTO_CONTINUE_PATCH_REQUIRED_MESSAGE, showMessage = false) {
+
+  autoContinueEnabled.value = false;
+
+  localStorage.setItem(AUTO_CONTINUE_ENABLED_KEY, '0');
+
+  stopAutoContinueTimer();
+
+  autoContinueLastMessage.value = message;
+
+  try {
+
+    await profileApi.setAutoContinueBridgeConfig(false);
+
+  } catch (error) {
+
+    console.warn('关闭自动继续Bridge失败:', error);
+
+  }
+
+  if (settingsStore.settings.autoContinueBridgeEnabled) {
+
+    try {
+
+      await settingsStore.updateSettings({
+
+        ...settingsStore.settings,
+
+        autoContinueBridgeEnabled: false,
+
+      });
+
+    } catch (error) {
+
+      console.warn('同步自动继续Bridge设置失败:', error);
+
+    }
+
+  }
+
+  if (showMessage) {
+
+    ElMessage.warning(message);
+
+  }
+
+}
+
+
+
+async function ensureAutoContinueBridgePatchInstalled(showMessage = false) {
+
+  const windsurfPath = settingsStore.settings.windsurfPath;
+
+  if (!windsurfPath) {
+
+    await disableAutoContinueForMissingPatch('未检测到Windsurf安装路径，请先在设置中检测路径并安装Bridge补丁', showMessage);
+
+    return false;
+
+  }
+
+  try {
+
+    const status = await invoke<any>('check_patch_status', {
+
+      windsurfPath,
+
+    });
+
+    if (!status.auto_continue_bridge) {
+
+      await disableAutoContinueForMissingPatch(AUTO_CONTINUE_PATCH_REQUIRED_MESSAGE, showMessage);
+
+      return false;
+
+    }
+
+    return true;
+
+  } catch (error) {
+
+    await disableAutoContinueForMissingPatch(`检查Bridge补丁失败: ${error}，请先确认补丁已安装`, showMessage);
+
+    return false;
+
+  }
+
+}
+
+
+
+watch(
+
+  () => settingsStore.settings.autoContinueBridgeEnabled,
+
+  (enabled) => {
+
+    const value = Boolean(enabled);
+
+    autoContinueEnabled.value = value;
+
+    localStorage.setItem(AUTO_CONTINUE_ENABLED_KEY, value ? '1' : '0');
+
+    if (value) {
+
+      startAutoContinueTimer();
+
+    } else {
+
+      stopAutoContinueTimer();
+
+    }
+
+  },
+
+);
 
 
 

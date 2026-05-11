@@ -649,6 +649,20 @@ const patchStatus = reactive({
 });
 const autoContinueBridgeLoading = ref(false);
 const autoContinueBridgeMessage = ref('');
+const AUTO_CONTINUE_ENABLED_KEY = 'profile-manager:auto-continue-enabled';
+const AUTO_CONTINUE_PATCH_REQUIRED_MESSAGE = 'Bridge补丁未安装或已还原，自动继续工作已关闭，请先打补丁后再开启';
+
+
+async function disableAutoContinueBridgeForMissingPatch() {
+  settings.autoContinueBridgeEnabled = false;
+  localStorage.setItem(AUTO_CONTINUE_ENABLED_KEY, '0');
+  autoContinueBridgeMessage.value = AUTO_CONTINUE_PATCH_REQUIRED_MESSAGE;
+  try {
+    await invoke('set_auto_continue_bridge_config', { enabled: false });
+  } catch (error) {
+    console.warn('关闭自动继续Bridge失败:', error);
+  }
+}
 
 
 watch(() => uiStore.showSettingsDialog, async (show) => {
@@ -782,11 +796,20 @@ async function checkPatchStatus() {
     patchStatus.oauthHandler = Boolean(status.oauth_handler);
     patchStatus.autoContinueBridge = Boolean(status.auto_continue_bridge);
     patchStatus.error = status.error || '';
+
+    let shouldSaveSettings = false;
     
-    // 同步开关状态与实际补丁状态
     if (status.installed !== settings.seamlessSwitchEnabled) {
       settings.seamlessSwitchEnabled = status.installed;
-      // 保存同步后的状态
+      shouldSaveSettings = true;
+    }
+
+    if (!status.auto_continue_bridge && settings.autoContinueBridgeEnabled) {
+      await disableAutoContinueBridgeForMissingPatch();
+      shouldSaveSettings = true;
+    }
+
+    if (shouldSaveSettings) {
       await settingsStore.updateSettings(settings);
     }
   } catch (error) {
