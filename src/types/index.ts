@@ -121,6 +121,41 @@ export interface Account {
  */
 export type AccountSource = 'windsurf' | 'devin';
 
+export interface WindsurfCurrentInfo {
+  email?: string | null;
+  name?: string | null;
+  api_key?: string | null;
+  plan_name?: string | null;
+  team_id?: string | null;
+  version?: string | null;
+  is_active: boolean;
+}
+
+export interface ProfileAutoSwitch {
+  enabled: boolean;
+  group: string;
+  threshold: number;
+  checkInterval?: number;
+}
+
+export interface WindsurfProfile {
+  id: string;
+  name: string;
+  userDataDir: string;
+  extensionsDir?: string | null;
+  boundAccountId?: string | null;
+  autoSwitch: ProfileAutoSwitch;
+  lastAccountEmail?: string | null;
+  lastUsedAt?: string | null;
+  createdAt: string;
+}
+
+export interface ProfileRuntimeInfo {
+  profile: WindsurfProfile;
+  isRunning: boolean;
+  currentInfo?: WindsurfCurrentInfo | null;
+}
+
 // ============================================================
 // GetCurrentUser API 响应类型（与后端 proto_parser.rs 保持一致）
 // ============================================================
@@ -334,6 +369,7 @@ export interface Settings {
   seamlessSwitchEnabled?: boolean;  // 是否启用无感换号
   windsurfPath?: string | null;  // Windsurf安装路径
   patchBackupPath?: string | null;  // 补丁备份文件路径
+  autoContinueBridgeEnabled?: boolean;  // 是否启用内部自动继续Bridge
   autoOpenBrowser?: boolean;  // 是否自动打开浏览器
   browserMode?: 'incognito' | 'normal';  // 浏览器模式
   privacyMode?: boolean;  // 隐私模式，隐藏邮箱地址

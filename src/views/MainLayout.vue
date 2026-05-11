@@ -26,6 +26,11 @@
           <el-icon><User /></el-icon>
           <template #title>账号管理</template>
         </el-menu-item>
+
+        <el-menu-item index="profiles" @click="setActiveMenu('profiles')">
+          <el-icon><ProfileIcon /></el-icon>
+          <template #title>分身管理</template>
+        </el-menu-item>
         
         <el-sub-menu index="groups">
           <template #title>
@@ -105,7 +110,7 @@
     <!-- 主内容区 -->
     <el-container>
       <!-- 顶部操作栏（非概览时显示） -->
-      <el-header v-show="activeMenu !== 'overview'" :class="['header', { 'header-compact': accountsStore.selectedAccounts.size > 0 }]">
+      <el-header v-show="activeMenu !== 'overview' && activeMenu !== 'profiles'" :class="['header', { 'header-compact': accountsStore.selectedAccounts.size > 0 }]">
         <div class="header-left">
           <el-input
             v-model="searchQuery"
@@ -373,6 +378,8 @@
       <el-main class="main-content">
         <!-- 概览面板 -->
         <DeviceManagerPanel v-if="activeMenu === 'overview'" @switch-to-group="handleSwitchToGroup" />
+
+        <ProfileManagerPanel v-else-if="activeMenu === 'profiles'" />
 
         <!-- 账号管理内容 -->
         <template v-else>
@@ -774,6 +781,8 @@ import TurnstileDialog from '@/components/TurnstileDialog.vue';
 import BatchTrialLinksDialog from '@/components/BatchTrialLinksDialog.vue';
 import ConcurrentTurnstileDialog from '@/components/ConcurrentTurnstileDialog.vue';
 import DeviceManagerPanel from '@/components/DeviceManagerPanel.vue';
+import ProfileManagerPanel from '@/components/ProfileManagerPanel.vue';
+import ProfileIcon from '@/components/icons/ProfileIcon.vue';
 import type { TrialLinkItem } from '@/components/BatchTrialLinksDialog.vue';
 import logger from '@/utils/logger';
 

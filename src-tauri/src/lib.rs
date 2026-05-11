@@ -94,6 +94,16 @@ pub fn run() {
             let reset_record_store = ResetRecordStore::new(app.handle())
                 .expect("Failed to initialize reset record store");
             app.manage(Arc::new(reset_record_store));
+
+            commands::start_auto_continue_bridge_server();
+            let store_for_auto_continue = store.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Ok(settings) = store_for_auto_continue.get_settings().await {
+                    let _ = commands::set_auto_continue_bridge_config(
+                        settings.auto_continue_bridge_enabled,
+                    ).await;
+                }
+            });
             
             // 初始化代理配置
             let store_for_proxy = store.clone();
@@ -209,6 +219,23 @@ pub fn run() {
             commands::reset_machine_id,
             commands::check_admin_privileges,
             commands::check_auto_switch,
+
+            // Windsurf 分身命令
+            commands::list_profiles,
+            commands::create_profile,
+            commands::rename_profile,
+            commands::delete_profile,
+            commands::is_profile_running,
+            commands::launch_profile,
+            commands::stop_profile,
+            commands::get_profile_current_info,
+            commands::bind_account_to_profile,
+            commands::update_profile_auto_switch_config,
+            commands::switch_account_in_profile,
+            commands::check_profile_auto_switch,
+            commands::auto_continue_windsurf_conversations,
+            commands::get_auto_continue_bridge_status,
+            commands::set_auto_continue_bridge_config,
             
             // 机器设备码管理命令
             commands::get_current_machine_ids,
@@ -233,6 +260,7 @@ pub fn run() {
             commands::apply_seamless_patch,
             commands::restore_seamless_patch,
             commands::check_patch_status,
+            commands::apply_auto_continue_bridge_patch,
             commands::validate_windsurf_path,
             
             // 初始化 Windsurf

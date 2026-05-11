@@ -440,80 +440,41 @@
             </div>
           </el-form-item>
           
-          <el-divider content-position="left">自动换号</el-divider>
-          
-          <el-form-item label="启用自动换号">
-            <el-switch 
-              v-model="settings.autoSwitchEnabled"
-              active-text="开启"
-              inactive-text="关闭"
-              :disabled="!settings.seamlessSwitchEnabled"
-            />
-            <div style="margin-top: 5px; color: #909399; font-size: 12px;" v-if="!settings.seamlessSwitchEnabled">
-              需要先启用无感换号功能
-            </div>
-          </el-form-item>
-          
-          <el-form-item label="换号分组" v-if="settings.autoSwitchEnabled">
-            <el-select v-model="settings.autoSwitchGroup" placeholder="选择分组" style="width: 200px;">
-              <el-option
-                v-for="group in settingsStore.groups"
-                :key="group"
-                :label="group"
-                :value="group"
+          <el-form-item label="自动继续 Bridge">
+            <el-space wrap>
+              <el-tag v-if="patchStatus.autoContinueBridge" type="success">Bridge补丁已安装</el-tag>
+              <el-tag v-else type="info">Bridge补丁未安装</el-tag>
+              <el-button
+                size="small"
+                type="primary"
+                :disabled="!windsurfPath"
+                :loading="autoContinueBridgeLoading"
+                @click="installAutoContinueBridgePatch"
+              >
+                安装/修复Bridge补丁
+              </el-button>
+              <el-button
+                size="small"
+                :loading="autoContinueBridgeLoading"
+                @click="checkAutoContinueBridgeStatus"
+              >
+                检查Bridge
+              </el-button>
+            </el-space>
+            <div style="margin-top: 8px;">
+              <el-switch
+                v-model="settings.autoContinueBridgeEnabled"
+                active-text="启用Bridge"
+                inactive-text="关闭Bridge"
+                :loading="autoContinueBridgeLoading"
+                @change="handleAutoContinueBridgeEnabled"
               />
-            </el-select>
-            <div style="margin-top: 5px; color: #909399; font-size: 12px;">
-              从该分组中选择可用账号进行切换
             </div>
-          </el-form-item>
-          
-          <el-form-item label="当前账号" v-if="settings.autoSwitchEnabled">
-            <el-select 
-              v-model="settings.autoSwitchCurrentAccountId" 
-              placeholder="选择当前使用的账号" 
-              style="width: 320px;"
-              filterable
-            >
-              <el-option
-                v-for="acc in groupAccounts"
-                :key="acc.id"
-                :label="`${acc.email}${acc.daily_quota_remaining !== undefined ? ` (日${acc.daily_quota_remaining}%/周${acc.weekly_quota_remaining ?? '?'}%)` : ''}`"
-                :value="acc.id"
-              />
-            </el-select>
             <div style="margin-top: 5px; color: #909399; font-size: 12px;">
-              <span v-if="editorCurrentEmail">编辑器当前登录: <b>{{ editorCurrentEmail }}</b>（自动检测）</span>
-              <span v-else>手动切号时会自动更新，自动换号时基于编辑器实际登录状态判断</span>
+              Bridge 从 Windsurf 内部页面文本捕获中断提示，开启后会在当前 Cascade 输入框自动填入并提交“继续工作”。
             </div>
-          </el-form-item>
-          
-          <el-form-item label="切号阈值" v-if="settings.autoSwitchEnabled">
-            <el-input-number
-              v-model="settings.autoSwitchThreshold"
-              :min="0"
-              :max="99"
-              :step="1"
-              style="width: 160px;"
-            />
-            <span style="margin-left: 8px; color: #606266;">%</span>
-            <div style="margin-top: 5px; color: #909399; font-size: 12px;">
-              当前账号每日配额剩余低于此百分比，或每周配额为0时自动切换
-            </div>
-          </el-form-item>
-          
-          <el-form-item label="检测间隔" v-if="settings.autoSwitchEnabled">
-            <el-select v-model="settings.autoSwitchCheckInterval" style="width: 200px;">
-              <el-option :label="'10 秒'" :value="10" />
-              <el-option :label="'30 秒'" :value="30" />
-              <el-option :label="'1 分钟'" :value="60" />
-              <el-option :label="'3 分钟'" :value="180" />
-              <el-option :label="'5 分钟'" :value="300" />
-              <el-option :label="'10 分钟'" :value="600" />
-              <el-option :label="'15 分钟'" :value="900" />
-            </el-select>
-            <div style="margin-top: 5px; color: #909399; font-size: 12px;">
-              定时检测当前账号配额的时间间隔
+            <div v-if="autoContinueBridgeMessage" style="margin-top: 5px; color: #67c23a; font-size: 12px;">
+              {{ autoContinueBridgeMessage }}
             </div>
           </el-form-item>
 
@@ -527,9 +488,8 @@
             <template #default>
               <div style="font-size: 12px; line-height: 1.6;">
                 <p>🚀 无感换号功能：实现 Windsurf 账号无感切换</p>
+                <p>🔁 自动继续 Bridge：搭配自动换号使用，自动换号切到可用账号后，由 Windsurf 内部 Bridge 捕获页面中的模型异常、额度耗尽或试用用户全局限流等中断事件，并在当前 Cascade 输入框自动填入并提交“继续工作”。</p>
                 <p>⚠️ 注意：开启/关闭时会自动重启 Windsurf</p>
-                <p>🔄 自动换号：定时检测当前账号每日配额和每周配额，日配额低于阈值或周配额为0时自动切换</p>
-                <p>💡 候选账号需同时满足：日配额>阈值 且 周配额>0%，否则暂停切换并通知</p>
               </div>
             </template>
           </el-alert>
@@ -578,39 +538,18 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, watch, onMounted, computed } from 'vue';
+import { ref, reactive, watch, onMounted } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Connection, RefreshRight } from '@element-plus/icons-vue';
-import { useSettingsStore, useUIStore, useAccountsStore } from '@/store';
+import { useSettingsStore, useUIStore } from '@/store';
 import { invoke } from '@tauri-apps/api/core';
-import { systemApi, apiService } from '@/api';
+import { systemApi } from '@/api';
 
 const settingsStore = useSettingsStore();
 const uiStore = useUIStore();
-const accountsStore = useAccountsStore();
-
-// 编辑器当前登录的邮箱
-const editorCurrentEmail = ref<string | null>(null);
-
-// 当前分组内的账号列表（用于手动切号选择）
-const groupAccounts = computed(() => {
-  const group = settings.autoSwitchGroup;
-  if (!group) return [];
-  const inGroup = accountsStore.accounts.filter(a => a.group === group);
-  // 如果当前选中的账号不在分组内（被移走了），也加入列表以避免显示原始UUID
-  const currentId = settings.autoSwitchCurrentAccountId;
-  if (currentId && !inGroup.some(a => a.id === currentId)) {
-    const currentAcc = accountsStore.accounts.find(a => a.id === currentId);
-    if (currentAcc) {
-      return [...inGroup, currentAcc];
-    }
-  }
-  return inGroup;
-});
 
 const loading = ref(false);
 const activeTab = ref('basic');  // 当前激活的标签页
-const originalAutoSwitchAccountId = ref<string | null>(null);  // 对话框打开时记录的原始当前账号ID
 const seatCountOptionsInput = ref('18, 19, 20');  // 座位数选项输入框
 const resettingHttp = ref(false);  // HTTP客户端重置中
 
@@ -657,6 +596,7 @@ const settings = reactive<{
   seamlessSwitchEnabled: boolean;
   windsurfPath: string | null;
   patchBackupPath: string | null;
+  autoContinueBridgeEnabled: boolean;
   autoOpenBrowser: boolean;
   browserMode: 'incognito' | 'normal';
   privacyMode: boolean;
@@ -690,6 +630,7 @@ const settings = reactive<{
   seamlessSwitchEnabled: false,  // 默认关闭无感换号
   windsurfPath: null,  // Windsurf路径
   patchBackupPath: null,  // 补丁备份路径
+  autoContinueBridgeEnabled: false,
   autoOpenBrowser: true,  // 默认自动打开浏览器
   browserMode: 'incognito',  // 默认无痕模式
   privacyMode: false,  // 默认关闭隐私模式
@@ -778,8 +719,12 @@ const detectingPath = ref(false);
 const patchLoading = ref(false);
 const patchStatus = reactive({
   installed: false,
+  oauthHandler: false,
+  autoContinueBridge: false,
   error: '',
 });
+const autoContinueBridgeLoading = ref(false);
+const autoContinueBridgeMessage = ref('');
 
 // 初始化 Windsurf 相关
 const resettingWindsurf = ref(false);
@@ -787,29 +732,7 @@ const resettingWindsurf = ref(false);
 watch(() => uiStore.showSettingsDialog, async (show) => {
   if (show && settingsStore.settings) {
     Object.assign(settings, settingsStore.settings);
-    originalAutoSwitchAccountId.value = settings.autoSwitchCurrentAccountId || null;
     windsurfPath.value = settings.windsurfPath || '';
-    // 加载编辑器当前登录状态，并自动匹配选中对应账号
-    try {
-      const info = await invoke<{ email?: string; is_active: boolean }>('get_current_windsurf_info');
-      editorCurrentEmail.value = info.email || null;
-      // 根据编辑器登录邮箱自动匹配账号，同步分组和选中
-      if (info.email) {
-        const matched = accountsStore.accounts.find(
-          a => a.email.toLowerCase() === info.email!.toLowerCase()
-        );
-        if (matched) {
-          // 同步换号分组为该账号所在的分组
-          if (matched.group) {
-            settings.autoSwitchGroup = matched.group;
-          }
-          settings.autoSwitchCurrentAccountId = matched.id;
-          originalAutoSwitchAccountId.value = matched.id;
-        }
-      }
-    } catch {
-      editorCurrentEmail.value = null;
-    }
     // 同步座位数选项到输入框
     if (settings.seat_count_options && settings.seat_count_options.length > 0) {
       seatCountOptionsInput.value = settings.seat_count_options.join(', ');
@@ -857,40 +780,9 @@ async function handleSave() {
     if (windsurfPath.value) {
       settings.windsurfPath = windsurfPath.value;
     }
-    
-    // 记录用户选择的新账号ID
-    const newAccountId = settings.autoSwitchCurrentAccountId;
-    const needSwitch = settings.autoSwitchEnabled && settings.seamlessSwitchEnabled
-        && newAccountId && originalAutoSwitchAccountId.value !== newAccountId;
-    
-    // 保存设置时先用原始账号ID，避免还没切号就触发高亮更新
-    if (needSwitch) {
-      settings.autoSwitchCurrentAccountId = originalAutoSwitchAccountId.value;
-    }
     await settingsStore.updateSettings(settings);
     uiStore.setTheme(settings.theme as 'light' | 'dark');
     ElMessage.success('设置保存成功');
-    
-    // 实际切号：成功后才更新当前账号ID
-    if (needSwitch) {
-      try {
-        const selectedAccount = groupAccounts.value.find(a => a.id === newAccountId);
-        if (selectedAccount) {
-          ElMessage.info('正在切换到选中的当前账号...');
-          const result = await apiService.switchAccount(selectedAccount.id);
-          if (result.success) {
-            ElMessage.success(`已切换到账号: ${selectedAccount.email}`);
-            // 切号成功，现在才更新store中的当前账号ID（触发高亮更新）
-            await settingsStore.loadSettings();
-          } else {
-            ElMessage.warning(`切号失败: ${result.error || '未知错误'}`);
-          }
-        }
-      } catch (switchError) {
-        console.error('手动切号失败:', switchError);
-      }
-    }
-    
     handleClose();
   } catch (error) {
     ElMessage.error(`保存失败: ${error}`);
@@ -981,6 +873,8 @@ async function checkPatchStatus() {
       windsurfPath: windsurfPath.value
     });
     patchStatus.installed = status.installed;
+    patchStatus.oauthHandler = Boolean(status.oauth_handler);
+    patchStatus.autoContinueBridge = Boolean(status.auto_continue_bridge);
     patchStatus.error = status.error || '';
     
     // 同步开关状态与实际补丁状态
@@ -991,7 +885,66 @@ async function checkPatchStatus() {
     }
   } catch (error) {
     patchStatus.installed = false;
+    patchStatus.oauthHandler = false;
+    patchStatus.autoContinueBridge = false;
     patchStatus.error = error as string;
+  }
+}
+
+async function syncAutoContinueBridgeConfig() {
+  const status = await invoke<any>('set_auto_continue_bridge_config', {
+    enabled: settings.autoContinueBridgeEnabled,
+  });
+  autoContinueBridgeMessage.value = status.message || 'Bridge配置已同步';
+}
+
+async function checkAutoContinueBridgeStatus() {
+  autoContinueBridgeLoading.value = true;
+  try {
+    const status = await invoke<any>('get_auto_continue_bridge_status');
+    const config = status.config || {};
+    settings.autoContinueBridgeEnabled = Boolean(config.enabled);
+    autoContinueBridgeMessage.value = `${status.message || 'Bridge状态已刷新'}，端口 ${status.port}`;
+  } catch (error) {
+    ElMessage.error(`检查Bridge失败: ${error}`);
+  } finally {
+    autoContinueBridgeLoading.value = false;
+  }
+}
+
+async function installAutoContinueBridgePatch() {
+  if (!windsurfPath.value) {
+    ElMessage.error('请先检测或设置Windsurf路径');
+    return;
+  }
+  autoContinueBridgeLoading.value = true;
+  try {
+    const result = await invoke<any>('apply_auto_continue_bridge_patch', {
+      windsurfPath: windsurfPath.value,
+    });
+    if (result.success) {
+      ElMessage.success(result.message || 'Bridge补丁已安装');
+      await checkPatchStatus();
+    }
+  } catch (error) {
+    ElMessage.error(`安装Bridge补丁失败: ${error}`);
+  } finally {
+    autoContinueBridgeLoading.value = false;
+  }
+}
+
+async function handleAutoContinueBridgeEnabled(value: boolean) {
+  autoContinueBridgeLoading.value = true;
+  try {
+    settings.autoContinueBridgeEnabled = value;
+    await syncAutoContinueBridgeConfig();
+    await settingsStore.updateSettings(settings);
+    ElMessage.success(value ? '自动继续Bridge已启用' : '自动继续Bridge已关闭');
+  } catch (error) {
+    settings.autoContinueBridgeEnabled = !value;
+    ElMessage.error(`同步Bridge配置失败: ${error}`);
+  } finally {
+    autoContinueBridgeLoading.value = false;
   }
 }
 

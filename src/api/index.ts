@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 
-import type { Account, Settings, OperationLog, UpdateSeatsResult, BillingInfo, BatchResult, GlobalTag, SortField, SortDirection, SortConfig, MachineIdRecord } from '@/types';
+import type { Account, Settings, OperationLog, UpdateSeatsResult, BillingInfo, BatchResult, GlobalTag, SortField, SortDirection, SortConfig, MachineIdRecord, ProfileRuntimeInfo, WindsurfProfile, WindsurfCurrentInfo } from '@/types';
 import type { AnalyticsData } from '@/types/analytics';
 
 
@@ -107,6 +107,68 @@ export const accountApi = {
 
   }
 
+};
+
+export const profileApi = {
+  async listProfiles(): Promise<ProfileRuntimeInfo[]> {
+    return await invoke('list_profiles');
+  },
+
+  async createProfile(name: string): Promise<ProfileRuntimeInfo> {
+    return await invoke('create_profile', { name });
+  },
+
+  async renameProfile(profileId: string, name: string): Promise<ProfileRuntimeInfo> {
+    return await invoke('rename_profile', { profileId, name });
+  },
+
+  async deleteProfile(profileId: string): Promise<{ success: boolean; message?: string }> {
+    return await invoke('delete_profile', { profileId });
+  },
+
+  async isProfileRunning(profileId: string): Promise<boolean> {
+    return await invoke('is_profile_running', { profileId });
+  },
+
+  async launchProfile(profileId: string): Promise<{ success: boolean; alreadyRunning?: boolean; profileId: string }> {
+    return await invoke('launch_profile', { profileId });
+  },
+
+  async stopProfile(profileId: string): Promise<{ success: boolean; alreadyStopped?: boolean; profileId: string; stopped?: number }> {
+    return await invoke('stop_profile', { profileId });
+  },
+
+  async getProfileCurrentInfo(profileId: string): Promise<WindsurfCurrentInfo> {
+    return await invoke('get_profile_current_info', { profileId });
+  },
+
+  async bindAccountToProfile(profileId: string, accountId?: string | null): Promise<WindsurfProfile> {
+    return await invoke('bind_account_to_profile', { profileId, accountId });
+  },
+
+  async updateProfileAutoSwitchConfig(profileId: string, enabled: boolean, group: string, threshold: number, checkInterval?: number): Promise<WindsurfProfile> {
+    return await invoke('update_profile_auto_switch_config', { profileId, enabled, group, threshold, checkInterval });
+  },
+
+  async switchAccountInProfile(profileId: string, accountId: string): Promise<any> {
+    return await invoke('switch_account_in_profile', { profileId, accountId });
+  },
+
+  async checkProfileAutoSwitch(profileId: string): Promise<any> {
+    return await invoke('check_profile_auto_switch', { profileId });
+  },
+
+  async autoContinueWindsurfConversations(): Promise<{ success: boolean; bridge?: boolean; continued: number; windows: string[]; message: string }> {
+    return await invoke('auto_continue_windsurf_conversations');
+  },
+
+  async getAutoContinueBridgeStatus(): Promise<any> {
+    return await invoke('get_auto_continue_bridge_status');
+  },
+
+  async setAutoContinueBridgeConfig(enabled: boolean): Promise<any> {
+    return await invoke('set_auto_continue_bridge_config', { enabled });
+  }
 };
 
 

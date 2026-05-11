@@ -144,10 +144,10 @@ fn deserialize_protobuf_response(data: &[u8]) -> Option<String> {
 }
 
 /// RegisterUser 响应数据
-struct RegisterUserResult {
-    api_key: String,
-    name: String,
-    api_server_url: String,
+pub(crate) struct RegisterUserResult {
+    pub(crate) api_key: String,
+    pub(crate) name: String,
+    pub(crate) api_server_url: String,
 }
 
 /// 解析 RegisterUser protobuf 响应
@@ -220,12 +220,12 @@ async fn call_register_user(id_token: &str) -> AppResult<RegisterUserResult> {
         .ok_or_else(|| AppError::ApiRequest("Failed to parse RegisterUser response".to_string()))
 }
 
-struct SwitchAuthResult {
-    register_result: RegisterUserResult,
-    callback_token: String,
-    access_token: String,
-    refresh_token: Option<String>,
-    expires_in: String,
+pub(crate) struct SwitchAuthResult {
+    pub(crate) register_result: RegisterUserResult,
+    pub(crate) callback_token: String,
+    pub(crate) access_token: String,
+    pub(crate) refresh_token: Option<String>,
+    pub(crate) expires_in: String,
 }
 
 async fn get_auth_token_from_auth_result(
@@ -283,7 +283,7 @@ async fn get_auth_token(refresh_token: &str) -> AppResult<SwitchAuthResult> {
     }
 }
 
-async fn get_auth_token_for_account(
+pub(crate) async fn get_auth_token_for_account(
     store: &Arc<DataStore>,
     account_id: Uuid,
     email: &str,
@@ -304,16 +304,18 @@ async fn get_auth_token_for_account(
 
 /// 直接写入 Windsurf state.vscdb 完成账号切换（绕过回调URL）
 #[cfg(target_os = "windows")]
-fn write_windsurf_auth_direct(api_key: &str, name: &str, api_server_url: &str) -> AppResult<()> {
+pub(crate) fn write_windsurf_auth_direct(
+    api_key: &str,
+    name: &str,
+    api_server_url: &str,
+    user_data_dir: &std::path::Path,
+) -> AppResult<()> {
     use aes_gcm::{Aes256Gcm, KeyInit, aead::Aead};
     use aes_gcm::aead::generic_array::GenericArray;
     use rand::RngCore;
 
-    let appdata = std::env::var("APPDATA")
-        .map_err(|e| AppError::Config(format!("Failed to get APPDATA: {}", e)))?;
-
     // 1. 读取 AES 密钥 (从 Local State, DPAPI 保护)
-    let local_state_path = format!("{}\\Windsurf\\Local State", appdata);
+    let local_state_path = user_data_dir.join("Local State");
     let local_state_content = std::fs::read_to_string(&local_state_path)
         .map_err(|e| AppError::FileOperation(format!("Failed to read Local State: {}", e)))?;
     let local_state: serde_json::Value = serde_json::from_str(&local_state_content)
@@ -393,9 +395,20 @@ fn write_windsurf_auth_direct(api_key: &str, name: &str, api_server_url: &str) -
         .map_err(|e| AppError::Config(format!("Failed to serialize url buffer: {}", e)))?;
 
     // 5. 更新 windsurfAuthStatus (只更新 apiKey，保留其他字段)
-    let db_path = format!("{}\\Windsurf\\User\\globalStorage\\state.vscdb", appdata);
+    let db_path = user_data_dir
+        .join("User")
+        .join("globalStorage")
+        .join("state.vscdb");
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| AppError::FileOperation(format!("Failed to create globalStorage dir: {}", e)))?;
+    }
     let conn = rusqlite::Connection::open(&db_path)
         .map_err(|e| AppError::Database(format!("Failed to open state.vscdb: {}", e)))?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS ItemTable (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB)",
+        [],
+    ).map_err(|e| AppError::Database(format!("Failed to ensure ItemTable: {}", e)))?;
 
     // 读取当前 windsurfAuthStatus
     let current_auth: Option<String> = conn.query_row(
@@ -485,54 +498,147 @@ fn dpapi_decrypt(data: &[u8]) -> AppResult<Vec<u8>> {
     Ok(decrypted)
 }
 
+#[cfg(target_os = "windows")]
+fn dpapi_encrypt(data: &[u8]) -> AppResult<Vec<u8>> {
+    use winapi::um::dpapi::CryptProtectData;
+    use winapi::um::wincrypt::CRYPTOAPI_BLOB;
+    use std::ptr;
+
+    extern "system" {
+        fn LocalFree(hMem: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
+    }
+
+    let mut input_blob = CRYPTOAPI_BLOB {
+        cbData: data.len() as u32,
+        pbData: data.as_ptr() as *mut u8,
+    };
+    let mut output_blob = CRYPTOAPI_BLOB {
+        cbData: 0,
+        pbData: ptr::null_mut(),
+    };
+
+    let result = unsafe {
+        CryptProtectData(
+            &mut input_blob,
+            ptr::null(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+            0,
+            &mut output_blob,
+        )
+    };
+
+    if result == 0 {
+        return Err(AppError::Config(format!("DPAPI CryptProtectData failed: {}", std::io::Error::last_os_error())));
+    }
+
+    let encrypted = unsafe {
+        std::slice::from_raw_parts(output_blob.pbData, output_blob.cbData as usize).to_vec()
+    };
+
+    unsafe { LocalFree(output_blob.pbData as *mut _); }
+
+    Ok(encrypted)
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn prepare_profile_local_state(user_data_dir: &std::path::Path) -> AppResult<()> {
+    use base64::{Engine, engine::general_purpose};
+    use rand::RngCore;
+
+    let local_state_path = user_data_dir.join("Local State");
+
+    if local_state_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(&local_state_path) {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                if json.get("os_crypt").and_then(|v| v.get("encrypted_key")).and_then(|v| v.as_str()).is_some() {
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    std::fs::create_dir_all(user_data_dir)
+        .map_err(|e| AppError::FileOperation(format!("Failed to create user_data_dir: {}", e)))?;
+
+    let mut aes_key = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut aes_key);
+
+    let encrypted = dpapi_encrypt(&aes_key)?;
+    let mut prefixed = Vec::with_capacity(5 + encrypted.len());
+    prefixed.extend_from_slice(b"DPAPI");
+    prefixed.extend_from_slice(&encrypted);
+
+    let local_state_json = serde_json::json!({
+        "os_crypt": {
+            "encrypted_key": general_purpose::STANDARD.encode(&prefixed)
+        }
+    });
+
+    let serialized = serde_json::to_string_pretty(&local_state_json)
+        .map_err(|e| AppError::Config(format!("Failed to serialize Local State: {}", e)))?;
+
+    std::fs::write(&local_state_path, serialized)
+        .map_err(|e| AppError::FileOperation(format!("Failed to write Local State: {}", e)))?;
+
+    info!("Generated Local State for profile dir: {}", user_data_dir.display());
+    Ok(())
+}
+
 /// 触发Windsurf回调URL以完成登录
-async fn trigger_windsurf_callback(app: &tauri::AppHandle, auth_token: &str) -> AppResult<()> {
-    // 生成state参数
-    let state = Uuid::new_v4().to_string();
+pub(crate) async fn trigger_windsurf_callback(
+    app: &tauri::AppHandle,
+    auth_token: &str,
+    user_data_dir: Option<&std::path::Path>,
+) -> AppResult<()> {
+    let (callback_url, state) = build_windsurf_callback_url(auth_token)?;
 
-    // 构建回调URL
-    // windsurf://codeium.windsurf#access_token=<auth_token>&state=<state>&token_type=Bearer
-    let params = [
-        ("access_token", auth_token),
-        ("state", &state),
-        ("token_type", "Bearer"),
-    ];
-
-    let fragment = serde_urlencoded::to_string(&params)
-        .map_err(|e| AppError::ApiRequest(format!("Failed to encode URL parameters: {}", e)))?;
-
-    let callback_url = format!("windsurf://codeium.windsurf#{}", fragment);
-
-    info!("Triggering Windsurf callback: windsurf://codeium.windsurf#access_token=<hidden>&state={}&token_type=Bearer", state);
+    info!(
+        "Triggering Windsurf callback (target={}): windsurf://codeium.windsurf#access_token=<hidden>&state={}&token_type=Bearer",
+        user_data_dir.map(|p| p.display().to_string()).unwrap_or_else(|| "main".to_string()),
+        state
+    );
 
     // Windows: 使用 Windsurf CLI --open-url 直接传递给运行中的 Windsurf 实例（避免 ShellExecuteW 弹出 Git Bash）
     #[cfg(target_os = "windows")]
     {
         if let Some(exe_path) = find_windsurf_exe() {
             use std::os::windows::process::CommandExt;
-            let output = std::process::Command::new(&exe_path)
-                .arg("--open-url")
-                .arg(&callback_url)
-                .creation_flags(0x08000000) // CREATE_NO_WINDOW
-                .output();
+            let mut cmd = std::process::Command::new(&exe_path);
+            if let Some(dir) = user_data_dir {
+                cmd.arg("--user-data-dir").arg(dir);
+            }
+            cmd.arg("--open-url").arg(&callback_url);
+            cmd.creation_flags(0x08000000);
+            let output = cmd.output();
             match output {
                 Ok(o) => {
                     if !o.status.success() {
                         let stderr = String::from_utf8_lossy(&o.stderr);
-                        warn!("Windsurf --open-url exited with {}: {}", o.status, stderr.trim());
+                        warn!("Windsurf --open-url exited with {}: exe={}, stderr={}", o.status, exe_path, stderr.trim());
                     }
                     info!("Successfully triggered Windsurf callback via CLI");
                 }
                 Err(e) => {
-                    warn!("Windsurf CLI failed ({}), falling back to opener", e);
+                    if user_data_dir.is_some() {
+                        return Err(AppError::FileOperation(format!(
+                            "Windsurf CLI failed for profile callback: exe={}, error={}",
+                            exe_path, e
+                        )));
+                    }
+                    warn!("Windsurf CLI failed (exe={}, error={}), falling back to opener", exe_path, e);
                     use tauri_plugin_opener::OpenerExt;
                     app.opener()
                         .open_url(&callback_url, None::<&str>)
                         .map_err(|e| AppError::FileOperation(format!("Failed to open URL: {}", e)))?;
                 }
             }
+        } else if user_data_dir.is_some() {
+            return Err(AppError::FileOperation(
+                "Cannot dispatch profile callback: Windsurf.exe not found".to_string()
+            ));
         } else {
-            // 找不到 Windsurf 可执行文件时回退到 opener
             use tauri_plugin_opener::OpenerExt;
             app.opener()
                 .open_url(&callback_url, None::<&str>)
@@ -540,9 +646,9 @@ async fn trigger_windsurf_callback(app: &tauri::AppHandle, auth_token: &str) -> 
         }
     }
 
-    // macOS/Linux: 直接使用 opener 打开回调URL
     #[cfg(not(target_os = "windows"))]
     {
+        let _ = user_data_dir;
         use tauri_plugin_opener::OpenerExt;
         app.opener()
             .open_url(&callback_url, None::<&str>)
@@ -551,6 +657,18 @@ async fn trigger_windsurf_callback(app: &tauri::AppHandle, auth_token: &str) -> 
 
     info!("Successfully triggered Windsurf callback");
     Ok(())
+}
+
+pub(crate) fn build_windsurf_callback_url(auth_token: &str) -> AppResult<(String, String)> {
+    let state = Uuid::new_v4().to_string();
+    let params = [
+        ("access_token", auth_token),
+        ("state", state.as_str()),
+        ("token_type", "Bearer"),
+    ];
+    let fragment = serde_urlencoded::to_string(&params)
+        .map_err(|e| AppError::ApiRequest(format!("Failed to encode URL parameters: {}", e)))?;
+    Ok((format!("windsurf://codeium.windsurf#{}", fragment), state))
 }
 
 
@@ -609,7 +727,7 @@ async fn restart_windsurf() -> bool {
 
 /// 查找 Windsurf 可执行文件路径
 #[cfg(target_os = "windows")]
-fn find_windsurf_exe() -> Option<String> {
+pub(crate) fn find_windsurf_exe() -> Option<String> {
     let candidates = [
         r"C:\Program Files\Windsurf\Windsurf.exe",
         r"C:\Users\Default\AppData\Local\Programs\Windsurf\Windsurf.exe",
@@ -716,7 +834,7 @@ pub async fn switch_account(
 
     // Step 3: 通过回调URL触发无感切号（extension.js 补丁中的 handleAuthToken 会处理全部流程）
     info!("Triggering seamless account switch via callback URL...");
-    if let Err(e) = trigger_windsurf_callback(&app, &auth.callback_token).await {
+    if let Err(e) = trigger_windsurf_callback(&app, &auth.callback_token, None).await {
         error!("Callback failed: {}", e);
         return Ok(json!({
             "success": false,
@@ -952,6 +1070,51 @@ pub async fn reset_machine_id() -> Result<Value, String> {
             "message": format!("机器ID重置失败: {}", e)
         }))
     }
+}
+
+pub async fn reset_storage_json_for_profile(
+    profile: &crate::models::WindsurfProfile,
+) -> AppResult<()> {
+    use std::fs;
+    use rand::Rng;
+
+    let mut rng = rand::thread_rng();
+    let machine_bytes: Vec<u8> = (0..32).map(|_| rng.gen()).collect();
+    let new_machine_id = hex::encode(&machine_bytes);
+    let new_mac_machine_id = format!("{:032x}", rng.gen::<u128>());
+    let new_sqm_id = Uuid::new_v4().to_string().to_uppercase();
+    let new_device_id = Uuid::new_v4().to_string().to_lowercase();
+
+    let storage_path = profile.storage_json_path();
+
+    if !storage_path.exists() {
+        warn!(
+            "storage.json not found for profile '{}' at {:?}; skip (profile may not have been launched yet)",
+            profile.name, storage_path
+        );
+        return Ok(());
+    }
+
+    let content = fs::read_to_string(&storage_path)
+        .map_err(|e| AppError::FileOperation(format!("Failed to read profile storage.json: {}", e)))?;
+    let mut storage: Value = serde_json::from_str(&content)
+        .map_err(AppError::Serialization)?;
+
+    storage["telemetry.machineId"] = json!(new_machine_id);
+    storage["telemetry.macMachineId"] = json!(new_mac_machine_id);
+    storage["telemetry.sqmId"] = json!(new_sqm_id);
+    storage["telemetry.devDeviceId"] = json!(new_device_id);
+
+    let updated = serde_json::to_string_pretty(&storage)
+        .map_err(AppError::Serialization)?;
+    fs::write(&storage_path, updated)
+        .map_err(|e| AppError::FileOperation(format!("Failed to write profile storage.json: {}", e)))?;
+
+    info!(
+        "Reset machine IDs for profile '{}' (storage.json only, HKLM unchanged)",
+        profile.name
+    );
+    Ok(())
 }
 
 #[cfg(target_os = "windows")]
@@ -1202,7 +1365,7 @@ pub async fn check_auto_switch(
                 crate::commands::machine_id_commands::auto_save_before_reset(&machine_id_store, editor_email.clone(), None).await;
                 let _ = reset_machine_id_internal().await;
             }
-            if let Err(e) = trigger_windsurf_callback(&app, &auth.callback_token).await {
+            if let Err(e) = trigger_windsurf_callback(&app, &auth.callback_token, None).await {
                 return Ok(json!({ "action": "error", "reason": format!("触发回调URL失败: {}", e), "to_account": target_email, "to_account_id": target_id.to_string() }));
             }
             let verified_email = match wait_for_windsurf_account(&target_email).await {
@@ -1469,7 +1632,7 @@ pub async fn check_auto_switch(
     }
 
     // 无感切号：通过回调URL触发
-    if let Err(e) = trigger_windsurf_callback(&app, &auth.callback_token).await {
+    if let Err(e) = trigger_windsurf_callback(&app, &auth.callback_token, None).await {
         return Ok(json!({
             "action": "error",
             "reason": format!("触发回调URL失败: {}", e),

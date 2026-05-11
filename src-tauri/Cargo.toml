@@ -31,6 +31,7 @@ uuid = { version = "1.6", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 aes-gcm = { version = "0.10", features = ["std"] }
 base64 = "0.21"
+sha2 = "0.10"
 anyhow = "1.0"
 thiserror = "1.0"
 directories = "5.0"
