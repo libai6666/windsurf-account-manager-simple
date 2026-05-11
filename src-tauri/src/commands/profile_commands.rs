@@ -4,8 +4,6 @@ use crate::commands::switch_account_commands::{
     reset_storage_json_for_profile,
     trigger_windsurf_callback,
 };
-#[cfg(target_os = "macos")]
-use crate::commands::switch_account_commands::build_windsurf_callback_url;
 #[cfg(target_os = "windows")]
 use crate::commands::switch_account_commands::{prepare_profile_local_state, write_windsurf_auth_direct};
 use crate::commands::windsurf_info::{get_windsurf_info_from_dir, WindsurfCurrentInfo};
@@ -411,6 +409,34 @@ async fn trigger_macos_profile_fresh_callback_retry(
     Ok(state)
 }
 
+#[cfg(target_os = "macos")]
+async fn wait_for_macos_profile_ready(profile: &WindsurfProfile, attempts: usize) -> bool {
+    let state_vscdb_path = profile.state_vscdb_path();
+    for attempt in 0..attempts {
+        let is_running = is_profile_running_from_cmds(profile, &list_windsurf_process_command_lines());
+        let state_db_exists = state_vscdb_path.exists();
+        if is_running && state_db_exists {
+            info!(
+                "[Profile][macOS] Profile ready before callback: profile_id={}, user_data_dir={}, state_vscdb={}",
+                profile.id,
+                profile.user_data_dir.display(),
+                state_vscdb_path.display()
+            );
+            return true;
+        }
+        if attempt + 1 < attempts {
+            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        }
+    }
+    warn!(
+        "[Profile][macOS] Profile not fully ready before callback, continuing anyway: profile_id={}, user_data_dir={}, state_vscdb_exists={}",
+        profile.id,
+        profile.user_data_dir.display(),
+        state_vscdb_path.exists()
+    );
+    false
+}
+
 /// 检查分身是否已登录（state.vscdb 存在 windsurfAuthStatus 或 auth-usages 记录）
 fn is_profile_authenticated(user_data_dir: &Path) -> bool {
     get_windsurf_info_from_dir(user_data_dir)
@@ -540,33 +566,6 @@ fn spawn_profile_window(profile: &WindsurfProfile, exe_path: &str) -> Result<(),
     );
     let child = command.spawn().map_err(|e| format!("启动分身失败: {}", e))?;
     info!("[Profile][macOS] Windsurf spawn requested: profile_id={}, pid={}", profile.id, child.id());
-    Ok(())
-}
-
-#[cfg(target_os = "macos")]
-fn spawn_profile_window_with_callback(
-    profile: &WindsurfProfile,
-    exe_path: &str,
-    callback_url: &str,
-    callback_state: &str,
-) -> Result<(), String> {
-    let mut command = Command::new(exe_path);
-    if !profile.is_main() {
-        command.arg("--user-data-dir").arg(&profile.user_data_dir);
-        command.arg("--new-window");
-    }
-    command.arg("--open-url").arg(callback_url);
-    info!(
-        "[Profile][macOS] Launching Windsurf with callback: profile_id={}, name={}, exe={}, user_data_dir={}, state={}, arch={}",
-        profile.id,
-        profile.name,
-        exe_path,
-        profile.user_data_dir.display(),
-        callback_state,
-        std::env::consts::ARCH
-    );
-    let child = command.spawn().map_err(|e| format!("启动分身失败: {}", e))?;
-    info!("[Profile][macOS] Windsurf callback spawn requested: profile_id={}, pid={}", profile.id, child.id());
     Ok(())
 }
 
@@ -884,33 +883,63 @@ async fn switch_profile_to_account(
             ensure_profile_local_state(profile)
                 .map_err(|e| format!("分身初始化失败: {}", e))?;
 
-            let (initial_delay_ms, dispatch_first_callback) = if was_running {
+            let mut callback_token = auth.callback_token.clone();
+            let mut callback_name = auth.register_result.name.clone();
+            let dispatch_first_callback = if was_running {
                 info!(
                     "[Profile][macOS] Profile already running, dispatching callback directly: profile_id={}, target_email={}",
                     profile.id,
                     account.email
                 );
-                (0, true)
+                true
             } else {
                 info!(
-                    "[Profile][macOS] Profile not running, launching window with callback: profile_id={}, target_email={}",
+                    "[Profile][macOS] Profile not running, launching window before callback: profile_id={}, target_email={}",
                     profile.id,
                     account.email
                 );
-                let (callback_url, callback_state) = build_windsurf_callback_url(&auth.callback_token)
-                    .map_err(|e| format!("构建分身回调失败: {}", e))?;
-                spawn_profile_window_with_callback(profile, &exe_path, &callback_url, &callback_state)
+                spawn_profile_window(profile, &exe_path)
                     .map_err(|e| format!("启动分身失败: {}", e))?;
-                (0, false)
+                wait_for_macos_profile_ready(profile, 12).await;
+                let retry_refresh_token = auth.refresh_token.clone().unwrap_or_else(|| refresh_token.clone());
+                info!(
+                    "[Profile][macOS] Requesting fresh OTT after profile ready: profile_id={}, target_email={}",
+                    profile.id,
+                    account.email
+                );
+                let fresh_auth = match get_auth_token_for_account(store, target_id, &account.email, &retry_refresh_token).await {
+                    Ok(auth) => auth,
+                    Err(e) => {
+                        let error = format!(
+                            "Windsurf 分身启动后重新获取 fresh OTT 失败: profile_id={}, target_email={}, error={}",
+                            profile.id,
+                            account.email,
+                            e
+                        );
+                        error!("[Profile][macOS] {}", error);
+                        return Ok(json!({
+                            "success": false,
+                            "error": error,
+                            "profile_id": profile.id,
+                            "account_id": account_id,
+                            "email": account.email,
+                            "auth_state": "ready_refresh_failed"
+                        }));
+                    }
+                };
+                callback_token = fresh_auth.callback_token.clone();
+                callback_name = fresh_auth.register_result.name.clone();
+                macos_fresh_auth = Some(fresh_auth);
+                true
             };
 
             preverified_info = match trigger_macos_profile_callback_with_retry(
                 app,
                 profile,
-                &auth.callback_token,
+                &callback_token,
                 &account.email,
-                &auth.register_result.name,
-                initial_delay_ms,
+                &callback_name,
+                0,
                 dispatch_first_callback,
             ).await {
                 Ok(ProfileAuthWaitResult::Verified(info)) => Some(info),
@@ -922,7 +951,11 @@ async fn switch_profile_to_account(
                         account.email,
                         observed_name
                     );
-                    let retry_refresh_token = auth.refresh_token.clone().unwrap_or_else(|| refresh_token.clone());
+                    let retry_refresh_token = macos_fresh_auth
+                        .as_ref()
+                        .and_then(|auth| auth.refresh_token.clone())
+                        .or_else(|| auth.refresh_token.clone())
+                        .unwrap_or_else(|| refresh_token.clone());
                     let fresh_auth = match get_auth_token_for_account(store, target_id, &account.email, &retry_refresh_token).await {
                         Ok(auth) => auth,
                         Err(e) => {
@@ -1000,19 +1033,105 @@ async fn switch_profile_to_account(
                     }
                 }
                 Ok(ProfileAuthWaitResult::Missing) => {
-                    let error = format!(
-                        "Windsurf 分身未消费登录回调，已尝试启动携带回调和定向重试，请确认 Windsurf 已完全重启且无感换号补丁已应用: profile_id={}, target_email={}",
-                        profile.id,
-                        account.email
-                    );
-                    error!("[Profile][macOS] {}", error);
-                    return Ok(json!({
-                        "success": false,
-                        "error": error,
-                        "profile_id": profile.id,
-                        "account_id": account_id,
-                        "email": account.email
-                    }));
+                    if !was_running {
+                        warn!(
+                            "[Profile][macOS] Profile callback missing after ready dispatch, requesting another fresh OTT retry: profile_id={}, target_email={}",
+                            profile.id,
+                            account.email
+                        );
+                        let retry_refresh_token = macos_fresh_auth
+                            .as_ref()
+                            .and_then(|auth| auth.refresh_token.clone())
+                            .or_else(|| auth.refresh_token.clone())
+                            .unwrap_or_else(|| refresh_token.clone());
+                        let fresh_auth = match get_auth_token_for_account(store, target_id, &account.email, &retry_refresh_token).await {
+                            Ok(auth) => auth,
+                            Err(e) => {
+                                let error = format!(
+                                    "Windsurf 分身启动并等待 ready 后未消费回调，且再次获取 fresh OTT 失败: profile_id={}, target_email={}, error={}",
+                                    profile.id,
+                                    account.email,
+                                    e
+                                );
+                                error!("[Profile][macOS] {}", error);
+                                return Ok(json!({
+                                    "success": false,
+                                    "error": error,
+                                    "profile_id": profile.id,
+                                    "account_id": account_id,
+                                    "email": account.email,
+                                    "auth_state": "ready_missing_refresh_failed"
+                                }));
+                            }
+                        };
+                        match trigger_macos_profile_fresh_callback_retry(
+                            app,
+                            profile,
+                            &fresh_auth.callback_token,
+                            &account.email,
+                            &fresh_auth.register_result.name,
+                        ).await {
+                            Ok(ProfileAuthWaitResult::Verified(info)) => {
+                                macos_fresh_auth = Some(fresh_auth);
+                                Some(info)
+                            }
+                            Ok(ProfileAuthWaitResult::Partial(info)) => {
+                                let observed_name = info.name.unwrap_or_else(|| "unknown".to_string());
+                                let error = format!(
+                                    "Windsurf 分身启动并等待 ready 后只达到部分认证状态: profile_id={}, target_email={}, observed_name={}",
+                                    profile.id,
+                                    account.email,
+                                    observed_name
+                                );
+                                error!("[Profile][macOS] {}", error);
+                                return Ok(json!({
+                                    "success": false,
+                                    "error": error,
+                                    "profile_id": profile.id,
+                                    "account_id": account_id,
+                                    "email": account.email,
+                                    "auth_state": "ready_partial_consumed"
+                                }));
+                            }
+                            Ok(ProfileAuthWaitResult::Missing) => {
+                                let error = format!(
+                                    "Windsurf 分身启动并等待 ready 后仍未消费 fresh OTT 回调: profile_id={}, target_email={}",
+                                    profile.id,
+                                    account.email
+                                );
+                                error!("[Profile][macOS] {}", error);
+                                return Ok(json!({
+                                    "success": false,
+                                    "error": error,
+                                    "profile_id": profile.id,
+                                    "account_id": account_id,
+                                    "email": account.email,
+                                    "auth_state": "ready_missing"
+                                }));
+                            }
+                            Err(e) => {
+                                error!("[Profile][macOS] Ready fresh OTT callback retry failed: {}", e);
+                                return Ok(json!({
+                                    "success": false,
+                                    "error": e
+                                }));
+                            }
+                        }
+                    } else {
+                        let error = format!(
+                            "Windsurf 分身未消费登录回调，已尝试启动携带回调和定向重试，请确认 Windsurf 已完全重启且无感换号补丁已应用: profile_id={}, target_email={}",
+                            profile.id,
+                            account.email
+                        );
+                        error!("[Profile][macOS] {}", error);
+                        return Ok(json!({
+                            "success": false,
+                            "error": error,
+                            "profile_id": profile.id,
+                            "account_id": account_id,
+                            "email": account.email
+                        }));
+                    }
                 }
                 Err(e) => {
                     error!("[Profile][macOS] Profile callback failed: {}", e);
