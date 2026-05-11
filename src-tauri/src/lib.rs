@@ -293,6 +293,7 @@ pub fn run() {
             commands::restore_seamless_patch,
             commands::check_patch_status,
             commands::apply_auto_continue_bridge_patch,
+            commands::restore_auto_continue_bridge_patch,
             commands::validate_windsurf_path,
 
             // 数据备份命令

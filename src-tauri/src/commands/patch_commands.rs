@@ -488,6 +488,62 @@ pub async fn apply_auto_continue_bridge_patch(
     }))
 }
 
+#[command]
+pub async fn restore_auto_continue_bridge_patch(
+    windsurf_path: String,
+) -> Result<serde_json::Value, String> {
+    let windsurf_root = PathBuf::from(&windsurf_path);
+    let workbench_file = windsurf_root.join(get_workbench_js_relative_path());
+    let extension_file = windsurf_root.join(get_extension_js_relative_path());
+
+    if !workbench_file.exists() {
+        return Err(format!("workbench.desktop.main.js 文件不存在: {:?}", workbench_file));
+    }
+    if !extension_file.exists() {
+        return Err(format!("extension.js 文件不存在: {:?}", extension_file));
+    }
+
+    let workbench_content = fs::read(&workbench_file)
+        .map_err(|e| format!("读取 workbench 文件失败: {}", e))?;
+    let stripped_workbench = strip_appended_auto_continue_workbench_blocks(&workbench_content);
+    let workbench_changed = stripped_workbench != workbench_content;
+    let final_workbench = if workbench_changed {
+        fs::write(&workbench_file, &stripped_workbench)
+            .map_err(|e| format!("写入 workbench 文件失败: {}", e))?;
+        stripped_workbench
+    } else {
+        workbench_content
+    };
+    let checksum_changed = sync_workbench_product_checksum(&windsurf_path, &final_workbench)?;
+
+    let extension_content = fs::read(&extension_file)
+        .map_err(|e| format!("读取 extension.js 文件失败: {}", e))?;
+    let stripped_extension = strip_appended_auto_continue_extension_blocks(&extension_content);
+    let extension_changed = stripped_extension != extension_content;
+    if extension_changed {
+        fs::write(&extension_file, &stripped_extension)
+            .map_err(|e| format!("写入 extension.js 文件失败: {}", e))?;
+    }
+
+    let changed = workbench_changed || extension_changed || checksum_changed.is_some();
+    if changed {
+        restart_windsurf(Some(&windsurf_path)).await?;
+    }
+
+    Ok(serde_json::json!({
+        "success": true,
+        "already_restored": !workbench_changed && !extension_changed,
+        "workbench_restored": workbench_changed,
+        "extension_restored": extension_changed,
+        "checksum_updated": checksum_changed.is_some(),
+        "message": if changed {
+            "自动继续 Bridge 补丁已还原，Windsurf 正在重启"
+        } else {
+            "自动继续 Bridge 补丁未安装或已还原"
+        }
+    }))
+}
+
 /// 字节级 contains：在 haystack 中查找 needle 子序列
 fn bytes_contains(haystack: &[u8], needle: &[u8]) -> bool {
     if needle.is_empty() {
