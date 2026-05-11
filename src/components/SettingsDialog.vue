@@ -968,7 +968,8 @@ async function handleSeamlessSwitch(value: boolean) {
     if (value) {
       // 应用补丁
       result = await invoke<any>('apply_seamless_patch', {
-        windsurfPath: windsurfPath.value
+        windsurfPath: windsurfPath.value,
+        force: true,
       });
     } else {
       // 还原补丁
