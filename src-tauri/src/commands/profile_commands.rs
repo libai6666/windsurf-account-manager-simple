@@ -717,7 +717,7 @@ async fn switch_profile_to_account(
                 error!("[Profile][macOS] Profile callback failed: {}", e);
                 return Ok(json!({
                     "success": false,
-                    "error": e
+                    "error": e.to_string()
                 }));
             }
 
