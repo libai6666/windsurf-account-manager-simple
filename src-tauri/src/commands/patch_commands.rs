@@ -1,12 +1,19 @@
 use tauri::command;
+use base64::{engine::general_purpose, Engine as _};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use regex::bytes::Regex;
 use chrono::Local;
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use tauri::State;
 use crate::repository::DataStore;
+use crate::commands::auto_continue_commands::AUTO_CONTINUE_BRIDGE_PORT;
+
+const AUTO_CONTINUE_WORKBENCH_MARKER: &[u8] = b"WindsurfAccountManagerAutoContinueBridge";
+const AUTO_CONTINUE_LEGACY_SENDER_MARKER: &[u8] = b"WindsurfAccountManagerAutoContinueSenderBridge";
+const AUTO_CONTINUE_EXTENSION_MARKER: &[u8] = b"WindsurfAccountManagerAutoContinueExtensionBridgeV2";
 
 /// 获取 extension.js 相对路径（跨平台）
 fn get_extension_js_relative_path() -> PathBuf {
@@ -30,6 +37,42 @@ fn get_extension_js_relative_path() -> PathBuf {
             .join("windsurf")
             .join("dist")
             .join("extension.js")
+    }
+}
+
+fn get_workbench_js_relative_path() -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        PathBuf::from("Contents")
+            .join("Resources")
+            .join("app")
+            .join("out")
+            .join("vs")
+            .join("workbench")
+            .join("workbench.desktop.main.js")
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        PathBuf::from("resources")
+            .join("app")
+            .join("out")
+            .join("vs")
+            .join("workbench")
+            .join("workbench.desktop.main.js")
+    }
+}
+
+fn get_product_json_relative_path() -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        PathBuf::from("Contents")
+            .join("Resources")
+            .join("app")
+            .join("product.json")
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        PathBuf::from("resources").join("app").join("product.json")
     }
 }
 
@@ -414,6 +457,37 @@ pub async fn restore_seamless_patch(
     }))
 }
 
+#[command]
+pub async fn apply_auto_continue_bridge_patch(
+    windsurf_path: String,
+) -> Result<serde_json::Value, String> {
+    let workbench_backup_file = apply_auto_continue_bridge_to_workbench(&windsurf_path)?;
+    let extension_backup_file = apply_auto_continue_sender_to_extension(&windsurf_path)?;
+    let already_patched = workbench_backup_file.is_none() && extension_backup_file.is_none();
+    let workbench_changed = workbench_backup_file.is_some();
+    let extension_changed = extension_backup_file.is_some();
+    if !already_patched {
+        restart_windsurf(Some(&windsurf_path)).await?;
+    }
+
+    Ok(serde_json::json!({
+        "success": true,
+        "already_patched": already_patched,
+        "backup_file": extension_backup_file.clone().or_else(|| workbench_backup_file.clone()),
+        "workbench_backup_file": workbench_backup_file,
+        "extension_backup_file": extension_backup_file,
+        "message": if already_patched {
+            "自动继续 Bridge 补丁已安装，workbench 校验已同步"
+        } else if workbench_changed && extension_changed {
+            "自动继续 Bridge 检测/发送补丁已安装，workbench 校验已同步，Windsurf 正在重启"
+        } else if workbench_changed {
+            "自动继续 Bridge 检测补丁已安装，workbench 校验已同步，Windsurf 正在重启"
+        } else {
+            "自动继续 Bridge 扩展补丁已安装，Windsurf 正在重启"
+        }
+    }))
+}
+
 /// 字节级 contains：在 haystack 中查找 needle 子序列
 fn bytes_contains(haystack: &[u8], needle: &[u8]) -> bool {
     if needle.is_empty() {
@@ -461,6 +535,589 @@ fn is_full_patch_installed(file_path: &Path) -> bool {
     } else {
         false
     }
+}
+
+fn is_auto_continue_extension_installed(file_path: &Path) -> bool {
+    if let Ok(content) = fs::read(file_path) {
+        bytes_contains(&content, AUTO_CONTINUE_EXTENSION_MARKER)
+    } else {
+        false
+    }
+}
+
+fn rfind_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return None;
+    }
+    haystack.windows(needle.len()).rposition(|window| window == needle)
+}
+
+fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return None;
+    }
+    haystack.windows(needle.len()).position(|window| window == needle)
+}
+
+fn truncate_appended_auto_continue_block(content: &[u8], marker: &[u8]) -> Option<Vec<u8>> {
+    let marker_pos = find_bytes(content, marker)?;
+    let before_marker = &content[..marker_pos];
+    let script_start = rfind_bytes(before_marker, b"\n;(() => {")
+        .or_else(|| rfind_bytes(before_marker, b"\r\n;(() => {"))
+        .or_else(|| rfind_bytes(before_marker, b";(() => {"))?;
+    let mut stripped = content[..script_start].to_vec();
+    while matches!(stripped.last(), Some(b'\n' | b'\r' | b' ' | b'\t')) {
+        stripped.pop();
+    }
+    stripped.extend_from_slice(b"\n");
+    Some(stripped)
+}
+
+fn strip_appended_auto_continue_extension_blocks(content: &[u8]) -> Vec<u8> {
+    let mut stripped = content.to_vec();
+    loop {
+        if let Some(next) = truncate_appended_auto_continue_block(&stripped, AUTO_CONTINUE_EXTENSION_MARKER) {
+            stripped = next;
+            continue;
+        }
+        if let Some(next) = truncate_appended_auto_continue_block(&stripped, AUTO_CONTINUE_LEGACY_SENDER_MARKER) {
+            stripped = next;
+            continue;
+        }
+        break;
+    }
+    stripped
+}
+
+fn build_auto_continue_extension_script() -> Vec<u8> {
+    let script = r#";(() => {
+  try {
+    if (globalThis.__wamAutoContinueExtensionBridgeV2Installed) return;
+    Object.defineProperty(globalThis, "__wamAutoContinueExtensionBridgeV2Installed", { value: true, configurable: false });
+    console.info("[WindsurfAccountManagerAutoContinueExtensionBridgeV2] installed as workbench-send fallback marker");
+  } catch (error) {
+    console.error("[WindsurfAccountManagerAutoContinueExtensionBridgeV2] failed", error);
+  }
+})();
+"#;
+    script.as_bytes().to_vec()
+}
+
+fn build_auto_continue_workbench_script() -> Vec<u8> {
+    let script = format!(
+        r#";(() => {{
+  try {{
+    if (globalThis.__wamAutoContinueBridgeInstalled) return;
+    Object.defineProperty(globalThis, "__wamAutoContinueBridgeInstalled", {{ value: true, configurable: false }});
+    const base = "http://127.0.0.1:{port}/wam-auto-continue";
+    let config = {{
+      enabled: false,
+      continueText: "继续工作",
+      markers: [
+        "third-party model provider is experiencing issues",
+        "included daily usage quota is exhausted",
+        "all API providers are over their global rate limit for trial users",
+        "daily usage quota",
+        "usage quota is exhausted",
+        "quota is exhausted",
+        "global rate limit",
+        "rate limit for trial users",
+        "purchase extra usage",
+        "premium models"
+      ]
+    }};
+    const textOf = (value) => {{
+      try {{
+        if (value == null) return "";
+        if (typeof value === "string") return value;
+        if (value instanceof Error) return value.stack || value.message || String(value);
+        return JSON.stringify(value);
+      }} catch {{
+        return String(value ?? "");
+      }}
+    }};
+    const hasMarker = (text) => {{
+      const lower = String(text || "").toLowerCase();
+      return (config.markers || []).some(marker => lower.includes(String(marker).toLowerCase()));
+    }};
+    const isBridgeUrl = (url) => String(url || "").startsWith(base);
+    const post = (event) => {{
+      try {{
+        fetch(base + "/event", {{
+          method: "POST",
+          headers: {{ "content-type": "application/json" }},
+          body: JSON.stringify(event),
+          keepalive: true
+        }}).catch(() => {{}});
+      }} catch {{}}
+    }};
+    const report = async (eventType, value, source, url) => {{
+      if (isBridgeUrl(url)) return;
+      const message = textOf(value);
+      if (!message) return;
+      if (eventType !== "auto_continue_test" && !hasMarker(message)) return;
+      post({{
+        eventType,
+        source,
+        url,
+        location: String(location.href),
+        message: message.slice(0, 6000)
+      }});
+    }};
+    const refreshConfig = () => fetch(base + "/config", {{ cache: "no-store" }})
+      .then(response => response.json())
+      .then(result => {{ if (result && result.config) config = {{ ...config, ...result.config }}; }})
+      .catch(() => {{}});
+    refreshConfig();
+    setInterval(refreshConfig, 5000);
+    const requestJson = (method, path, body) => fetch(base + path, {{
+      method,
+      headers: body ? {{ "content-type": "application/json" }} : undefined,
+      body: body ? JSON.stringify(body) : undefined,
+      cache: "no-store"
+    }}).then(response => response.text()).then(text => text ? JSON.parse(text) : {{}});
+    const reportResult = (actionId, success, error, method) => requestJson("POST", "/action-result", {{
+      actionId,
+      success,
+      method: method || null,
+      error: error ? String(error && error.message ? error.message : error) : null
+    }}).catch(() => {{}});
+    const isVisible = (element) => {{
+      try {{
+        if (!element || !(element instanceof Element)) return false;
+        const style = getComputedStyle(element);
+        if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") return false;
+        const rect = element.getBoundingClientRect();
+        return rect.width > 8 && rect.height > 8 && rect.bottom > 0 && rect.right > 0 && rect.top < innerHeight && rect.left < innerWidth;
+      }} catch {{
+        return false;
+      }}
+    }};
+    const isEditable = (element) => {{
+      if (!isVisible(element)) return false;
+      if (element.closest?.("[aria-hidden='true']")) return false;
+      if (element.matches?.("textarea,input")) return !element.disabled && !element.readOnly && element.type !== "hidden";
+      return element.isContentEditable || element.getAttribute?.("role") === "textbox";
+    }};
+    const visibleText = (element) => String(element?.innerText || element?.textContent || "");
+    const findVisibleMarkerMessage = () => {{
+      const selectors = "[role='alert'],[aria-live],div,span,p,li";
+      const elements = Array.from(document.querySelectorAll(selectors)).filter(isVisible);
+      let best = "";
+      let bestScore = Number.POSITIVE_INFINITY;
+      for (const element of elements) {{
+        try {{
+          if (element.matches?.("textarea,input,[contenteditable='true'],[role='textbox']")) continue;
+          const text = visibleText(element).trim();
+          if (!text || text.length > 1800 || !hasMarker(text)) continue;
+          const attr = String((element.getAttribute("role") || "") + " " + (element.getAttribute("class") || "") + " " + (element.getAttribute("aria-label") || "")).toLowerCase();
+          let score = text.length;
+          if (/alert|error|warning|toast|notification|quota/.test(attr)) score -= 500;
+          if (score < bestScore) {{
+            bestScore = score;
+            best = text;
+          }}
+        }} catch {{}}
+      }}
+      return best;
+    }};
+    const candidateEditors = () => {{
+      const selector = "textarea,input[type='text'],input:not([type]),[contenteditable='true'],[role='textbox']";
+      return Array.from(document.querySelectorAll(selector))
+        .filter(isEditable)
+        .map(element => {{
+          const rect = element.getBoundingClientRect();
+          const meta = String([
+            element.getAttribute("aria-label"),
+            element.getAttribute("placeholder"),
+            element.getAttribute("data-testid"),
+            element.getAttribute("class"),
+            element.id
+          ].filter(Boolean).join(" ")).toLowerCase();
+          let score = Math.min(rect.width, 900) + Math.min(rect.height, 220);
+          if (/chat|message|prompt|composer|cascade|ask|input|textarea/.test(meta)) score += 800;
+          if (element === document.activeElement || element.contains(document.activeElement)) score += 500;
+          if (rect.width < 160) score -= 600;
+          if (/search|filter|find/.test(meta)) score -= 1000;
+          return {{ element, score }};
+        }})
+        .sort((a, b) => b.score - a.score)
+        .map(item => item.element);
+    }};
+    const setNativeValue = (element, value) => {{
+      const proto = element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+      if (setter) setter.call(element, value);
+      else element.value = value;
+    }};
+    const readEditorText = (editor) => {{
+      try {{
+        if (editor.matches?.("textarea,input")) return String(editor.value || "");
+        return visibleText(editor);
+      }} catch {{
+        return "";
+      }}
+    }};
+    const clearEditor = (editor) => {{
+      editor.focus?.();
+      if (editor.matches?.("textarea,input")) {{
+        setNativeValue(editor, "");
+        editor.dispatchEvent(new InputEvent("input", {{ bubbles: true, inputType: "deleteContentBackward", data: null }}));
+        editor.dispatchEvent(new Event("change", {{ bubbles: true }}));
+        return;
+      }}
+      try {{
+        const selection = getSelection();
+        const range = document.createRange();
+        range.selectNodeContents(editor);
+        selection.removeAllRanges();
+        selection.addRange(range);
+        document.execCommand?.("delete", false);
+      }} catch {{}}
+      if (readEditorText(editor).trim()) {{
+        editor.textContent = "";
+      }}
+      editor.dispatchEvent(new InputEvent("input", {{ bubbles: true, inputType: "deleteContentBackward", data: null }}));
+    }};
+    const fillEditor = (editor, text) => {{
+      editor.scrollIntoView?.({{ block: "center", inline: "nearest" }});
+      editor.focus?.();
+      clearEditor(editor);
+      if (editor.matches?.("textarea,input")) {{
+        setNativeValue(editor, text);
+        editor.dispatchEvent(new InputEvent("input", {{ bubbles: true, inputType: "insertText", data: text }}));
+        editor.dispatchEvent(new Event("change", {{ bubbles: true }}));
+        return;
+      }}
+      const selection = getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(editor);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      const inserted = document.execCommand?.("insertText", false, text);
+      if (!inserted || !visibleText(editor).includes(text)) {{
+        editor.textContent = text;
+      }}
+      if (readEditorText(editor).trim() !== text) {{
+        editor.textContent = text;
+      }}
+      editor.dispatchEvent(new InputEvent("input", {{ bubbles: true, inputType: "insertText", data: text }}));
+    }};
+    const buttonLabel = (button) => String([
+      button.getAttribute?.("aria-label"),
+      button.getAttribute?.("title"),
+      button.getAttribute?.("data-testid"),
+      button.getAttribute?.("class"),
+      button.querySelector?.("[aria-label]")?.getAttribute("aria-label"),
+      button.querySelector?.("[class*='codicon']")?.getAttribute("class"),
+      button.textContent
+    ].filter(Boolean).join(" ")).toLowerCase();
+    const clickableAncestor = (element) => element?.closest?.("button,[role='button'],a,[tabindex]") || element;
+    const findSubmitCandidates = (editor) => {{
+      const containers = [];
+      let node = editor;
+      for (let index = 0; node && index < 8; index += 1, node = node.parentElement) containers.push(node);
+      const buttons = [];
+      for (const container of containers) {{
+        buttons.push(...Array.from(container.querySelectorAll?.("button,[role='button'],a,[tabindex],[class*='send'],[class*='arrow-up'],[class*='codicon-send'],[class*='codicon-arrow']") || []));
+      }}
+      buttons.push(...Array.from(document.querySelectorAll("button,[role='button'],a,[tabindex],[class*='send'],[class*='arrow-up'],[class*='codicon-send'],[class*='codicon-arrow']")));
+      const editorRect = editor.getBoundingClientRect();
+      const container = containers.find(item => {{
+        const rect = item.getBoundingClientRect?.();
+        return rect && rect.width >= editorRect.width && rect.right >= editorRect.right;
+      }}) || editor.parentElement || editor;
+      const containerRect = container.getBoundingClientRect();
+      const pointCandidates = [];
+      for (const point of [
+        [containerRect.right - 18, editorRect.top + editorRect.height / 2],
+        [containerRect.right - 18, containerRect.bottom - 18],
+        [editorRect.right + 24, editorRect.top + editorRect.height / 2]
+      ]) {{
+        const hit = document.elementFromPoint(point[0], point[1]);
+        const clickable = clickableAncestor(hit);
+        if (clickable) pointCandidates.push(clickable);
+      }}
+      buttons.push(...pointCandidates);
+      const unique = Array.from(new Set(buttons.map(clickableAncestor))).filter(button =>
+        button &&
+        button !== editor &&
+        !editor.contains(button) &&
+        !button.contains?.(editor) &&
+        !button.matches?.("textarea,input,[contenteditable='true'],[role='textbox']") &&
+        isVisible(button) &&
+        !button.disabled &&
+        button.getAttribute?.("aria-disabled") !== "true"
+      );
+      const scored = unique.map(button => {{
+        const rect = button.getBoundingClientRect();
+        const label = buttonLabel(button);
+        let score = 0;
+        if (/send|submit|发送|提交/.test(label)) score += 1800;
+        if (/arrow.?up|paper|plane|codicon-arrow|codicon-send/.test(label)) score += 1200;
+        if (/mic|microphone|voice|audio|record|plus|add|attach|context|code|model|gpt|thinking|settings|more|menu|copy|thumb/.test(label)) score -= 1800;
+        const centerY = rect.top + rect.height / 2;
+        const editorCenterY = editorRect.top + editorRect.height / 2;
+        const verticalDistance = Math.abs(centerY - editorCenterY);
+        score -= verticalDistance * 4;
+        if (verticalDistance < 36) score += 650;
+        if (rect.left >= editorRect.left - 20 && rect.top >= editorRect.top - 50 && rect.bottom <= editorRect.bottom + 90) score += 350;
+        if (rect.left >= editorRect.left + editorRect.width * 0.6) score += 550;
+        if (containerRect.right - rect.right < 90) score += 900;
+        score += Math.max(0, rect.left - containerRect.left) / 4;
+        if (rect.width >= 18 && rect.width <= 64 && rect.height >= 18 && rect.height <= 64) score += 250;
+        return {{ button, score }};
+      }}).sort((a, b) => b.score - a.score);
+      return scored.filter(item => item.score > -300).map(item => item.button);
+    }};
+    const clickControl = (element) => {{
+      element.scrollIntoView?.({{ block: "center", inline: "nearest" }});
+      const rect = element.getBoundingClientRect();
+      const options = {{ bubbles: true, cancelable: true, view: window, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 }};
+      try {{ element.dispatchEvent(new PointerEvent("pointerover", options)); }} catch {{}}
+      try {{ element.dispatchEvent(new PointerEvent("pointerenter", options)); }} catch {{}}
+      try {{ element.dispatchEvent(new MouseEvent("mouseover", options)); }} catch {{}}
+      try {{ element.dispatchEvent(new PointerEvent("pointerdown", {{ ...options, button: 0, buttons: 1 }})); }} catch {{}}
+      try {{ element.dispatchEvent(new MouseEvent("mousedown", {{ ...options, button: 0, buttons: 1 }})); }} catch {{}}
+      try {{ element.dispatchEvent(new PointerEvent("pointerup", {{ ...options, button: 0, buttons: 0 }})); }} catch {{}}
+      try {{ element.dispatchEvent(new MouseEvent("mouseup", {{ ...options, button: 0, buttons: 0 }})); }} catch {{}}
+      try {{ element.dispatchEvent(new MouseEvent("click", {{ ...options, button: 0, buttons: 0 }})); }} catch {{}}
+      try {{ element.click?.(); }} catch {{}}
+    }};
+    const pressEnter = (editor) => {{
+      for (const type of ["keydown", "keypress", "keyup"]) {{
+        editor.dispatchEvent(new KeyboardEvent(type, {{ key: "Enter", code: "Enter", which: 13, keyCode: 13, bubbles: true, cancelable: true }}));
+      }}
+    }};
+    const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+    const sendTextViaDom = async (text) => {{
+      const editors = candidateEditors();
+      if (!editors.length) throw new Error("未找到可见的 Cascade 输入框");
+      const errors = [];
+      for (const editor of editors.slice(0, 4)) {{
+        try {{
+          fillEditor(editor, text);
+          await sleep(350);
+          const buttons = findSubmitCandidates(editor);
+          for (const button of buttons.slice(0, 6)) {{
+            clickControl(button);
+            await sleep(700);
+            if (!readEditorText(editor).includes(text)) {{
+              return "dom_button";
+            }}
+          }}
+          pressEnter(editor);
+          await sleep(700);
+          if (!readEditorText(editor).includes(text)) {{
+            return "dom_enter";
+          }}
+          throw new Error("已填入文本但提交后输入框未清空，可能未命中发送按钮");
+        }} catch (error) {{
+          errors.push(String(error && error.message ? error.message : error));
+        }}
+      }}
+      throw new Error(errors.join(" | ") || "输入框填充失败");
+    }};
+    let actionRunning = false;
+    const pollActions = async () => {{
+      if (actionRunning) return;
+      actionRunning = true;
+      try {{
+        if (!findVisibleMarkerMessage()) return;
+        const result = await requestJson("GET", "/actions");
+        for (const action of result.actions || []) {{
+          try {{
+            const method = await sendTextViaDom(action.text || config.continueText || "继续工作");
+            console.info("[WindsurfAccountManagerAutoContinueBridge] action sent via " + method);
+            await reportResult(action.id, true, null, method);
+          }} catch (error) {{
+            await reportResult(action.id, false, error, null);
+          }}
+        }}
+      }} catch {{}}
+      finally {{
+        actionRunning = false;
+      }}
+    }};
+    setInterval(pollActions, 1500);
+    setTimeout(pollActions, 1200);
+    let lastMessage = "";
+    let lastReportedAt = 0;
+    let scanTimer = 0;
+    const scanVisibleText = () => {{
+      scanTimer = 0;
+      try {{
+        const text = findVisibleMarkerMessage();
+        if (!text) return;
+        const now = Date.now();
+        const marker = (config.markers || []).find(item => text.toLowerCase().includes(String(item).toLowerCase()));
+        const index = marker ? text.toLowerCase().indexOf(String(marker).toLowerCase()) : 0;
+        const start = Math.max(0, index - 240);
+        const message = text.slice(start, Math.min(text.length, index + 1200));
+        if (message === lastMessage) return;
+        lastMessage = message;
+        lastReportedAt = now;
+        report("dom_text", message, "workbench-dom", String(location.href));
+      }} catch {{}}
+    }};
+    const scheduleScan = () => {{
+      if (scanTimer) return;
+      scanTimer = setTimeout(scanVisibleText, 800);
+    }};
+    const startObserver = () => {{
+      try {{
+        if (!document.body || globalThis.__wamAutoContinueDomObserver) return;
+        const observer = new MutationObserver(scheduleScan);
+        observer.observe(document.body, {{ childList: true, subtree: true, characterData: true }});
+        Object.defineProperty(globalThis, "__wamAutoContinueDomObserver", {{ value: observer, configurable: false }});
+        scheduleScan();
+      }} catch {{}}
+    }};
+    if (document.readyState === "loading") {{
+      document.addEventListener("DOMContentLoaded", startObserver, {{ once: true }});
+    }} else {{
+      startObserver();
+    }}
+    setInterval(scheduleScan, 5000);
+    globalThis.addEventListener?.("error", event => report("window_error", event?.message || event?.error, "window_error", String(location.href)));
+    globalThis.addEventListener?.("unhandledrejection", event => report("unhandledrejection", event?.reason, "unhandledrejection", String(location.href)));
+    console.info("[WindsurfAccountManagerAutoContinueBridge] installed");
+  }} catch (error) {{
+    console.error("[WindsurfAccountManagerAutoContinueBridge] failed", error);
+  }}
+}})();
+"#,
+        port = AUTO_CONTINUE_BRIDGE_PORT
+    );
+    script.into_bytes()
+}
+
+fn strip_appended_auto_continue_workbench_blocks(content: &[u8]) -> Vec<u8> {
+    let mut stripped = content.to_vec();
+    loop {
+        if let Some(next) = truncate_appended_auto_continue_block(&stripped, AUTO_CONTINUE_WORKBENCH_MARKER) {
+            stripped = next;
+            continue;
+        }
+        break;
+    }
+    stripped
+}
+
+fn compute_sha256_base64_no_pad(content: &[u8]) -> String {
+    let digest = Sha256::digest(content);
+    general_purpose::STANDARD_NO_PAD.encode(digest)
+}
+
+fn sync_workbench_product_checksum(windsurf_path: &str, workbench_content: &[u8]) -> Result<Option<String>, String> {
+    let product_file = PathBuf::from(windsurf_path).join(get_product_json_relative_path());
+    if !product_file.exists() {
+        return Ok(None);
+    }
+    let product_content = fs::read(&product_file)
+        .map_err(|e| format!("读取 product.json 失败: {}", e))?;
+    let mut product_json: serde_json::Value = serde_json::from_slice(&product_content)
+        .map_err(|e| format!("解析 product.json 失败: {}", e))?;
+    let checksums = product_json
+        .get_mut("checksums")
+        .and_then(|value| value.as_object_mut())
+        .ok_or_else(|| "product.json 中未找到 checksums".to_string())?;
+    let key = "vs/workbench/workbench.desktop.main.js";
+    let new_checksum = compute_sha256_base64_no_pad(workbench_content);
+    let old_checksum = checksums
+        .get(key)
+        .and_then(|value| value.as_str())
+        .map(|value| value.to_string());
+    if old_checksum.as_deref() == Some(new_checksum.as_str()) {
+        return Ok(None);
+    }
+    let backup_file = product_file.with_extension(&format!(
+        "json.backup.auto_continue_checksum.{}",
+        Local::now().format("%Y%m%d_%H%M%S")
+    ));
+    fs::copy(&product_file, &backup_file)
+        .map_err(|e| format!("备份 product.json 失败: {}", e))?;
+    checksums.insert(key.to_string(), serde_json::Value::String(new_checksum.clone()));
+    let mut serialized = serde_json::to_vec_pretty(&product_json)
+        .map_err(|e| format!("序列化 product.json 失败: {}", e))?;
+    serialized.push(b'\n');
+    fs::write(&product_file, serialized)
+        .map_err(|e| format!("写入 product.json 失败: {}", e))?;
+    Ok(Some(format!(
+        "{} -> {}",
+        old_checksum.unwrap_or_else(|| "<missing>".to_string()),
+        new_checksum
+    )))
+}
+
+fn is_workbench_product_checksum_current(windsurf_path: &str, workbench_content: &[u8]) -> Result<Option<bool>, String> {
+    let product_file = PathBuf::from(windsurf_path).join(get_product_json_relative_path());
+    if !product_file.exists() {
+        return Ok(None);
+    }
+    let product_content = fs::read(&product_file)
+        .map_err(|e| format!("读取 product.json 失败: {}", e))?;
+    let product_json: serde_json::Value = serde_json::from_slice(&product_content)
+        .map_err(|e| format!("解析 product.json 失败: {}", e))?;
+    let expected = product_json
+        .get("checksums")
+        .and_then(|value| value.get("vs/workbench/workbench.desktop.main.js"))
+        .and_then(|value| value.as_str());
+    Ok(expected.map(|value| value == compute_sha256_base64_no_pad(workbench_content)))
+}
+
+fn apply_auto_continue_bridge_to_workbench(windsurf_path: &str) -> Result<Option<String>, String> {
+    let workbench_file = PathBuf::from(windsurf_path).join(get_workbench_js_relative_path());
+    if !workbench_file.exists() {
+        return Err(format!("workbench.desktop.main.js 文件不存在: {:?}", workbench_file));
+    }
+    let content = fs::read(&workbench_file)
+        .map_err(|e| format!("读取 workbench 文件失败: {}", e))?;
+    let cleaned_content = strip_appended_auto_continue_workbench_blocks(&content);
+    let mut modified_content = cleaned_content;
+    modified_content.extend_from_slice(b"\n");
+    modified_content.extend_from_slice(&build_auto_continue_workbench_script());
+    modified_content.extend_from_slice(b"\n");
+    if modified_content == content {
+        sync_workbench_product_checksum(windsurf_path, &content)?;
+        return Ok(None);
+    }
+    let backup_file = workbench_file.with_extension(&format!(
+        "js.backup.auto_continue.{}",
+        Local::now().format("%Y%m%d_%H%M%S")
+    ));
+    fs::copy(&workbench_file, &backup_file)
+        .map_err(|e| format!("备份 workbench 文件失败: {}", e))?;
+    fs::write(&workbench_file, &modified_content)
+        .map_err(|e| format!("写入 workbench 文件失败: {}", e))?;
+    sync_workbench_product_checksum(windsurf_path, &modified_content)?;
+    Ok(Some(backup_file.to_string_lossy().to_string()))
+}
+
+fn apply_auto_continue_sender_to_extension(windsurf_path: &str) -> Result<Option<String>, String> {
+    let extension_file = PathBuf::from(windsurf_path).join(get_extension_js_relative_path());
+    if !extension_file.exists() {
+        return Err(format!("extension.js 文件不存在: {:?}", extension_file));
+    }
+    let content = fs::read(&extension_file)
+        .map_err(|e| format!("读取 extension.js 文件失败: {}", e))?;
+    let cleaned_content = strip_appended_auto_continue_extension_blocks(&content);
+    if cleaned_content == content && bytes_contains(&content, AUTO_CONTINUE_EXTENSION_MARKER) {
+        return Ok(None);
+    }
+    let backup_file = extension_file.with_extension(&format!(
+        "js.backup.auto_continue_extension.{}",
+        Local::now().format("%Y%m%d_%H%M%S")
+    ));
+    fs::copy(&extension_file, &backup_file)
+        .map_err(|e| format!("备份 extension.js 文件失败: {}", e))?;
+    let mut modified_content = cleaned_content;
+    modified_content.extend_from_slice(b"\n");
+    modified_content.extend_from_slice(&build_auto_continue_extension_script());
+    modified_content.extend_from_slice(b"\n");
+    fs::write(&extension_file, &modified_content)
+        .map_err(|e| format!("写入 extension.js 文件失败: {}", e))?;
+    Ok(Some(backup_file.to_string_lossy().to_string()))
 }
 
 /// 查找最新的可用且干净的备份文件
@@ -521,6 +1178,7 @@ pub async fn check_patch_status(
     windsurf_path: String,
 ) -> Result<serde_json::Value, String> {
     let extension_file = PathBuf::from(&windsurf_path).join(get_extension_js_relative_path());
+    let workbench_file = PathBuf::from(&windsurf_path).join(get_workbench_js_relative_path());
     
     if !extension_file.exists() {
         return Ok(serde_json::json!({
@@ -538,12 +1196,32 @@ pub async fn check_patch_status(
     let has_extension_login = bytes_contains(&content, b"WindsurfAccountManager v2] Profile login applied")
         || bytes_contains(&content, b"WindsurfAccountManager] Profile login applied");
     let has_timeout_removed = !bytes_contains(&content, b"18e4");
+    let workbench_content = if workbench_file.exists() {
+        Some(fs::read(&workbench_file).map_err(|e| format!("读取 workbench 文件失败: {}", e))?)
+    } else {
+        None
+    };
+    let has_auto_continue_workbench = workbench_content
+        .as_ref()
+        .map(|content| bytes_contains(content, AUTO_CONTINUE_WORKBENCH_MARKER))
+        .unwrap_or(false);
+    let workbench_checksum_current = if let Some(content) = workbench_content.as_ref() {
+        is_workbench_product_checksum_current(&windsurf_path, content)?
+    } else {
+        None
+    };
+    let has_auto_continue_extension = is_auto_continue_extension_installed(&extension_file);
     
     Ok(serde_json::json!({
         "installed": has_oauth_handler,
         "oauth_handler": has_oauth_handler,
         "extension_login": has_extension_login,
-        "timeout_removed": has_timeout_removed
+        "timeout_removed": has_timeout_removed,
+        "auto_continue_bridge": has_auto_continue_extension && has_auto_continue_workbench && workbench_checksum_current.unwrap_or(true),
+        "auto_continue_detector": has_auto_continue_workbench,
+        "auto_continue_sender": has_auto_continue_extension,
+        "auto_continue_workbench_dirty": has_auto_continue_workbench && !workbench_checksum_current.unwrap_or(true),
+        "auto_continue_workbench_checksum_current": workbench_checksum_current
     }))
 }
 
@@ -617,7 +1295,7 @@ async fn restart_windsurf(windsurf_path: Option<&str>) -> Result<(), String> {
             let app_path = PathBuf::from(path);
             if app_path.exists() {
                 match Command::new("open")
-                    .args(&["-a", &app_path.to_string_lossy()])
+                    .arg(&app_path)
                     .spawn() {
                     Ok(_) => {
                         println!("通过已知路径启动Windsurf: {:?}", app_path);

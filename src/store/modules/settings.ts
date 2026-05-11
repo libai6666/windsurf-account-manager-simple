@@ -14,6 +14,7 @@ const defaultSettings: Partial<Settings> = {
   useLightweightApi: true,
   proxyEnabled: false,
   proxyUrl: null,
+  autoContinueBridgeEnabled: false,
 };
 
 export const useSettingsStore = defineStore('settings', () => {

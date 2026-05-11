@@ -1,0 +1,207 @@
+[2026-05-11 09:31:05.404] [INFO] [windsurf_account_manager_lib::commands::auto_continue_commands] Auto continue bridge action queued: event_id=afc925c4-acee-418a-b0bf-a1a69a730511, text=继续任务
+[2026-05-11 09:31:05.404] [INFO] [windsurf_account_manager_lib::commands::auto_continue_commands] Auto continue bridge event: action=queued_send, source=workbench-dom, type=dom_text, message=读一下当前代码
+
+Your included usage quota is exhausted. Purchase extra usage to continue using premium models. Quota resets 5月11日 GMT+8 16:00.
+Feedback submitted
+Your modified files:
+backend_2026-05-11.log
+d
+[2026-05-11 09:31:06.082] [INFO] [windsurf_account_manager_lib::commands::auto_continue_commands] Auto continue bridge actions polled: count=1
+[2026-05-11 09:31:06.236] [INFO] [windsurf_account_manager_lib::commands::auto_continue_commands] Auto continue bridge event: action=deduped, source=workbench-dom, type=dom_text, message=读一下当前代码
+
+Your included usage quota is exhausted. Purchase extra usage to continue using premium models. Quota resets 5月11日 GMT+8 16:00.
+Feedback submitted
+Your modified files:
+backend_2026-05-11.log
+d
+[2026-05-11 09:31:07.145] [INFO] [windsurf_account_manager_lib::commands::auto_continue_commands] Auto continue bridge action sent: action=Some("41c73426-0e8e-4992-aca3-68ab48c9cacb"), method=Some("dom_button")
+[2026-05-11 09:31:08.161] [INFO] [windsurf_account_manager_lib::commands::auto_continue_commands] Auto continue bridge event: action=deduped, source=workbench-dom, type=dom_text, message=读一下当前代码
+
+Your included usage quota is exhausted. Purchase extra usage to continue using premium models. Quota resets 5月11日 GMT+8 16:00.
+Feedback submitted
+Your modified files:
+backend_2026-05-11.log
+d
+[2026-05-11 09:31:08.604] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("Olivia Williams"), email=Some("winds.urf20260212+6v5zr@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:31:11.046] [INFO] [windsurf_account_manager_lib::commands::auto_continue_commands] Auto continue bridge event: action=deduped, source=workbench-dom, type=dom_text, message=读一下当前代码
+
+Your included usage quota is exhausted. Purchase extra usage to continue using premium models. Quota resets 5月11日 GMT+8 16:00.
+Feedback submitted
+Your modified files:
+backend_2026-05-11.log
+d
+[2026-05-11 09:31:12.847] [INFO] [windsurf_account_manager_lib::commands::auto_continue_commands] Auto continue bridge event: action=deduped, source=workbench-dom, type=dom_text, message=读一下当前代码
+
+Your included usage quota is exhausted. Purchase extra usage to continue using premium models. Quota resets 5月11日 GMT+8 16:00.
+Feedback submitted
+Your modified files:
+backend_2026-05-11.log
+d
+[2026-05-11 09:31:16.850] [INFO] [windsurf_account_manager_lib::commands::auto_continue_commands] Auto continue bridge action queued: event_id=8d07eb46-3169-47df-a19a-d46993193682, text=继续任务
+[2026-05-11 09:31:16.850] [INFO] [windsurf_account_manager_lib::commands::auto_continue_commands] Auto continue bridge event: action=queued_send, source=workbench-dom, type=dom_text, message=读一下当前代码
+
+Your included usage quota is exhausted. Purchase extra usage to continue using premium models. Quota resets 5月11日 GMT+8 16:00.
+Feedback submitted
+Your modified files:
+backend_2026-05-11.log
+d
+[2026-05-11 09:31:18.093] [INFO] [windsurf_account_manager_lib::commands::auto_continue_commands] Auto continue bridge actions polled: count=1
+[2026-05-11 09:31:18.587] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("Olivia Williams"), email=Some("winds.urf20260212+6v5zr@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:31:18.914] [INFO] [windsurf_account_manager_lib::commands::auto_continue_commands] Auto continue bridge event: action=deduped, source=workbench-dom, type=dom_text, message=读一下当前代码
+
+Your included usage quota is exhausted. Purchase extra usage to continue using premium models. Quota resets 5月11日 GMT+8 16:00.
+Feedback submitted
+Your modified files:
+backend_2026-05-11.log
+d
+[2026-05-11 09:31:19.156] [INFO] [windsurf_account_manager_lib::commands::auto_continue_commands] Auto continue bridge action sent: action=Some("6fc4ba0d-6d3c-4b24-979e-59c5dba83cb5"), method=Some("dom_button")
+[2026-05-11 09:31:22.578] [INFO] [windsurf_account_manager_lib::commands::auto_continue_commands] Auto continue bridge event: action=deduped, source=workbench-dom, type=dom_text, message=读一下当前代码
+
+Your included usage quota is exhausted. Purchase extra usage to continue using premium models. Quota resets 5月11日 GMT+8 16:00.
+Feedback submitted
+Your modified files:
+backend_2026-05-11.log
+d
+[2026-05-11 09:31:28.598] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("Olivia Williams"), email=Some("winds.urf20260212+6v5zr@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:31:38.584] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("Olivia Williams"), email=Some("winds.urf20260212+6v5zr@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:31:39.539] [INFO] [windsurf_account_manager_lib::commands::auto_continue_commands] Auto continue bridge action queued: event_id=6a2920b9-1df1-4b7d-aeb2-03a82240e158, text=继续任务
+[2026-05-11 09:31:39.539] [INFO] [windsurf_account_manager_lib::commands::auto_continue_commands] Auto continue bridge event: action=queued_send, source=workbench-dom, type=dom_text, message=Your included usage quota is exhausted. Purchase extra usage to continue using premium models. Quota resets 5月11日 GMT+8 16:00.
+vscode-file://vscode-app/c:/Program%20Files/Windsurf/resources/app/out/vs
+[2026-05-11 09:31:40.585] [INFO] [windsurf_account_manager_lib::commands::auto_continue_commands] Auto continue bridge actions polled: count=1
+[2026-05-11 09:31:41.651] [INFO] [windsurf_account_manager_lib::commands::auto_continue_commands] Auto continue bridge action sent: action=Some("416253a6-ea5a-4514-ba61-ceb5e06af475"), method=Some("dom_button")
+[2026-05-11 09:31:48.583] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("Olivia Williams"), email=Some("winds.urf20260212+6v5zr@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:31:58.604] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("Olivia Williams"), email=Some("winds.urf20260212+6v5zr@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:32:08.589] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("Olivia Williams"), email=Some("winds.urf20260212+6v5zr@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:32:18.593] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("Olivia Williams"), email=Some("winds.urf20260212+6v5zr@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:32:28.613] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("Olivia Williams"), email=Some("winds.urf20260212+6v5zr@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:32:38.595] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("Olivia Williams"), email=Some("winds.urf20260212+6v5zr@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:32:48.599] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("Olivia Williams"), email=Some("winds.urf20260212+6v5zr@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:32:58.610] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("Olivia Williams"), email=Some("winds.urf20260212+6v5zr@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:33:08.618] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("Olivia Williams"), email=Some("winds.urf20260212+6v5zr@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:33:18.578] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("Olivia Williams"), email=Some("winds.urf20260212+6v5zr@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:33:28.584] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("Olivia Williams"), email=Some("winds.urf20260212+6v5zr@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:33:38.584] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("Olivia Williams"), email=Some("winds.urf20260212+6v5zr@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:33:48.583] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("Olivia Williams"), email=Some("winds.urf20260212+6v5zr@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:33:58.604] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("Olivia Williams"), email=Some("winds.urf20260212+6v5zr@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:34:00.813] [WARN] [tao::platform_impl::platform::event_loop::runner] NewEvents emitted without explicit RedrawEventsCleared
+[2026-05-11 09:34:00.815] [WARN] [tao::platform_impl::platform::event_loop::runner] RedrawEventsCleared emitted without explicit MainEventsCleared
+[2026-05-11 09:34:01.337] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("Olivia Williams"), email=Some("winds.urf20260212+6v5zr@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:34:06.784] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("Olivia Williams"), email=Some("winds.urf20260212+6v5zr@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:34:08.593] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("Olivia Williams"), email=Some("winds.urf20260212+6v5zr@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:34:11.793] [WARN] [tao::platform_impl::platform::event_loop::runner] NewEvents emitted without explicit RedrawEventsCleared
+[2026-05-11 09:34:11.795] [WARN] [tao::platform_impl::platform::event_loop::runner] RedrawEventsCleared emitted without explicit MainEventsCleared
+[2026-05-11 09:34:11.796] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("Olivia Williams"), email=Some("winds.urf20260212+6v5zr@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:34:16.782] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("Olivia Williams"), email=Some("winds.urf20260212+6v5zr@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:34:18.947] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] Switching account: 20df2933-f0ae-4a4d-8df1-60ed41f80336
+[2026-05-11 09:34:18.947] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] Getting auth token via Firebase refresh...
+[2026-05-11 09:34:18.947] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] Using devin-auth flow (auth1_ token detected)...
+[2026-05-11 09:34:18.947] [INFO] [windsurf_account_manager_lib::services::auth_service] [refresh_ott] Refreshing OTT with auth1_token...
+[2026-05-11 09:34:20.244] [INFO] [windsurf_account_manager_lib::services::auth_service] [GetOneTimeAuthToken refresh] Trying GetOneTimeAuthToken variant=web_backend_session_x_auth body_prefix=devin-session-token$...
+[2026-05-11 09:34:21.320] [INFO] [windsurf_account_manager_lib::services::auth_service] [GetOneTimeAuthToken refresh] variant=web_backend_session_x_auth succeeded
+[2026-05-11 09:34:21.320] [INFO] [windsurf_account_manager_lib::services::auth_service] [refresh_ott] OK: OTT=ott$AGisnaY0fxlfTnyw...
+[2026-05-11 09:34:22.216] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] RegisterUser SUCCESS (via devin-auth): apiKey=devin-session-token$..., name=John Wright, server=https://server.self-serve.windsurf.com
+[2026-05-11 09:34:22.216] [INFO] [windsurf_account_manager_lib::services::auth_service] [GetOneTimeAuthToken] Trying GetOneTimeAuthToken variant=web_backend_session_x_auth body_prefix=devin-session-token$...
+[2026-05-11 09:34:22.636] [INFO] [windsurf_account_manager_lib::services::auth_service] [GetOneTimeAuthToken] variant=web_backend_session_x_auth succeeded
+[2026-05-11 09:34:22.636] [INFO] [windsurf_account_manager_lib::services::auth_service] [get_fresh_ott] New OTT=ott$btQLD3TJvgtlACzG...
+[2026-05-11 09:34:22.636] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] Attempting to reset machine ID (setting enabled)...
+[2026-05-11 09:34:22.647] [INFO] [windsurf_account_manager_lib::commands::machine_id_commands] Auto-saved current machine ID before reset
+[2026-05-11 09:34:22.650] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] Updated storage.json with new machine IDs
+[2026-05-11 09:34:22.650] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] Updated HKLM\SOFTWARE\Microsoft\Cryptography\MachineGuid to: 70C3FE63-EC0F-4D57-8E21-107FCE7D0852
+[2026-05-11 09:34:22.650] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] Machine ID reset successful
+[2026-05-11 09:34:22.650] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] Triggering seamless account switch via callback URL...
+[2026-05-11 09:34:22.650] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] Triggering Windsurf callback (target=main): windsurf://codeium.windsurf#access_token=<hidden>&state=5ddc8cbd-dcbd-4115-9c67-3b6004daa3bb&token_type=Bearer
+[2026-05-11 09:34:23.141] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] [Profile][Windows] Found Windsurf executable: C:\Program Files\Windsurf\Windsurf.exe
+[2026-05-11 09:34:25.549] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] Successfully triggered Windsurf callback via CLI
+[2026-05-11 09:34:25.549] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] Successfully triggered Windsurf callback
+[2026-05-11 09:34:25.729] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] Successfully switched Windsurf account to: John Wright
+[2026-05-11 09:34:26.338] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("John Wright"), email=Some("wi.ndsurf20260212+w865x@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:34:26.769] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("John Wright"), email=Some("wi.ndsurf20260212+w865x@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:34:31.767] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("John Wright"), email=Some("wi.ndsurf20260212+w865x@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:34:36.347] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("John Wright"), email=Some("wi.ndsurf20260212+w865x@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:34:36.772] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("John Wright"), email=Some("wi.ndsurf20260212+w865x@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:34:41.759] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("John Wright"), email=Some("wi.ndsurf20260212+w865x@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:34:46.329] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("John Wright"), email=Some("wi.ndsurf20260212+w865x@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:34:46.758] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("John Wright"), email=Some("wi.ndsurf20260212+w865x@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:34:51.780] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("John Wright"), email=Some("wi.ndsurf20260212+w865x@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:34:56.338] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("John Wright"), email=Some("wi.ndsurf20260212+w865x@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:34:56.763] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("John Wright"), email=Some("wi.ndsurf20260212+w865x@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:35:01.771] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("John Wright"), email=Some("wi.ndsurf20260212+w865x@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:35:06.341] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("John Wright"), email=Some("wi.ndsurf20260212+w865x@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:35:06.761] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("John Wright"), email=Some("wi.ndsurf20260212+w865x@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:35:11.771] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("John Wright"), email=Some("wi.ndsurf20260212+w865x@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:35:16.321] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("John Wright"), email=Some("wi.ndsurf20260212+w865x@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:35:16.762] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("John Wright"), email=Some("wi.ndsurf20260212+w865x@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:35:21.755] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("John Wright"), email=Some("wi.ndsurf20260212+w865x@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:35:26.321] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("John Wright"), email=Some("wi.ndsurf20260212+w865x@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:35:26.775] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("John Wright"), email=Some("wi.ndsurf20260212+w865x@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:35:31.772] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("John Wright"), email=Some("wi.ndsurf20260212+w865x@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:35:36.317] [INFO] [windsurf_account_manager_lib::commands::auto_continue_commands] Auto continue bridge action queued: event_id=c82ca388-e4a4-40e7-8af1-e8b723347ba4, text=继续任务
+[2026-05-11 09:35:36.317] [INFO] [windsurf_account_manager_lib::commands::auto_continue_commands] Auto continue bridge event: action=queued_send, source=workbench-dom, type=dom_text, message=Your included daily usage quota is exhausted. Purchase extra usage to continue using premium models. Quota resets 5月11日 GMT+8 16:00.
+vscode-file://vscode-app/c:/Program%20Files/Windsurf/resources/app/
+[2026-05-11 09:35:36.340] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("John Wright"), email=Some("wi.ndsurf20260212+w865x@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:35:36.772] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("John Wright"), email=Some("wi.ndsurf20260212+w865x@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:35:37.589] [INFO] [windsurf_account_manager_lib::commands::auto_continue_commands] Auto continue bridge actions polled: count=1
+[2026-05-11 09:35:38.668] [INFO] [windsurf_account_manager_lib::commands::auto_continue_commands] Auto continue bridge action sent: action=Some("b2c64949-0745-4eb9-bca6-2a4ec1e84114"), method=Some("dom_button")
+[2026-05-11 09:35:41.761] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("John Wright"), email=Some("wi.ndsurf20260212+w865x@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:35:46.325] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("John Wright"), email=Some("wi.ndsurf20260212+w865x@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:35:46.764] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("John Wright"), email=Some("wi.ndsurf20260212+w865x@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:35:51.771] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("John Wright"), email=Some("wi.ndsurf20260212+w865x@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:35:52.933] [WARN] [tao::platform_impl::platform::event_loop::runner] NewEvents emitted without explicit RedrawEventsCleared
+[2026-05-11 09:35:52.935] [WARN] [tao::platform_impl::platform::event_loop::runner] RedrawEventsCleared emitted without explicit MainEventsCleared
+[2026-05-11 09:35:56.773] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("John Wright"), email=Some("wi.ndsurf20260212+w865x@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:36:01.796] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("John Wright"), email=Some("wi.ndsurf20260212+w865x@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:36:04.904] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("John Wright"), email=Some("wi.ndsurf20260212+w865x@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:36:05.768] [INFO] [windsurf_account_manager_lib::services::windsurf_service] [GetPlanStatus] Status code: 200, token_prefix=devin-session-token$eyJhb..., response_size=1785 bytes
+[2026-05-11 09:36:05.929] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] Using devin-auth flow (auth1_ token detected)...
+[2026-05-11 09:36:05.929] [INFO] [windsurf_account_manager_lib::services::auth_service] [refresh_ott] Refreshing OTT with auth1_token...
+[2026-05-11 09:36:06.764] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("John Wright"), email=Some("wi.ndsurf20260212+w865x@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:36:07.346] [INFO] [windsurf_account_manager_lib::services::auth_service] [GetOneTimeAuthToken refresh] Trying GetOneTimeAuthToken variant=web_backend_session_x_auth body_prefix=devin-session-token$...
+[2026-05-11 09:36:08.397] [INFO] [windsurf_account_manager_lib::services::auth_service] [GetOneTimeAuthToken refresh] variant=web_backend_session_x_auth succeeded
+[2026-05-11 09:36:08.398] [INFO] [windsurf_account_manager_lib::services::auth_service] [refresh_ott] OK: OTT=ott$eZM69M59FTh1zEBo...
+[2026-05-11 09:36:09.241] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] RegisterUser SUCCESS (via devin-auth): apiKey=devin-session-token$..., name=Matthew Cook, server=https://server.self-serve.windsurf.com
+[2026-05-11 09:36:09.241] [INFO] [windsurf_account_manager_lib::services::auth_service] [GetOneTimeAuthToken] Trying GetOneTimeAuthToken variant=web_backend_session_x_auth body_prefix=devin-session-token$...
+[2026-05-11 09:36:09.592] [INFO] [windsurf_account_manager_lib::services::auth_service] [GetOneTimeAuthToken] variant=web_backend_session_x_auth succeeded
+[2026-05-11 09:36:09.592] [INFO] [windsurf_account_manager_lib::services::auth_service] [get_fresh_ott] New OTT=ott$RFdfYETZkPomB2GM...
+[2026-05-11 09:36:09.604] [INFO] [windsurf_account_manager_lib::commands::machine_id_commands] Auto-saved current machine ID before reset
+[2026-05-11 09:36:09.607] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] Updated storage.json with new machine IDs
+[2026-05-11 09:36:09.607] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] Updated HKLM\SOFTWARE\Microsoft\Cryptography\MachineGuid to: 528BA643-2AFB-4981-AA38-746A0C595195
+[2026-05-11 09:36:09.607] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] Triggering Windsurf callback (target=main): windsurf://codeium.windsurf#access_token=<hidden>&state=de594a93-8308-4b69-be0c-50666f437dec&token_type=Bearer
+[2026-05-11 09:36:10.094] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] [Profile][Windows] Found Windsurf executable: C:\Program Files\Windsurf\Windsurf.exe
+[2026-05-11 09:36:11.757] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("John Wright"), email=Some("wi.ndsurf20260212+w865x@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:36:12.488] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] Successfully triggered Windsurf callback via CLI
+[2026-05-11 09:36:12.488] [INFO] [windsurf_account_manager_lib::commands::switch_account_commands] Successfully triggered Windsurf callback
+[2026-05-11 09:36:12.489] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("John Wright"), email=Some("wi.ndsurf20260212+w865x@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:36:13.006] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("Matthew Cook"), email=Some("windsurf2026021.2+i1dt1@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:36:13.512] [INFO] [windsurf_account_manager_lib::commands::auto_continue_commands] Auto continue bridge action queued: event_id=abe6a722-fbfc-4b00-943e-80c82e1032f8, text=继续任务
+[2026-05-11 09:36:13.512] [INFO] [windsurf_account_manager_lib::commands::auto_continue_commands] Auto continue bridge event: action=queued_send, source=workbench-dom, type=dom_text, message=Your included usage quota is exhausted. Purchase extra usage to continue using premium models. Quota resets 5月11日 GMT+8 16:00.
+vscode-file://vscode-app/c:/Program%20Files/Windsurf/resources/app/out/vs
+[2026-05-11 09:36:13.583] [INFO] [windsurf_account_manager_lib::commands::auto_continue_commands] Auto continue bridge actions polled: count=1
+[2026-05-11 09:36:13.754] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("Matthew Cook"), email=Some("windsurf2026021.2+i1dt1@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:36:14.670] [INFO] [windsurf_account_manager_lib::commands::auto_continue_commands] Auto continue bridge action sent: action=Some("7ba920d1-70eb-4284-8b7c-23b542533ce3"), method=Some("dom_button")
+[2026-05-11 09:36:16.766] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("Matthew Cook"), email=Some("windsurf2026021.2+i1dt1@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:36:21.782] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("Matthew Cook"), email=Some("windsurf2026021.2+i1dt1@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:36:23.731] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("Matthew Cook"), email=Some("windsurf2026021.2+i1dt1@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:36:26.769] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("Matthew Cook"), email=Some("windsurf2026021.2+i1dt1@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:36:31.771] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("Matthew Cook"), email=Some("windsurf2026021.2+i1dt1@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:36:33.746] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("Matthew Cook"), email=Some("windsurf2026021.2+i1dt1@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:36:36.767] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("Matthew Cook"), email=Some("windsurf2026021.2+i1dt1@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:36:41.774] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("Matthew Cook"), email=Some("windsurf2026021.2+i1dt1@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:36:43.723] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("Matthew Cook"), email=Some("windsurf2026021.2+i1dt1@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:36:46.757] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("Matthew Cook"), email=Some("windsurf2026021.2+i1dt1@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:36:51.771] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("Matthew Cook"), email=Some("windsurf2026021.2+i1dt1@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:36:53.734] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("Matthew Cook"), email=Some("windsurf2026021.2+i1dt1@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:36:56.791] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("Matthew Cook"), email=Some("windsurf2026021.2+i1dt1@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:37:01.769] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("Matthew Cook"), email=Some("windsurf2026021.2+i1dt1@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:37:03.740] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("Matthew Cook"), email=Some("windsurf2026021.2+i1dt1@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:37:06.772] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("Matthew Cook"), email=Some("windsurf2026021.2+i1dt1@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:37:11.762] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("Matthew Cook"), email=Some("windsurf2026021.2+i1dt1@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:37:13.806] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("Matthew Cook"), email=Some("windsurf2026021.2+i1dt1@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:37:16.773] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("Matthew Cook"), email=Some("windsurf2026021.2+i1dt1@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:37:21.768] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("Matthew Cook"), email=Some("windsurf2026021.2+i1dt1@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:37:23.743] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("Matthew Cook"), email=Some("windsurf2026021.2+i1dt1@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:37:26.763] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("Matthew Cook"), email=Some("windsurf2026021.2+i1dt1@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:37:31.790] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("Matthew Cook"), email=Some("windsurf2026021.2+i1dt1@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:37:33.727] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("Matthew Cook"), email=Some("windsurf2026021.2+i1dt1@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:37:36.773] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("Matthew Cook"), email=Some("windsurf2026021.2+i1dt1@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:37:41.765] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("Matthew Cook"), email=Some("windsurf2026021.2+i1dt1@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")
+[2026-05-11 09:37:43.770] [INFO] [windsurf_account_manager_lib::commands::windsurf_info] Windsurf info: name=Some("Matthew Cook"), email=Some("windsurf2026021.2+i1dt1@gmail.com"), plan=Some("Trial"), version=Some("2.0.50")

@@ -3,7 +3,9 @@ use base64::{Engine as _, engine::general_purpose};
 use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WindsurfCurrentInfo {
@@ -15,6 +17,8 @@ pub struct WindsurfCurrentInfo {
     pub version: Option<String>,
     pub is_active: bool,
 }
+
+static LAST_WINDSURF_INFO_LOG: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
 
 /// 旧版 windsurfAuthStatus 格式（含email/name字段）
 #[derive(Debug, Serialize, Deserialize)]
@@ -274,11 +278,44 @@ fn read_current_info(db_path: &std::path::Path) -> Result<WindsurfCurrentInfo, A
     }
     
     if info.is_active {
-        info!("Windsurf info: name={:?}, email={:?}, plan={:?}, version={:?}",
-            info.name, info.email, info.plan_name, info.version);
+        log_current_info(db_path, &info);
     } else {
         warn!("Could not detect active Windsurf session");
     }
     
     Ok(info)
+}
+
+fn log_current_info(db_path: &std::path::Path, info: &WindsurfCurrentInfo) {
+    let fingerprint = format!(
+        "{:?}|{:?}|{:?}|{:?}",
+        info.name,
+        info.email,
+        info.plan_name,
+        info.version
+    );
+    let key = db_path.display().to_string();
+    let last = LAST_WINDSURF_INFO_LOG.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = match last.lock() {
+        Ok(guard) => guard,
+        Err(_) => {
+            info!(
+                "Windsurf info: name={:?}, email={:?}, plan={:?}, version={:?}",
+                info.name, info.email, info.plan_name, info.version
+            );
+            return;
+        }
+    };
+    if guard.get(&key).map(String::as_str) == Some(fingerprint.as_str()) {
+        debug!(
+            "Windsurf info unchanged: name={:?}, email={:?}, plan={:?}, version={:?}",
+            info.name, info.email, info.plan_name, info.version
+        );
+        return;
+    }
+    guard.insert(key, fingerprint);
+    info!(
+        "Windsurf info: name={:?}, email={:?}, plan={:?}, version={:?}",
+        info.name, info.email, info.plan_name, info.version
+    );
 }

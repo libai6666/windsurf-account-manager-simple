@@ -163,7 +163,7 @@ const validatePassword = (_rule: any, value: any, callback: any) => {
 const rules: FormRules = {
   nickname: [
     { required: true, message: '请输入备注名称', trigger: 'blur' },
-    { max: 20, message: '备注名称最多20个字符', trigger: 'blur' }
+    { max: 60, message: '备注名称最多60个字符', trigger: 'blur' }
   ],
   newPassword: [
     { min: 6, message: '密码长度至少6位', trigger: 'blur' }

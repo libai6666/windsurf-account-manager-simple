@@ -31,7 +31,7 @@
       </template>
       <template #default>
         <div v-if="!tipExpanded" class="alert-body-compact">
-          推荐<strong>开启自动换号</strong>。新建分身后选好<strong>「换号分组」+「手动目标号」</strong>，点<strong>「切到目标号」</strong>，等 Windsurf 弹窗里点 <strong>Log in</strong> 即自动登录。
+          推荐<strong>开启自动换号</strong>。新建分身后选好<strong>「换号分组」+「手动目标号」</strong>，点<strong>「切到目标号」</strong>，等 Windsurf 弹窗里点 <strong>Log in</strong>；macOS 如弹出浏览器，直接关闭浏览器并等待切号完成。
         </div>
         <div v-else class="alert-body">
           <div>每个分身使用独立 <code>--user-data-dir</code>，账号、机器码、扩展状态彼此隔离。建议<strong>开启「自动换号」</strong>，让管理器自动维护账号配额。</div>
@@ -47,14 +47,47 @@
               <li><span class="step-tag">1</span><span>点击右上角 <strong>「新建分身」</strong>，输入名称后保存</span></li>
               <li><span class="step-tag">2</span><span>在分身卡片里选好 <strong>「换号分组」</strong> 和 <strong>「手动目标号」</strong>（要登录的账号）</span></li>
               <li><span class="step-tag">3</span><span>点击底部 <strong>「切到目标号」</strong>，管理器会自动启动分身窗口并把登录回调定向到该分身</span></li>
-              <li><span class="step-tag">4</span><span>等待新 Windsurf 窗口弹出，在 Sign in 页面点击 <strong>「Log in」</strong> 按钮</span></li>
-              <li><span class="step-tag">5</span><span>Windsurf 会自动用刚才选好的账号完成登录，<strong>无需手动输入邮箱/密码</strong></span></li>
+              <li><span class="step-tag">4</span><span>等待新 Windsurf 窗口弹出，在 Sign in 页面点击 <strong>「Log in」</strong> 按钮；macOS 首次可能会拉起浏览器，这是 Windsurf 自身登录按钮行为</span></li>
+              <li><span class="step-tag">5</span><span>如果弹出浏览器，<strong>直接关闭浏览器，不要在浏览器里登录</strong>，回到分身窗口/管理器等待切号回调自动完成</span></li>
+              <li><span class="step-tag">6</span><span>Windsurf 会自动用刚才选好的账号完成登录，<strong>无需手动输入邮箱/密码</strong></span></li>
             </ol>
             <div class="alert-tip-line">⚠️ 如果忘了第 2 步直接启动，会进入 Windsurf 默认登录页 — 这时关闭分身重做即可。</div>
           </div>
         </div>
       </template>
     </el-alert>
+
+    <div class="auto-continue-panel">
+      <div class="auto-continue-main">
+        <div class="auto-continue-title-row">
+          <span class="auto-continue-title">自动继续工作</span>
+          <el-tag size="small" type="success">全局</el-tag>
+        </div>
+        <div class="auto-continue-desc">
+          搭配自动换号使用：自动换号切到可用账号后，由 Windsurf 内部 Bridge 捕获页面中的模型异常、额度耗尽或试用用户全局限流等中断事件，并在当前 Cascade 输入框自动填入并提交“继续工作”；不再扫描系统窗口或截图。
+        </div>
+        <div class="auto-continue-hints">
+          <span>内部文本捕获</span>
+          <span>自动填入提交</span>
+          <span>无需辅助功能权限</span>
+        </div>
+      </div>
+      <div class="auto-continue-actions">
+        <el-switch
+          :model-value="autoContinueEnabled"
+          active-text="开启"
+          inactive-text="关闭"
+          :loading="autoContinueLoading"
+          @change="setAutoContinueEnabled(Boolean($event))"
+        />
+        <el-button :loading="autoContinueLoading" :icon="RefreshRight" @click="runAutoContinue(true)">
+          检查Bridge
+        </el-button>
+        <div v-if="autoContinueLastMessage" class="auto-continue-status">
+          {{ autoContinueLastMessage }}
+        </div>
+      </div>
+    </div>
 
     <div v-if="loading" class="profile-loading">
       <el-icon class="is-loading" size="32"><Loading /></el-icon>
@@ -356,8 +389,15 @@ const renameDialogVisible = ref(false);
 const profileNameInput = ref('');
 const editingProfileId = ref('');
 let profileStatusTimer: ReturnType<typeof setInterval> | null = null;
+let autoContinueTimer: ReturnType<typeof setInterval> | null = null;
 
 const TIP_EXPANDED_KEY = 'profile-manager:tip-expanded';
+const AUTO_CONTINUE_ENABLED_KEY = 'profile-manager:auto-continue-enabled';
+const autoContinueEnabled = ref(Boolean(
+  settingsStore.settings.autoContinueBridgeEnabled ?? (localStorage.getItem(AUTO_CONTINUE_ENABLED_KEY) === '1'),
+));
+const autoContinueLoading = ref(false);
+const autoContinueLastMessage = ref('');
 const tipExpanded = ref<boolean>(
   // 默认展开（首次访问看完整指南）；用户主动收起后持久化
   localStorage.getItem(TIP_EXPANDED_KEY) !== '0',
@@ -491,6 +531,71 @@ async function refreshProfileStatusSilently() {
     normalizeProfilePage();
   } catch (error) {
     console.warn('刷新分身状态失败:', error);
+  }
+}
+
+async function runAutoContinue(showMessage = false) {
+  if (autoContinueLoading.value) return;
+  autoContinueLoading.value = true;
+  try {
+    const result = await profileApi.getAutoContinueBridgeStatus();
+    autoContinueLastMessage.value = result.message || 'Bridge状态已刷新';
+    if (showMessage) {
+      if (result.config?.enabled) {
+        ElMessage.success(autoContinueLastMessage.value);
+      } else {
+        ElMessage.info(autoContinueLastMessage.value);
+      }
+    }
+  } catch (error) {
+    autoContinueLastMessage.value = `自动继续失败: ${error}`;
+    if (showMessage) {
+      ElMessage.error(autoContinueLastMessage.value);
+    }
+  } finally {
+    autoContinueLoading.value = false;
+  }
+}
+
+function stopAutoContinueTimer() {
+  if (autoContinueTimer) {
+    clearInterval(autoContinueTimer);
+    autoContinueTimer = null;
+  }
+}
+
+function startAutoContinueTimer() {
+  stopAutoContinueTimer();
+  autoContinueTimer = setInterval(() => {
+    if (autoContinueEnabled.value) {
+      void runAutoContinue(false);
+    }
+  }, 30000);
+}
+
+async function setAutoContinueEnabled(enabled: boolean) {
+  autoContinueEnabled.value = enabled;
+  localStorage.setItem(AUTO_CONTINUE_ENABLED_KEY, enabled ? '1' : '0');
+  autoContinueLoading.value = true;
+  try {
+    const result = await profileApi.setAutoContinueBridgeConfig(enabled);
+    autoContinueLastMessage.value = result.message || (enabled ? '自动继续Bridge已开启' : '自动继续Bridge已关闭');
+    await settingsStore.updateSettings({
+      ...settingsStore.settings,
+      autoContinueBridgeEnabled: enabled,
+    });
+  } catch (error) {
+    autoContinueEnabled.value = !enabled;
+    localStorage.setItem(AUTO_CONTINUE_ENABLED_KEY, !enabled ? '1' : '0');
+    autoContinueLastMessage.value = `自动继续Bridge配置失败: ${error}`;
+    ElMessage.error(autoContinueLastMessage.value);
+  } finally {
+    autoContinueLoading.value = false;
+  }
+  if (enabled) {
+    startAutoContinueTimer();
+  } else {
+    stopAutoContinueTimer();
   }
 }
 
@@ -752,6 +857,9 @@ onMounted(async () => {
     loadProfiles(),
   ]);
   profileStatusTimer = setInterval(refreshProfileStatusSilently, 5000);
+  if (autoContinueEnabled.value) {
+    startAutoContinueTimer();
+  }
 });
 
 onUnmounted(() => {
@@ -759,6 +867,7 @@ onUnmounted(() => {
     clearInterval(profileStatusTimer);
     profileStatusTimer = null;
   }
+  stopAutoContinueTimer();
 });
 </script>
 
@@ -848,6 +957,80 @@ onUnmounted(() => {
 
 .profile-alert-tip :deep(.el-alert__title) {
   font-size: 13px;
+}
+
+.auto-continue-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 14px 0;
+  padding: 16px 18px;
+  border: 1px solid rgba(103, 194, 58, 0.2);
+  border-radius: 16px;
+  background: linear-gradient(135deg, rgba(240, 249, 235, 0.94), rgba(255, 255, 255, 0.9));
+  box-shadow: 0 12px 32px rgba(46, 125, 50, 0.08);
+}
+
+.auto-continue-main {
+  min-width: 0;
+}
+
+.auto-continue-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.auto-continue-title {
+  color: #1f4d2b;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.auto-continue-desc {
+  color: #4b5563;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.auto-continue-desc strong {
+  color: #15803d;
+  font-weight: 700;
+}
+
+.auto-continue-hints {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.auto-continue-hints span {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(103, 194, 58, 0.12);
+  color: #2f6b3a;
+  font-size: 11.5px;
+}
+
+.auto-continue-actions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  min-width: 280px;
+}
+
+.auto-continue-status {
+  max-width: 220px;
+  overflow: hidden;
+  color: #4b5563;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .alert-title-row {
@@ -990,6 +1173,26 @@ onUnmounted(() => {
 :global(.dark) .profile-alert-tip {
   border-color: rgba(251, 191, 36, 0.3);
   background: linear-gradient(135deg, rgba(120, 53, 15, 0.2) 0%, rgba(146, 64, 14, 0.2) 100%) !important;
+}
+
+:global(.dark) .auto-continue-panel {
+  border-color: rgba(74, 222, 128, 0.2);
+  background: linear-gradient(135deg, rgba(20, 83, 45, 0.18), rgba(15, 23, 42, 0.82));
+}
+
+:global(.dark) .auto-continue-title,
+:global(.dark) .auto-continue-desc strong {
+  color: #86efac;
+}
+
+:global(.dark) .auto-continue-desc,
+:global(.dark) .auto-continue-status {
+  color: #d1d5db;
+}
+
+:global(.dark) .auto-continue-hints span {
+  background: rgba(74, 222, 128, 0.12);
+  color: #bbf7d0;
 }
 
 :global(.dark) .alert-title-strong,
@@ -1207,6 +1410,16 @@ onUnmounted(() => {
 
   .profile-hero {
     flex-direction: column;
+  }
+
+  .auto-continue-panel {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .auto-continue-actions {
+    justify-content: flex-start;
+    min-width: 0;
   }
 
   .profile-grid {

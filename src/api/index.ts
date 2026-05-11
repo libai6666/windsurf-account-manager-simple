@@ -94,6 +94,18 @@ export const profileApi = {
 
   async checkProfileAutoSwitch(profileId: string): Promise<any> {
     return await invoke('check_profile_auto_switch', { profileId });
+  },
+
+  async autoContinueWindsurfConversations(): Promise<{ success: boolean; bridge?: boolean; continued: number; windows: string[]; message: string }> {
+    return await invoke('auto_continue_windsurf_conversations');
+  },
+
+  async getAutoContinueBridgeStatus(): Promise<any> {
+    return await invoke('get_auto_continue_bridge_status');
+  },
+
+  async setAutoContinueBridgeConfig(enabled: boolean): Promise<any> {
+    return await invoke('set_auto_continue_bridge_config', { enabled });
   }
 };
 

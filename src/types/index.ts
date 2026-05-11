@@ -355,6 +355,7 @@ export interface Settings {
   seamlessSwitchEnabled?: boolean;  // 是否启用无感换号
   windsurfPath?: string | null;  // Windsurf安装路径
   patchBackupPath?: string | null;  // 补丁备份文件路径
+  autoContinueBridgeEnabled?: boolean;  // 是否启用内部自动继续Bridge
   autoOpenBrowser?: boolean;  // 是否自动打开浏览器
   browserMode?: 'incognito' | 'normal';  // 浏览器模式
   privacyMode?: boolean;  // 隐私模式，隐藏邮箱地址

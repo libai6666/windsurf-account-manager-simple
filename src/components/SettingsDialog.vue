@@ -396,6 +396,44 @@
               若首次开启无感换号提示"补丁已经应用过了"但状态仍为"未安装"，可点击"重新打补丁"强制覆盖。
             </div>
           </el-form-item>
+
+          <el-form-item label="自动继续 Bridge">
+            <el-space wrap>
+              <el-tag v-if="patchStatus.autoContinueBridge" type="success">Bridge补丁已安装</el-tag>
+              <el-tag v-else type="info">Bridge补丁未安装</el-tag>
+              <el-button
+                size="small"
+                type="primary"
+                :disabled="!windsurfPath"
+                :loading="autoContinueBridgeLoading"
+                @click="installAutoContinueBridgePatch"
+              >
+                安装/修复Bridge补丁
+              </el-button>
+              <el-button
+                size="small"
+                :loading="autoContinueBridgeLoading"
+                @click="checkAutoContinueBridgeStatus"
+              >
+                检查Bridge
+              </el-button>
+            </el-space>
+            <div style="margin-top: 8px;">
+              <el-switch
+                v-model="settings.autoContinueBridgeEnabled"
+                active-text="启用Bridge"
+                inactive-text="关闭Bridge"
+                :loading="autoContinueBridgeLoading"
+                @change="handleAutoContinueBridgeEnabled"
+              />
+            </div>
+            <div style="margin-top: 5px; color: #909399; font-size: 12px;">
+              Bridge 从 Windsurf 内部页面文本捕获中断提示，开启后会在当前 Cascade 输入框自动填入并提交“继续工作”。
+            </div>
+            <div v-if="autoContinueBridgeMessage" style="margin-top: 5px; color: #67c23a; font-size: 12px;">
+              {{ autoContinueBridgeMessage }}
+            </div>
+          </el-form-item>
           
           <el-alert
             title="功能说明"
@@ -407,6 +445,7 @@
             <template #default>
               <div style="font-size: 12px; line-height: 1.6;">
                 <p>🚀 无感换号功能：实现 Windsurf 账号无感切换</p>
+                <p>🔁 自动继续 Bridge：搭配自动换号使用,自动换号切到可用账号后，由 Windsurf 内部 Bridge 捕获页面中的模型异常、额度耗尽或试用用户全局限流等中断事件，并在当前 Cascade 输入框自动填入并提交“继续工作”；</p>
                 <p>⚠️ 注意：开启/关闭时会自动重启 Windsurf</p>
               </div>
             </template>
@@ -483,6 +522,7 @@ const settings = reactive<{
   seamlessSwitchEnabled: boolean;
   windsurfPath: string | null;
   patchBackupPath: string | null;
+  autoContinueBridgeEnabled: boolean;
   autoOpenBrowser: boolean;
   browserMode: 'incognito' | 'normal';
   privacyMode: boolean;
@@ -515,6 +555,7 @@ const settings = reactive<{
   seamlessSwitchEnabled: false,  // 默认关闭无感换号
   windsurfPath: null,  // Windsurf路径
   patchBackupPath: null,  // 补丁备份路径
+  autoContinueBridgeEnabled: false,
   autoOpenBrowser: true,  // 默认自动打开浏览器
   browserMode: 'incognito',  // 默认无痕模式
   privacyMode: false,  // 默认关闭隐私模式
@@ -603,8 +644,11 @@ const patchLoading = ref(false);
 const patchStatus = reactive({
   installed: false,
   oauthHandler: false,
+  autoContinueBridge: false,
   error: '',
 });
+const autoContinueBridgeLoading = ref(false);
+const autoContinueBridgeMessage = ref('');
 
 
 watch(() => uiStore.showSettingsDialog, async (show) => {
@@ -736,6 +780,7 @@ async function checkPatchStatus() {
     });
     patchStatus.installed = status.installed;
     patchStatus.oauthHandler = Boolean(status.oauth_handler);
+    patchStatus.autoContinueBridge = Boolean(status.auto_continue_bridge);
     patchStatus.error = status.error || '';
     
     // 同步开关状态与实际补丁状态
@@ -747,7 +792,65 @@ async function checkPatchStatus() {
   } catch (error) {
     patchStatus.installed = false;
     patchStatus.oauthHandler = false;
+    patchStatus.autoContinueBridge = false;
     patchStatus.error = error as string;
+  }
+}
+
+async function syncAutoContinueBridgeConfig() {
+  const status = await invoke<any>('set_auto_continue_bridge_config', {
+    enabled: settings.autoContinueBridgeEnabled,
+  });
+  autoContinueBridgeMessage.value = status.message || 'Bridge配置已同步';
+}
+
+async function checkAutoContinueBridgeStatus() {
+  autoContinueBridgeLoading.value = true;
+  try {
+    const status = await invoke<any>('get_auto_continue_bridge_status');
+    const config = status.config || {};
+    settings.autoContinueBridgeEnabled = Boolean(config.enabled);
+    autoContinueBridgeMessage.value = `${status.message || 'Bridge状态已刷新'}，端口 ${status.port}`;
+  } catch (error) {
+    ElMessage.error(`检查Bridge失败: ${error}`);
+  } finally {
+    autoContinueBridgeLoading.value = false;
+  }
+}
+
+async function installAutoContinueBridgePatch() {
+  if (!windsurfPath.value) {
+    ElMessage.error('请先检测或设置Windsurf路径');
+    return;
+  }
+  autoContinueBridgeLoading.value = true;
+  try {
+    const result = await invoke<any>('apply_auto_continue_bridge_patch', {
+      windsurfPath: windsurfPath.value,
+    });
+    if (result.success) {
+      ElMessage.success(result.message || 'Bridge补丁已安装');
+      await checkPatchStatus();
+    }
+  } catch (error) {
+    ElMessage.error(`安装Bridge补丁失败: ${error}`);
+  } finally {
+    autoContinueBridgeLoading.value = false;
+  }
+}
+
+async function handleAutoContinueBridgeEnabled(value: boolean) {
+  autoContinueBridgeLoading.value = true;
+  try {
+    settings.autoContinueBridgeEnabled = value;
+    await syncAutoContinueBridgeConfig();
+    await settingsStore.updateSettings(settings);
+    ElMessage.success(value ? '自动继续Bridge已启用' : '自动继续Bridge已关闭');
+  } catch (error) {
+    settings.autoContinueBridgeEnabled = !value;
+    ElMessage.error(`同步Bridge配置失败: ${error}`);
+  } finally {
+    autoContinueBridgeLoading.value = false;
   }
 }
 
@@ -930,11 +1033,6 @@ void parseSeatCountOptions;
 </script>
 
 <style scoped>
-/* 深色模式样式 */
-:deep(.el-dialog) {
-  /* 在深色模式下由全局样式控制 */
-}
-
 /* 深色模式下的描述文字 */
 :root.dark .el-form-item > div[style*="color: #909399"] {
   color: #94a3b8 !important;

@@ -110,6 +110,8 @@ pub struct Settings {
     pub windsurf_path: Option<String>,  // Windsurf安装路径
     #[serde(default, rename = "patchBackupPath")]
     pub patch_backup_path: Option<String>,  // 补丁备份文件路径
+    #[serde(default, rename = "autoContinueBridgeEnabled")]
+    pub auto_continue_bridge_enabled: bool,  // 是否启用内部自动继续Bridge
     #[serde(default = "default_true", rename = "autoOpenBrowser")]
     pub auto_open_browser: bool,  // 是否自动打开浏览器
     #[serde(default = "default_browser_mode", rename = "browserMode")]
@@ -207,6 +209,7 @@ impl Default for Settings {
             seamless_switch_enabled: false,  // 默认关闭无感换号
             windsurf_path: None,
             patch_backup_path: None,
+            auto_continue_bridge_enabled: false,
             auto_open_browser: true,  // 默认自动打开浏览器
             browser_mode: "incognito".to_string(),  // 默认无痕模式
             privacy_mode: false,  // 默认关闭隐私模式
