@@ -14,7 +14,8 @@ use crate::commands::auto_continue_commands::AUTO_CONTINUE_BRIDGE_PORT;
 
 const SEAMLESS_PATCH_MARKER: &str = "WindsurfAccountManagerSeamlessOAuthPatchV2";
 const SEAMLESS_OAUTH_ERROR_MARKER: &[u8] = b"Failed to handle OAuth callback";
-const MANAGED_SWITCH_REFRESH_BLOCK_MARKER: &str = "WindsurfAccountManagerManagedSwitchRefreshBlockV5";
+const MANAGED_SWITCH_REFRESH_BLOCK_MARKER: &str = "WindsurfAccountManagerManagedSwitchRefreshBlockV6";
+const MANAGED_SWITCH_REFRESH_BLOCK_V5_MARKER: &[u8] = b"WindsurfAccountManagerManagedSwitchRefreshBlockV5";
 const MANAGED_SWITCH_REFRESH_BLOCK_V4_MARKER: &[u8] = b"WindsurfAccountManagerManagedSwitchRefreshBlockV4";
 const MANAGED_SWITCH_REFRESH_BLOCK_V3_MARKER: &[u8] = b"WindsurfAccountManagerManagedSwitchRefreshBlockV3";
 const MANAGED_SWITCH_REFRESH_BLOCK_V2_MARKER: &[u8] = b"WindsurfAccountManagerManagedSwitchRefreshBlockV2";
@@ -747,6 +748,7 @@ fn has_any_seamless_patch(content: &[u8]) -> bool {
         || bytes_contains(content, SEAMLESS_PATCH_MARKER.as_bytes())
         || bytes_contains(content, MANAGED_SWITCH_REFRESH_BLOCK_MARKER.as_bytes())
         || bytes_contains(content, MANAGED_SWITCH_REFRESH_FUNCTION_MARKER.as_bytes())
+        || bytes_contains(content, MANAGED_SWITCH_REFRESH_BLOCK_V5_MARKER)
         || bytes_contains(content, MANAGED_SWITCH_REFRESH_BLOCK_V4_MARKER)
         || bytes_contains(content, MANAGED_SWITCH_REFRESH_BLOCK_V3_MARKER)
         || bytes_contains(content, MANAGED_SWITCH_REFRESH_BLOCK_V2_MARKER)
@@ -762,7 +764,8 @@ fn has_managed_switch_refresh_block(content: &[u8]) -> bool {
 }
 
 fn has_legacy_managed_switch_refresh_block(content: &[u8]) -> bool {
-    bytes_contains(content, MANAGED_SWITCH_REFRESH_BLOCK_V4_MARKER)
+    bytes_contains(content, MANAGED_SWITCH_REFRESH_BLOCK_V5_MARKER)
+        || bytes_contains(content, MANAGED_SWITCH_REFRESH_BLOCK_V4_MARKER)
         || bytes_contains(content, MANAGED_SWITCH_REFRESH_BLOCK_V3_MARKER)
         || bytes_contains(content, MANAGED_SWITCH_REFRESH_BLOCK_V2_MARKER)
         || bytes_contains(content, MANAGED_SWITCH_REFRESH_BLOCK_V1_MARKER)
@@ -775,7 +778,7 @@ fn build_oauth_handler_replacement(
 ) -> String {
     let token_handler = if preserve_native_token_handler {
         format!(
-            r##"await(async()=>{{const e=__WAM_READ__();if(e&&e.target_callback_url){{try{{const t=String(e.target_callback_url||""),o=t.indexOf("#"),r=o>=0?t.slice(o+1):"";if(r){{const i=new Proxy({0},{{get:(e,t)=>"fragment"===t?r:e[t]}});console.warn("[{1}][{2}] Using managed switch target callback token instead of incoming browser token:",e.target_email||"unknown");return await this.maybeHandleUriWithToken(i)}}}}catch(e){{console.warn("[{1}][{2}] Failed to use managed switch target callback:",e)}}}}return this._loginInProgress||this.maybeHandleUriWithToken({0})}})()"##,
+            r##"await(async()=>{{const e=__WAM_READ__(),t=(e,t)=>{{try{{const o=new URLSearchParams(String(e&&e.fragment||""));return t||"1"===o.get("wam_seamless_switch")?o.get("access_token"):null}}catch(e){{return null}}}},o=async(e,o,r)=>{{const i=t(e,r);if(!i)return!1;try{{console.warn("[{1}][{2}] Bypassing different-account confirmation for account-manager callback:",o||"unknown");await this.handleAuthToken(i)}}catch(e){{console.error("[Windsurf] Failed to handle account-manager OAuth callback:",e)}}return!0}};if(e&&e.target_callback_url){{try{{const t=String(e.target_callback_url||""),r=t.indexOf("#"),n=r>=0?t.slice(r+1):"";if(n){{const r=new Proxy({0},{{get:(e,t)=>"fragment"===t?n:e[t]}});if(await o(r,e.target_email,!0))return;console.warn("[{1}][{2}] Using managed switch target callback token instead of incoming browser token:",e.target_email||"unknown");return await this.maybeHandleUriWithToken(r)}}}}catch(e){{console.warn("[{1}][{2}] Failed to use managed switch target callback:",e)}}}}if(await o({0},"callback",!1))return;return this._loginInProgress||this.maybeHandleUriWithToken({0})}})()"##,
             var_name,
             SEAMLESS_PATCH_MARKER,
             MANAGED_SWITCH_REFRESH_BLOCK_MARKER

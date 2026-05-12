@@ -753,6 +753,7 @@ pub(crate) fn build_windsurf_callback_url(auth_token: &str) -> AppResult<(String
         ("access_token", auth_token),
         ("state", state.as_str()),
         ("token_type", "Bearer"),
+        ("wam_seamless_switch", "1"),
     ];
     let fragment = serde_urlencoded::to_string(&params)
         .map_err(|e| AppError::ApiRequest(format!("Failed to encode URL parameters: {}", e)))?;
