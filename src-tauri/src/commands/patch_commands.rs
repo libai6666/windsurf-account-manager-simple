@@ -1241,26 +1241,49 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
       return element.isContentEditable || element.getAttribute?.("role") === "textbox";
     }};
     const visibleText = (element) => String(element?.innerText || element?.textContent || "");
-    const findVisibleMarkerMessage = () => {{
+    const hasQueuedMessages = () => {{
+      try {{
+        return Array.from(document.querySelectorAll("div,span,p"))
+          .filter(isVisible)
+          .some(element => {{
+            const text = visibleText(element).trim().toLowerCase();
+            return text.length <= 80 && /\b\d+\s+messages?\s+queued\b|messages?\s+queued|消息.*排队|排队.*消息/.test(text);
+          }});
+      }} catch {{
+        return false;
+      }}
+    }};
+    const findVisibleMarkerCandidate = () => {{
       const selectors = "[role='alert'],[aria-live],div,span,p,li";
       const elements = Array.from(document.querySelectorAll(selectors)).filter(isVisible);
-      let best = "";
-      let bestScore = Number.POSITIVE_INFINITY;
+      const candidates = [];
+      let order = 0;
       for (const element of elements) {{
         try {{
           if (element.matches?.("textarea,input,[contenteditable='true'],[role='textbox']")) continue;
           const text = visibleText(element).trim();
           if (!text || text.length > 1800 || !hasMarker(text)) continue;
+          if (text.includes(config.continueText || "继续工作")) continue;
           const attr = String((element.getAttribute("role") || "") + " " + (element.getAttribute("class") || "") + " " + (element.getAttribute("aria-label") || "")).toLowerCase();
-          let score = text.length;
-          if (/alert|error|warning|toast|notification|quota/.test(attr)) score -= 500;
-          if (score < bestScore) {{
-            bestScore = score;
-            best = text;
-          }}
+          const rect = element.getBoundingClientRect();
+          candidates.push({{ element, text, attr, rect, order: order++ }});
         }} catch {{}}
       }}
-      return best;
+      let best = null;
+      let bestScore = Number.NEGATIVE_INFINITY;
+      for (const candidate of candidates) {{
+        let score = candidate.rect.bottom * 4 + candidate.order;
+        if (/alert|error|warning|toast|notification|quota/.test(candidate.attr)) score += 1200;
+        if (candidate.text.length <= 360) score += 300;
+        if (candidate.rect.bottom > innerHeight * 0.35) score += 300;
+        if (score > bestScore) {{
+          bestScore = score;
+          best = candidate;
+        }}
+      }}
+      if (!best) return null;
+      const keyText = best.text.toLowerCase().replace(/\s+/g, " ").slice(0, 500);
+      return {{ text: best.text, key: keyText + ":" + best.order + ":" + candidates.length }};
     }};
     const candidateEditors = () => {{
       const selector = "textarea,input[type='text'],input:not([type]),[contenteditable='true'],[role='textbox']";
@@ -1432,6 +1455,7 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
     }};
     const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
     const sendTextViaDom = async (text) => {{
+      if (hasQueuedMessages()) throw new Error("Cascade 已有排队消息，暂停自动继续");
       const editors = candidateEditors();
       if (!editors.length) throw new Error("未找到可见的 Cascade 输入框");
       const errors = [];
@@ -1440,16 +1464,18 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
           fillEditor(editor, text);
           await sleep(350);
           const buttons = findSubmitCandidates(editor);
-          for (const button of buttons.slice(0, 6)) {{
+          const button = buttons[0];
+          if (button) {{
             clickControl(button);
-            await sleep(700);
-            if (!readEditorText(editor).includes(text)) {{
+            await sleep(900);
+            if (hasQueuedMessages() || !readEditorText(editor).includes(text)) {{
               return "dom_button";
             }}
+            throw new Error("已点击发送按钮但输入框未清空，暂停避免重复排队");
           }}
           pressEnter(editor);
-          await sleep(700);
-          if (!readEditorText(editor).includes(text)) {{
+          await sleep(900);
+          if (hasQueuedMessages() || !readEditorText(editor).includes(text)) {{
             return "dom_enter";
           }}
           throw new Error("已填入文本但提交后输入框未清空，可能未命中发送按钮");
@@ -1460,32 +1486,18 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
       throw new Error(errors.join(" | ") || "输入框填充失败");
     }};
     let actionRunning = false;
-    let lastHandledMarker = "";
     let lastHandledAt = 0;
     const actionCooldownMs = 60000;
-    const markerSignature = (text) => {{
-      const value = String(text || "").toLowerCase().replace(/\s+/g, " ");
-      const marker = (config.markers || []).find(item => value.includes(String(item).toLowerCase()));
-      const markerText = marker ? String(marker).toLowerCase() : "";
-      const index = markerText ? value.indexOf(markerText) : 0;
-      return value.slice(Math.max(0, index - 80), Math.min(value.length, index + 240));
-    }};
     const pollActions = async () => {{
       if (actionRunning) return;
       actionRunning = true;
       try {{
-        const markerText = findVisibleMarkerMessage();
-        if (!markerText) {{
-          lastHandledMarker = "";
+        const markerCandidate = findVisibleMarkerCandidate();
+        if (!markerCandidate) {{
           lastHandledAt = 0;
-          const stale = await requestJson("GET", "/actions");
-          for (const action of stale.actions || []) {{
-            await reportResult(action.id, false, "skipped: marker disappeared", null);
-          }}
           return;
         }}
-        const markerKey = markerSignature(markerText);
-        if (lastHandledMarker && markerKey === lastHandledMarker) return;
+        if (hasQueuedMessages()) return;
         if (lastHandledAt && Date.now() - lastHandledAt < actionCooldownMs) return;
         const result = await requestJson("GET", "/actions");
         let sentOne = false;
@@ -1495,20 +1507,15 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
             continue;
           }}
           try {{
-            const freshMarker = findVisibleMarkerMessage();
-            const freshKey = markerSignature(freshMarker);
-            if (!freshMarker) {{
-              lastHandledMarker = "";
-              lastHandledAt = 0;
-              await reportResult(action.id, false, "skipped: marker disappeared", null);
+            if (hasQueuedMessages()) {{
+              await reportResult(action.id, false, "skipped: cascade has queued messages", null);
               continue;
             }}
-            if ((lastHandledMarker && freshKey === lastHandledMarker) || (lastHandledAt && Date.now() - lastHandledAt < actionCooldownMs)) {{
-              await reportResult(action.id, false, "skipped: marker disappeared or is cooling down", null);
+            if (lastHandledAt && Date.now() - lastHandledAt < actionCooldownMs) {{
+              await reportResult(action.id, false, "skipped: marker is cooling down", null);
               continue;
             }}
             const method = await sendTextViaDom(action.text || config.continueText || "继续工作");
-            lastHandledMarker = freshKey;
             lastHandledAt = Date.now();
             sentOne = true;
             console.info("[WindsurfAccountManagerAutoContinueBridge] action sent via " + method);
@@ -1525,21 +1532,21 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
     setInterval(pollActions, 1500);
     setTimeout(pollActions, 1200);
     let lastMessage = "";
-    let lastReportedAt = 0;
     let scanTimer = 0;
     const scanVisibleText = () => {{
       scanTimer = 0;
       try {{
-        const text = findVisibleMarkerMessage();
-        if (!text) return;
+        const candidate = findVisibleMarkerCandidate();
+        if (!candidate) return;
+        const text = candidate.text;
         const now = Date.now();
         const marker = (config.markers || []).find(item => text.toLowerCase().includes(String(item).toLowerCase()));
         const index = marker ? text.toLowerCase().indexOf(String(marker).toLowerCase()) : 0;
         const start = Math.max(0, index - 240);
         const message = text.slice(start, Math.min(text.length, index + 1200));
-        if (message === lastMessage) return;
-        lastMessage = message;
-        lastReportedAt = now;
+        const messageKey = candidate.key || message;
+        if (messageKey === lastMessage) return;
+        lastMessage = messageKey;
         report("dom_text", message, "workbench-dom", String(location.href));
       }} catch {{}}
     }};

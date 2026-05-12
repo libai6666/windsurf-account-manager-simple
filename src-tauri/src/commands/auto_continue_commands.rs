@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 pub const AUTO_CONTINUE_BRIDGE_PORT: u16 = 38478;
 const AUTO_CONTINUE_BRIDGE_PREFIX: &str = "/wam-auto-continue";
 const MAX_RECENT_EVENTS: usize = 50;
-const AUTO_CONTINUE_ACTION_COOLDOWN_MS: u64 = 60_000;
+const AUTO_CONTINUE_ACTION_COOLDOWN_MS: u64 = 15_000;
 
 static AUTO_CONTINUE_BRIDGE_STATE: OnceLock<Arc<AutoContinueBridgeState>> = OnceLock::new();
 
@@ -423,7 +423,7 @@ fn process_auto_continue_bridge_event(
             .pending_actions
             .lock()
             .map_err(|_| "自动继续动作队列锁异常".to_string())?;
-        let mut last_action_at = state
+        let last_action_at = state
             .last_action_at
             .lock()
             .map_err(|_| "自动继续动作冷却锁异常".to_string())?;
@@ -447,7 +447,6 @@ fn process_auto_continue_bridge_event(
                 text: config.continue_text.clone(),
             };
             actions.push_back(bridge_action);
-            *last_action_at = Some(now);
             info!(
                 "Auto continue bridge action queued: event_id={}, text={}",
                 event_id,
