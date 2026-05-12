@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 pub const AUTO_CONTINUE_BRIDGE_PORT: u16 = 38478;
 const AUTO_CONTINUE_BRIDGE_PREFIX: &str = "/wam-auto-continue";
 const MAX_RECENT_EVENTS: usize = 50;
+const AUTO_CONTINUE_ACTION_COOLDOWN_MS: u64 = 60_000;
 
 static AUTO_CONTINUE_BRIDGE_STATE: OnceLock<Arc<AutoContinueBridgeState>> = OnceLock::new();
 
@@ -107,6 +108,7 @@ struct AutoContinueBridgeState {
     events: Mutex<VecDeque<AutoContinueBridgeEvent>>,
     pending_actions: Mutex<VecDeque<AutoContinueBridgeAction>>,
     last_fingerprint: Mutex<Option<(String, Instant)>>,
+    last_action_at: Mutex<Option<Instant>>,
     sent_actions: AtomicUsize,
 }
 
@@ -118,6 +120,7 @@ impl AutoContinueBridgeState {
             events: Mutex::new(VecDeque::new()),
             pending_actions: Mutex::new(VecDeque::new()),
             last_fingerprint: Mutex::new(None),
+            last_action_at: Mutex::new(None),
             sent_actions: AtomicUsize::new(0),
         }
     }
@@ -322,6 +325,9 @@ fn handle_auto_continue_bridge_connection(
                 .map_err(|e| format!("解析自动继续动作结果失败: {}", e))?;
             if result.success {
                 state.sent_actions.fetch_add(1, Ordering::SeqCst);
+                if let Ok(mut last_action_at) = state.last_action_at.lock() {
+                    *last_action_at = Some(Instant::now());
+                }
                 info!(
                     "Auto continue bridge action sent: action={:?}, method={:?}",
                     result.action_id,
@@ -399,19 +405,57 @@ fn process_auto_continue_bridge_event(
         false
     };
 
-    let action = if is_login_diagnostic {
-        "diagnostic_logged"
+    let event_id = uuid::Uuid::new_v4().to_string();
+    let mut action = if is_login_diagnostic {
+        "diagnostic_logged".to_string()
     } else if !matched {
-        "ignored"
+        "ignored".to_string()
     } else if !config.enabled {
-        "detected_disabled"
+        "detected_disabled".to_string()
     } else if deduped {
-        "deduped"
+        "deduped".to_string()
     } else {
-        "queued_send"
+        "queued_send".to_string()
     };
 
-    let event_id = uuid::Uuid::new_v4().to_string();
+    if action == "queued_send" {
+        let mut actions = state
+            .pending_actions
+            .lock()
+            .map_err(|_| "自动继续动作队列锁异常".to_string())?;
+        let mut last_action_at = state
+            .last_action_at
+            .lock()
+            .map_err(|_| "自动继续动作冷却锁异常".to_string())?;
+        let now = Instant::now();
+        let cooling_down = last_action_at
+            .as_ref()
+            .map(|last_at| {
+                now.duration_since(*last_at).as_millis()
+                    < AUTO_CONTINUE_ACTION_COOLDOWN_MS as u128
+            })
+            .unwrap_or(false);
+        if !actions.is_empty() {
+            action = "deduped_pending".to_string();
+        } else if cooling_down {
+            action = "cooldown".to_string();
+        } else {
+            let bridge_action = AutoContinueBridgeAction {
+                id: uuid::Uuid::new_v4().to_string(),
+                source_event_id: event_id.clone(),
+                created_at: chrono::Local::now().to_rfc3339(),
+                text: config.continue_text.clone(),
+            };
+            actions.push_back(bridge_action);
+            *last_action_at = Some(now);
+            info!(
+                "Auto continue bridge action queued: event_id={}, text={}",
+                event_id,
+                config.continue_text
+            );
+        }
+    }
+
     let event = AutoContinueBridgeEvent {
         id: event_id.clone(),
         received_at: chrono::Local::now().to_rfc3339(),
@@ -420,27 +464,8 @@ fn process_auto_continue_bridge_event(
         url: incoming.url.or(incoming.location),
         message: truncate_chars(&message, 1200),
         matched,
-        action: action.to_string(),
+        action,
     };
-
-    if event.action == "queued_send" {
-        let bridge_action = AutoContinueBridgeAction {
-            id: uuid::Uuid::new_v4().to_string(),
-            source_event_id: event_id,
-            created_at: chrono::Local::now().to_rfc3339(),
-            text: config.continue_text.clone(),
-        };
-        let mut actions = state
-            .pending_actions
-            .lock()
-            .map_err(|_| "自动继续动作队列锁异常".to_string())?;
-        actions.push_back(bridge_action);
-        info!(
-            "Auto continue bridge action queued: event_id={}, text={}",
-            event.id,
-            config.continue_text
-        );
-    }
 
     {
         let mut events = state

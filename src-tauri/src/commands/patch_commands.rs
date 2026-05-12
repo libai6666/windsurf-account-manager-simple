@@ -1460,15 +1460,57 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
       throw new Error(errors.join(" | ") || "输入框填充失败");
     }};
     let actionRunning = false;
+    let lastHandledMarker = "";
+    let lastHandledAt = 0;
+    const actionCooldownMs = 60000;
+    const markerSignature = (text) => {{
+      const value = String(text || "").toLowerCase().replace(/\s+/g, " ");
+      const marker = (config.markers || []).find(item => value.includes(String(item).toLowerCase()));
+      const markerText = marker ? String(marker).toLowerCase() : "";
+      const index = markerText ? value.indexOf(markerText) : 0;
+      return value.slice(Math.max(0, index - 80), Math.min(value.length, index + 240));
+    }};
     const pollActions = async () => {{
       if (actionRunning) return;
       actionRunning = true;
       try {{
-        if (!findVisibleMarkerMessage()) return;
+        const markerText = findVisibleMarkerMessage();
+        if (!markerText) {{
+          lastHandledMarker = "";
+          lastHandledAt = 0;
+          const stale = await requestJson("GET", "/actions");
+          for (const action of stale.actions || []) {{
+            await reportResult(action.id, false, "skipped: marker disappeared", null);
+          }}
+          return;
+        }}
+        const markerKey = markerSignature(markerText);
+        if (lastHandledMarker && markerKey === lastHandledMarker) return;
+        if (lastHandledAt && Date.now() - lastHandledAt < actionCooldownMs) return;
         const result = await requestJson("GET", "/actions");
+        let sentOne = false;
         for (const action of result.actions || []) {{
+          if (sentOne) {{
+            await reportResult(action.id, false, "skipped: another action already sent in this poll", null);
+            continue;
+          }}
           try {{
+            const freshMarker = findVisibleMarkerMessage();
+            const freshKey = markerSignature(freshMarker);
+            if (!freshMarker) {{
+              lastHandledMarker = "";
+              lastHandledAt = 0;
+              await reportResult(action.id, false, "skipped: marker disappeared", null);
+              continue;
+            }}
+            if ((lastHandledMarker && freshKey === lastHandledMarker) || (lastHandledAt && Date.now() - lastHandledAt < actionCooldownMs)) {{
+              await reportResult(action.id, false, "skipped: marker disappeared or is cooling down", null);
+              continue;
+            }}
             const method = await sendTextViaDom(action.text || config.continueText || "继续工作");
+            lastHandledMarker = freshKey;
+            lastHandledAt = Date.now();
+            sentOne = true;
             console.info("[WindsurfAccountManagerAutoContinueBridge] action sent via " + method);
             await reportResult(action.id, true, null, method);
           }} catch (error) {{
