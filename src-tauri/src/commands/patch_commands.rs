@@ -987,6 +987,97 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
         }}).catch(() => {{}});
       }} catch {{}}
     }};
+    const loginDiagnostic = (stage, detail) => {{
+      try {{
+        const safe = detail && typeof detail === "object" ? JSON.stringify(detail) : String(detail ?? "");
+        post({{
+          eventType: "windsurf_login_diagnostic_" + String(stage || "event"),
+          source: "windsurf-login-diagnostic",
+          url: String(location.href),
+          location: String(location.href),
+          message: safe.slice(0, 6000)
+        }});
+      }} catch {{}}
+    }};
+    const briefStack = () => {{
+      try {{
+        return String(new Error().stack || "").split("\n").slice(2, 8).join(" <- ").slice(0, 1200);
+      }} catch {{
+        return "";
+      }}
+    }};
+    const shouldTraceUrl = (url) => /windsurf|codeium|auth|login|oauth|callback|refresh-authentication-session/i.test(String(url || ""));
+    const installLoginDiagnostics = () => {{
+      try {{
+        if (globalThis.__wamLoginDiagnosticsInstalled) return;
+        Object.defineProperty(globalThis, "__wamLoginDiagnosticsInstalled", {{ value: true, configurable: false }});
+        loginDiagnostic("installed", {{ href: String(location.href), userAgent: navigator.userAgent }});
+        document.addEventListener("click", event => {{
+          try {{
+            const target = event.target?.closest?.("button,a,[role='button'],[aria-label],[title]") || event.target;
+            const text = String([
+              target?.innerText,
+              target?.textContent,
+              target?.getAttribute?.("aria-label"),
+              target?.getAttribute?.("title"),
+              target?.getAttribute?.("href"),
+              target?.getAttribute?.("data-testid"),
+              target?.className
+            ].filter(Boolean).join(" ")).slice(0, 500);
+            if (/log\s*in|login|sign\s*in|signin|auth|browser|windsurf|codeium/i.test(text)) {{
+              loginDiagnostic("click", {{ text, tag: target?.tagName, href: target?.getAttribute?.("href") || null, stack: briefStack() }});
+            }}
+          }} catch {{}}
+        }}, true);
+        const originalFetch = globalThis.fetch;
+        if (typeof originalFetch === "function") {{
+          globalThis.fetch = function(input, init) {{
+            const url = typeof input === "string" ? input : String(input?.url || "");
+            if (!isBridgeUrl(url) && shouldTraceUrl(url)) {{
+              loginDiagnostic("fetch", {{ url, method: init?.method || input?.method || "GET", stack: briefStack() }});
+            }}
+            return originalFetch.apply(this, arguments);
+          }};
+        }}
+        const originalOpen = globalThis.open;
+        if (typeof originalOpen === "function") {{
+          globalThis.open = function(url, target, features) {{
+            if (shouldTraceUrl(url)) loginDiagnostic("window_open", {{ url: String(url || ""), target: String(target || ""), features: String(features || ""), stack: briefStack() }});
+            return originalOpen.apply(this, arguments);
+          }};
+        }}
+        const hookObjectMethod = (object, method, stage, mapArgs) => {{
+          try {{
+            if (!object || typeof object[method] !== "function" || object[method].__wamLoginDiagnosticWrapped) return;
+            const original = object[method];
+            const wrapped = function(...args) {{
+              try {{
+                const detail = mapArgs ? mapArgs(args) : {{ args: args.map(arg => String(arg)).slice(0, 5), stack: briefStack() }};
+                loginDiagnostic(stage, detail);
+              }} catch {{}}
+              return original.apply(this, args);
+            }};
+            Object.defineProperty(wrapped, "__wamLoginDiagnosticWrapped", {{ value: true }});
+            object[method] = wrapped;
+          }} catch {{}}
+        }};
+        const tryHookVscode = () => {{
+          try {{
+            const candidates = [globalThis.vscode, globalThis.acquireVsCodeApi?.(), globalThis.VSCode, globalThis.monaco?.vscode].filter(Boolean);
+            for (const vscode of candidates) {{
+              hookObjectMethod(vscode.env, "openExternal", "vscode_env_openExternal", args => ({{ url: String(args?.[0] || ""), stack: briefStack() }}));
+              hookObjectMethod(vscode.commands, "executeCommand", "vscode_executeCommand", args => ({{ command: String(args?.[0] || ""), args: args.slice(1, 4).map(arg => String(arg)).join(" | "), stack: briefStack() }}));
+              hookObjectMethod(vscode.authentication, "getSession", "vscode_auth_getSession", args => ({{ provider: String(args?.[0] || ""), scopes: JSON.stringify(args?.[1] || null), options: JSON.stringify(args?.[2] || null), stack: briefStack() }}));
+            }}
+          }} catch {{}}
+        }};
+        tryHookVscode();
+        setInterval(tryHookVscode, 2000);
+      }} catch (error) {{
+        loginDiagnostic("install_failed", error && (error.stack || error.message || String(error)));
+      }}
+    }};
+    installLoginDiagnostics();
     const report = async (eventType, value, source, url) => {{
       if (isBridgeUrl(url)) return;
       const message = textOf(value);

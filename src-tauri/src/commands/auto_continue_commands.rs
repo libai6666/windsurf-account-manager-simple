@@ -362,6 +362,11 @@ fn process_auto_continue_bridge_event(
         .map_err(|_| "自动继续配置锁异常".to_string())?
         .clone();
     let message = incoming_message_text(&incoming);
+    let event_type = incoming
+        .event_type
+        .clone()
+        .unwrap_or_else(|| "runtime".to_string());
+    let is_login_diagnostic = event_type.starts_with("windsurf_login_diagnostic");
     let lower_message = message.to_lowercase();
     let marker_hit = config
         .markers
@@ -394,7 +399,9 @@ fn process_auto_continue_bridge_event(
         false
     };
 
-    let action = if !matched {
+    let action = if is_login_diagnostic {
+        "diagnostic_logged"
+    } else if !matched {
         "ignored"
     } else if !config.enabled {
         "detected_disabled"
@@ -408,9 +415,7 @@ fn process_auto_continue_bridge_event(
     let event = AutoContinueBridgeEvent {
         id: event_id.clone(),
         received_at: chrono::Local::now().to_rfc3339(),
-        event_type: incoming
-            .event_type
-            .unwrap_or_else(|| "runtime".to_string()),
+        event_type,
         source: incoming.source.unwrap_or_else(|| "windsurf-workbench".to_string()),
         url: incoming.url.or(incoming.location),
         message: truncate_chars(&message, 1200),
@@ -448,7 +453,15 @@ fn process_auto_continue_bridge_event(
         }
     }
 
-    if event.matched {
+    if is_login_diagnostic {
+        info!(
+            "[WindsurfLoginDiagnostic] source={}, type={}, url={}, message={}",
+            event.source,
+            event.event_type,
+            event.url.as_deref().unwrap_or(""),
+            truncate_chars(&event.message, 800)
+        );
+    } else if event.matched {
         info!(
             "Auto continue bridge event: action={}, source={}, type={}, message={}",
             event.action,
