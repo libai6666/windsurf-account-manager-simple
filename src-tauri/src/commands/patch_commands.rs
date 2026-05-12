@@ -14,7 +14,8 @@ use crate::commands::auto_continue_commands::AUTO_CONTINUE_BRIDGE_PORT;
 
 const SEAMLESS_PATCH_MARKER: &str = "WindsurfAccountManagerSeamlessOAuthPatchV2";
 const SEAMLESS_OAUTH_ERROR_MARKER: &[u8] = b"Failed to handle OAuth callback";
-const MANAGED_SWITCH_REFRESH_BLOCK_MARKER: &str = "WindsurfAccountManagerManagedSwitchRefreshBlockV4";
+const MANAGED_SWITCH_REFRESH_BLOCK_MARKER: &str = "WindsurfAccountManagerManagedSwitchRefreshBlockV5";
+const MANAGED_SWITCH_REFRESH_BLOCK_V4_MARKER: &[u8] = b"WindsurfAccountManagerManagedSwitchRefreshBlockV4";
 const MANAGED_SWITCH_REFRESH_BLOCK_V3_MARKER: &[u8] = b"WindsurfAccountManagerManagedSwitchRefreshBlockV3";
 const MANAGED_SWITCH_REFRESH_BLOCK_V2_MARKER: &[u8] = b"WindsurfAccountManagerManagedSwitchRefreshBlockV2";
 const MANAGED_SWITCH_REFRESH_BLOCK_V1_MARKER: &[u8] = b"WindsurfAccountManagerManagedSwitchRefreshBlockV1";
@@ -746,6 +747,7 @@ fn has_any_seamless_patch(content: &[u8]) -> bool {
         || bytes_contains(content, SEAMLESS_PATCH_MARKER.as_bytes())
         || bytes_contains(content, MANAGED_SWITCH_REFRESH_BLOCK_MARKER.as_bytes())
         || bytes_contains(content, MANAGED_SWITCH_REFRESH_FUNCTION_MARKER.as_bytes())
+        || bytes_contains(content, MANAGED_SWITCH_REFRESH_BLOCK_V4_MARKER)
         || bytes_contains(content, MANAGED_SWITCH_REFRESH_BLOCK_V3_MARKER)
         || bytes_contains(content, MANAGED_SWITCH_REFRESH_BLOCK_V2_MARKER)
         || bytes_contains(content, MANAGED_SWITCH_REFRESH_BLOCK_V1_MARKER)
@@ -757,11 +759,11 @@ fn has_current_seamless_patch(content: &[u8]) -> bool {
 
 fn has_managed_switch_refresh_block(content: &[u8]) -> bool {
     bytes_contains(content, MANAGED_SWITCH_REFRESH_BLOCK_MARKER.as_bytes())
-        || bytes_contains(content, MANAGED_SWITCH_REFRESH_FUNCTION_MARKER.as_bytes())
 }
 
 fn has_legacy_managed_switch_refresh_block(content: &[u8]) -> bool {
-    bytes_contains(content, MANAGED_SWITCH_REFRESH_BLOCK_V3_MARKER)
+    bytes_contains(content, MANAGED_SWITCH_REFRESH_BLOCK_V4_MARKER)
+        || bytes_contains(content, MANAGED_SWITCH_REFRESH_BLOCK_V3_MARKER)
         || bytes_contains(content, MANAGED_SWITCH_REFRESH_BLOCK_V2_MARKER)
         || bytes_contains(content, MANAGED_SWITCH_REFRESH_BLOCK_V1_MARKER)
 }
@@ -773,12 +775,18 @@ fn build_oauth_handler_replacement(
 ) -> String {
     let token_handler = if preserve_native_token_handler {
         format!(
-            r#"this._loginInProgress||this.maybeHandleUriWithToken({})"#,
-            var_name
+            r##"await(async()=>{{const e=__WAM_READ__();if(e&&e.target_callback_url){{try{{const t=String(e.target_callback_url||""),o=t.indexOf("#"),r=o>=0?t.slice(o+1):"";if(r){{const i=new Proxy({0},{{get:(e,t)=>"fragment"===t?r:e[t]}});console.warn("[{1}][{2}] Using managed switch target callback token instead of incoming browser token:",e.target_email||"unknown");return await this.maybeHandleUriWithToken(i)}}}}catch(e){{console.warn("[{1}][{2}] Failed to use managed switch target callback:",e)}}}}return this._loginInProgress||this.maybeHandleUriWithToken({0})}})()"##,
+            var_name,
+            SEAMLESS_PATCH_MARKER,
+            MANAGED_SWITCH_REFRESH_BLOCK_MARKER
         )
     } else {
         format!(
-            r#"try{{const t=new URLSearchParams({}.fragment).get("access_token");if(null===t)throw new Error("No token");console.info("[{}] Profile login applied");await this.handleAuthToken(t)}}catch(e){{console.error("[Windsurf] Failed to handle OAuth callback:",e)}}"#,
+            r##"try{{let t=null;const o=__WAM_READ__();if(o&&o.target_callback_url){{try{{const e=String(o.target_callback_url||""),r=e.indexOf("#");r>=0&&(t=new URLSearchParams(e.slice(r+1)).get("access_token"));t&&console.warn("[{}][{}] Using managed switch target callback token instead of incoming browser token:",o.target_email||"unknown")}}catch(e){{console.warn("[{}][{}] Failed to extract managed switch target token:",e)}}}}null===t&&(t=new URLSearchParams({}.fragment).get("access_token"));if(null===t)throw new Error("No token");console.info("[{}] Profile login applied");await this.handleAuthToken(t)}}catch(e){{console.error("[Windsurf] Failed to handle OAuth callback:",e)}}"##,
+            SEAMLESS_PATCH_MARKER,
+            MANAGED_SWITCH_REFRESH_BLOCK_MARKER,
+            SEAMLESS_PATCH_MARKER,
+            MANAGED_SWITCH_REFRESH_BLOCK_MARKER,
             var_name,
             SEAMLESS_PATCH_MARKER
         )
@@ -819,6 +827,56 @@ fn apply_refresh_auth_function_guard(content: &[u8]) -> Option<Vec<u8>> {
 }
 
 fn upgrade_current_oauth_handler(content: &[u8]) -> Option<Vec<u8>> {
+    let current_iife_direct_pattern = Regex::new(
+        r#"\(\(\)=>\{const __WAM_READ__=.*?this\._uriHandler\.event\(async (\w+)=>\{if\("/refresh-authentication-session"===(\w+)\.path\)\{.*?await\(0,(\w+)\.refreshAuthenticationSession\)\(\).*?\}else\{try\{const t=new URLSearchParams\((\w+)\.fragment\)\.get\("access_token"\);.*?this\.handleAuthToken\(t\).*?\}\}\}\)\}\)\(\)"#
+    ).ok()?;
+    if let Some(captures) = current_iife_direct_pattern.captures(content) {
+        let var_name = captures
+            .get(1)
+            .and_then(|m| std::str::from_utf8(m.as_bytes()).ok())?;
+        let var_name2 = captures
+            .get(2)
+            .and_then(|m| std::str::from_utf8(m.as_bytes()).ok())?;
+        let module_name = captures
+            .get(3)
+            .and_then(|m| std::str::from_utf8(m.as_bytes()).ok())?;
+        let var_name4 = captures
+            .get(4)
+            .and_then(|m| std::str::from_utf8(m.as_bytes()).ok())?;
+        if var_name != var_name2 || var_name != var_name4 {
+            return None;
+        }
+        let full_match = captures.get(0)?.as_bytes().to_vec();
+        let replacement = build_oauth_handler_replacement(var_name, module_name, false);
+        let upgraded = replace_bytes(content, &full_match, replacement.as_bytes());
+        return apply_refresh_auth_function_guard(&upgraded).or(Some(upgraded));
+    }
+
+    let current_iife_native_pattern = Regex::new(
+        r#"\(\(\)=>\{const __WAM_READ__=.*?this\._uriHandler\.event\(async (\w+)=>\{if\("/refresh-authentication-session"===(\w+)\.path\)\{.*?await\(0,(\w+)\.refreshAuthenticationSession\)\(\).*?\}else\{this\._loginInProgress\|\|this\.maybeHandleUriWithToken\((\w+)\)\}\}\)\}\)\(\)"#
+    ).ok()?;
+    if let Some(captures) = current_iife_native_pattern.captures(content) {
+        let var_name = captures
+            .get(1)
+            .and_then(|m| std::str::from_utf8(m.as_bytes()).ok())?;
+        let var_name2 = captures
+            .get(2)
+            .and_then(|m| std::str::from_utf8(m.as_bytes()).ok())?;
+        let module_name = captures
+            .get(3)
+            .and_then(|m| std::str::from_utf8(m.as_bytes()).ok())?;
+        let var_name4 = captures
+            .get(4)
+            .and_then(|m| std::str::from_utf8(m.as_bytes()).ok())?;
+        if var_name != var_name2 || var_name != var_name4 {
+            return None;
+        }
+        let full_match = captures.get(0)?.as_bytes().to_vec();
+        let replacement = build_oauth_handler_replacement(var_name, module_name, true);
+        let upgraded = replace_bytes(content, &full_match, replacement.as_bytes());
+        return apply_refresh_auth_function_guard(&upgraded).or(Some(upgraded));
+    }
+
     let legacy_direct_pattern = Regex::new(
         r#"this\._uriHandler\.event\(async (\w+)=>\{if\("/refresh-authentication-session"===(\w+)\.path\)\{\(0,(\w+)\.refreshAuthenticationSession\)\(\)\}else\{try\{const t=new URLSearchParams\((\w+)\.fragment\)\.get\("access_token"\);if\(null===t\)throw new Error\("No token"\);console\.info\("\[WindsurfAccountManagerSeamlessOAuthPatchV2\] Profile login applied"\);await this\.handleAuthToken\(t\)\}catch\(e\)\{console\.error\("\[Windsurf\] Failed to handle OAuth callback:",e\)\}\}\}\)"#
     ).ok()?;

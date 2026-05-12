@@ -607,7 +607,15 @@ pub(crate) async fn trigger_windsurf_callback(
     user_data_dir: Option<&std::path::Path>,
 ) -> AppResult<()> {
     let (callback_url, state) = build_windsurf_callback_url(auth_token)?;
-    
+    trigger_windsurf_callback_url(app, &callback_url, &state, user_data_dir).await
+}
+
+pub(crate) async fn trigger_windsurf_callback_url(
+    app: &tauri::AppHandle,
+    callback_url: &str,
+    state: &str,
+    user_data_dir: Option<&std::path::Path>,
+) -> AppResult<()> {
     info!(
         "Triggering Windsurf callback (target={}): windsurf://codeium.windsurf#access_token=<hidden>&state={}&token_type=Bearer",
         user_data_dir.map(|p| p.display().to_string()).unwrap_or_else(|| "main".to_string()),
@@ -624,7 +632,7 @@ pub(crate) async fn trigger_windsurf_callback(
             if let Some(dir) = user_data_dir {
                 cmd.arg("--user-data-dir").arg(dir);
             }
-            cmd.arg("--open-url").arg(&callback_url);
+            cmd.arg("--open-url").arg(callback_url);
             cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
             let output = cmd.output();
             match output {
@@ -645,7 +653,7 @@ pub(crate) async fn trigger_windsurf_callback(
                     warn!("Windsurf CLI failed (exe={}, error={}), falling back to opener", exe_path, e);
                     use tauri_plugin_opener::OpenerExt;
                     app.opener()
-                        .open_url(&callback_url, None::<&str>)
+                        .open_url(callback_url.to_string(), None::<&str>)
                         .map_err(|e| AppError::FileOperation(format!("Failed to open URL: {}", e)))?;
                 }
             }
@@ -658,7 +666,7 @@ pub(crate) async fn trigger_windsurf_callback(
             // 主实例：找不到 Windsurf 可执行文件时回退到 opener
             use tauri_plugin_opener::OpenerExt;
             app.opener()
-                .open_url(&callback_url, None::<&str>)
+                .open_url(callback_url.to_string(), None::<&str>)
                 .map_err(|e| AppError::FileOperation(format!("Failed to open URL: {}", e)))?;
         }
     }
@@ -670,7 +678,7 @@ pub(crate) async fn trigger_windsurf_callback(
             if let Some(dir) = user_data_dir {
                 cmd.arg("--user-data-dir").arg(dir);
             }
-            cmd.arg("--open-url").arg(&callback_url);
+            cmd.arg("--open-url").arg(callback_url);
             info!(
                 "[Profile][macOS] Dispatching callback via Windsurf app binary: target={}, exe={}, arch={}",
                 user_data_dir.map(|p| p.display().to_string()).unwrap_or_else(|| "main".to_string()),
@@ -709,7 +717,7 @@ pub(crate) async fn trigger_windsurf_callback(
                     warn!("[Profile][macOS] Windsurf CLI failed ({}), falling back to opener for main instance", e);
                     use tauri_plugin_opener::OpenerExt;
                     app.opener()
-                        .open_url(&callback_url, None::<&str>)
+                        .open_url(callback_url.to_string(), None::<&str>)
                         .map_err(|e| AppError::FileOperation(format!("Failed to open URL: {}", e)))?;
                 }
             }
@@ -721,7 +729,7 @@ pub(crate) async fn trigger_windsurf_callback(
             warn!("[Profile][macOS] Windsurf executable not found, falling back to opener for main instance");
             use tauri_plugin_opener::OpenerExt;
             app.opener()
-                .open_url(&callback_url, None::<&str>)
+                .open_url(callback_url.to_string(), None::<&str>)
                 .map_err(|e| AppError::FileOperation(format!("Failed to open URL: {}", e)))?;
         }
     }
@@ -731,7 +739,7 @@ pub(crate) async fn trigger_windsurf_callback(
         let _ = user_data_dir; // 暂不在非 Windows 平台使用
         use tauri_plugin_opener::OpenerExt;
         app.opener()
-            .open_url(&callback_url, None::<&str>)
+            .open_url(callback_url.to_string(), None::<&str>)
             .map_err(|e| AppError::FileOperation(format!("Failed to open URL: {}", e)))?;
     }
     

@@ -4,6 +4,8 @@ use crate::commands::switch_account_commands::{
     reset_storage_json_for_profile,
     trigger_windsurf_callback,
 };
+#[cfg(target_os = "macos")]
+use crate::commands::switch_account_commands::{build_windsurf_callback_url, trigger_windsurf_callback_url};
 #[cfg(target_os = "windows")]
 use crate::commands::switch_account_commands::{prepare_profile_local_state, write_windsurf_auth_direct};
 use crate::commands::windsurf_info::{get_windsurf_info_from_dir, WindsurfCurrentInfo};
@@ -49,6 +51,8 @@ struct ManagedProfileSwitchIntent {
     profile_id: String,
     account_id: String,
     target_email: String,
+    target_callback_url: String,
+    target_callback_state: String,
     block_browser_login: bool,
     created_at_ms: i64,
     expires_at_ms: i64,
@@ -129,6 +133,8 @@ fn write_managed_switch_intent(
     profile: &WindsurfProfile,
     account_id: &str,
     target_email: &str,
+    target_callback_url: &str,
+    target_callback_state: &str,
 ) -> Result<(), String> {
     if profile.is_main() {
         return Ok(());
@@ -148,6 +154,8 @@ fn write_managed_switch_intent(
         profile_id: profile.id.clone(),
         account_id: account_id.to_string(),
         target_email: target_email.to_string(),
+        target_callback_url: target_callback_url.to_string(),
+        target_callback_state: target_callback_state.to_string(),
         block_browser_login: true,
         created_at_ms: now,
         expires_at_ms: now + MANAGED_SWITCH_INTENT_TTL_MS,
@@ -404,7 +412,8 @@ async fn wait_for_macos_profile_callback_readiness(
 async fn trigger_macos_profile_callback_best_effort(
     app: &tauri::AppHandle,
     profile: &WindsurfProfile,
-    callback_token: &str,
+    callback_url: &str,
+    callback_state: &str,
     target_email: &str,
     initial_delay_ms: u64,
 ) -> Result<Option<WindsurfCurrentInfo>, String> {
@@ -412,7 +421,7 @@ async fn trigger_macos_profile_callback_best_effort(
         wait_for_macos_profile_callback_readiness(profile, initial_delay_ms, 12000).await;
     }
 
-    trigger_windsurf_callback(app, callback_token, Some(&profile.user_data_dir))
+    trigger_windsurf_callback_url(app, callback_url, callback_state, Some(&profile.user_data_dir))
         .await
         .map_err(|e| format!("触发分身回调失败: {}", e))?;
 
@@ -434,7 +443,7 @@ async fn trigger_macos_profile_callback_best_effort(
     let retry_delay_ms = if initial_delay_ms > 0 { 3000 } else { 1200 };
     tokio::time::sleep(tokio::time::Duration::from_millis(retry_delay_ms)).await;
 
-    trigger_windsurf_callback(app, callback_token, Some(&profile.user_data_dir))
+    trigger_windsurf_callback_url(app, callback_url, callback_state, Some(&profile.user_data_dir))
         .await
         .map_err(|e| format!("重试触发分身回调失败: {}", e))?;
 
@@ -883,7 +892,15 @@ async fn switch_profile_to_account(
         }
         #[cfg(target_os = "macos")]
         {
-            write_managed_switch_intent(profile, account_id, &account.email)?;
+            let (target_callback_url, target_callback_state) = build_windsurf_callback_url(&auth.callback_token)
+                .map_err(|e| format!("构建分身回调URL失败: {}", e))?;
+            write_managed_switch_intent(
+                profile,
+                account_id,
+                &account.email,
+                &target_callback_url,
+                &target_callback_state,
+            )?;
             let exe_path = find_windsurf_exe()
                 .ok_or_else(|| "找不到 Windsurf，请确认已安装到 /Applications 或 ~/Applications".to_string())?;
 
@@ -922,7 +939,8 @@ async fn switch_profile_to_account(
             match trigger_macos_profile_callback_best_effort(
                 app,
                 profile,
-                &auth.callback_token,
+                &target_callback_url,
+                &target_callback_state,
                 &account.email,
                 initial_delay_ms,
             ).await {
