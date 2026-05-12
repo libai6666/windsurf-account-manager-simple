@@ -494,9 +494,11 @@ function normalizeProfilePage() {
 function accountOptionLabel(account: Account, currentProfileId?: string) {
   const daily = account.daily_quota_remaining;
   const weekly = account.weekly_quota_remaining;
+  const plan = account.plan_name || '未知';
+  const emailWithPlan = `${account.email} [${plan}]`;
   const base = (daily === undefined && weekly === undefined)
-    ? account.email
-    : `${account.email} (日${daily ?? '?'}%/周${weekly ?? '?'}%)`;
+    ? emailWithPlan
+    : `${emailWithPlan} (日${daily ?? '?'}%/周${weekly ?? '?'}%)`;
   const usage = accountUsageMap.value.get(account.id);
   if (usage && usage.profileId !== currentProfileId) {
     return `${base} 【已被${usage.profileName}使用】`;
