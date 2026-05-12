@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 pub const AUTO_CONTINUE_BRIDGE_PORT: u16 = 38478;
 const AUTO_CONTINUE_BRIDGE_PREFIX: &str = "/wam-auto-continue";
 const MAX_RECENT_EVENTS: usize = 50;
-const AUTO_CONTINUE_ACTION_COOLDOWN_MS: u64 = 15_000;
+const AUTO_CONTINUE_ACTION_COOLDOWN_MS: u64 = 0;
 
 static AUTO_CONTINUE_BRIDGE_STATE: OnceLock<Arc<AutoContinueBridgeState>> = OnceLock::new();
 
@@ -309,6 +309,9 @@ fn handle_auto_continue_bridge_connection(
                 .drain(..)
                 .collect();
             if !actions.is_empty() {
+                if let Ok(mut last_action_at) = state.last_action_at.lock() {
+                    *last_action_at = Some(Instant::now());
+                }
                 info!(
                     "Auto continue bridge actions polled: count={}",
                     actions.len()
@@ -379,10 +382,18 @@ fn process_auto_continue_bridge_event(
         .iter()
         .any(|marker| lower_message.contains(&marker.to_lowercase()));
     let matched = marker_hit;
+    let marker_key = incoming
+        .payload
+        .as_ref()
+        .and_then(|payload| payload.get("markerKey").or_else(|| payload.get("marker_key")))
+        .and_then(|value| value.as_str())
+        .map(|value| value.chars().take(260).collect::<String>());
+    let fingerprint_body = marker_key
+        .unwrap_or_else(|| lower_message.chars().take(180).collect::<String>());
     let fingerprint = format!(
         "{}:{}",
         incoming.source.as_deref().unwrap_or("unknown"),
-        lower_message.chars().take(180).collect::<String>()
+        fingerprint_body
     );
     let deduped = if matched {
         let mut last = state

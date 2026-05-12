@@ -1192,7 +1192,7 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
       }}
     }};
     installLoginDiagnostics();
-    const report = async (eventType, value, source, url) => {{
+    const report = async (eventType, value, source, url, payload) => {{
       if (isBridgeUrl(url)) return;
       const message = textOf(value);
       if (!message) return;
@@ -1202,7 +1202,8 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
         source,
         url,
         location: String(location.href),
-        message: message.slice(0, 6000)
+        message: message.slice(0, 6000),
+        payload: payload || undefined
       }});
     }};
     const refreshConfig = () => fetch(base + "/config", {{ cache: "no-store" }})
@@ -1241,17 +1242,31 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
       return element.isContentEditable || element.getAttribute?.("role") === "textbox";
     }};
     const visibleText = (element) => String(element?.innerText || element?.textContent || "");
+    const queuedMessageText = (element) => String([
+      element?.innerText,
+      element?.textContent,
+      element?.getAttribute?.("aria-label"),
+      element?.getAttribute?.("title"),
+      element?.getAttribute?.("placeholder")
+    ].filter(Boolean).join(" "));
     const hasQueuedMessages = () => {{
       try {{
-        return Array.from(document.querySelectorAll("div,span,p"))
+        const pattern = /\b\d+\s+messages?\s+queued\b|enter\s+to\s+send\s+queued\s+message|queued\s+message|messages?\s+queued|消息.*排队|排队.*消息/;
+        return Array.from(document.querySelectorAll("div,span,p,label,input,textarea,[aria-label],[placeholder]"))
           .filter(isVisible)
           .some(element => {{
-            const text = visibleText(element).trim().toLowerCase();
-            return text.length <= 80 && /\b\d+\s+messages?\s+queued\b|messages?\s+queued|消息.*排队|排队.*消息/.test(text);
+            const text = queuedMessageText(element).trim().toLowerCase();
+            return text.length <= 220 && pattern.test(text);
           }});
       }} catch {{
         return false;
       }}
+    }};
+    const markerElementIds = new WeakMap();
+    let markerElementSeq = 0;
+    const markerElementId = (element) => {{
+      if (!markerElementIds.has(element)) markerElementIds.set(element, ++markerElementSeq);
+      return markerElementIds.get(element);
     }};
     const findVisibleMarkerCandidate = () => {{
       const selectors = "[role='alert'],[aria-live],div,span,p,li";
@@ -1261,9 +1276,21 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
       for (const element of elements) {{
         try {{
           if (element.matches?.("textarea,input,[contenteditable='true'],[role='textbox']")) continue;
+          if (element.querySelector?.("textarea,input,[contenteditable='true'],[role='textbox']")) continue;
           const text = visibleText(element).trim();
           if (!text || text.length > 1800 || !hasMarker(text)) continue;
+          const lowerText = text.toLowerCase();
           if (text.includes(config.continueText || "继续工作")) continue;
+          if (/ask anything|enter\s+to\s+send\s+queued\s+message|\b\d+\s+messages?\s+queued\b|messages?\s+queued|command awaiting approval/.test(lowerText)) continue;
+          const markerChild = Array.from(element.children || []).some(child => {{
+            try {{
+              const childText = visibleText(child).trim();
+              return isVisible(child) && childText && childText.length < text.length && hasMarker(childText);
+            }} catch {{
+              return false;
+            }}
+          }});
+          if (markerChild) continue;
           const attr = String((element.getAttribute("role") || "") + " " + (element.getAttribute("class") || "") + " " + (element.getAttribute("aria-label") || "")).toLowerCase();
           const rect = element.getBoundingClientRect();
           candidates.push({{ element, text, attr, rect, order: order++ }});
@@ -1283,7 +1310,7 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
       }}
       if (!best) return null;
       const keyText = best.text.toLowerCase().replace(/\s+/g, " ").slice(0, 500);
-      return {{ text: best.text, key: keyText + ":" + best.order + ":" + candidates.length }};
+      return {{ element: best.element, text: best.text, key: keyText + ":" + markerElementId(best.element) }};
     }};
     const candidateEditors = () => {{
       const selector = "textarea,input[type='text'],input:not([type]),[contenteditable='true'],[role='textbox']";
@@ -1454,52 +1481,83 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
       }}
     }};
     const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+    const waitForSubmission = async (editor, text, timeoutMs = 2600) => {{
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {{
+        await sleep(250);
+        const editorText = readEditorText(editor);
+        if (hasQueuedMessages()) {{
+          if (editorText.includes(text)) clearEditor(editor);
+          return true;
+        }}
+        if (!editorText.includes(text)) return true;
+      }}
+      return false;
+    }};
+    const cleanupResidualText = (editor, text) => {{
+      try {{
+        if (readEditorText(editor).includes(text)) clearEditor(editor);
+      }} catch {{}}
+    }};
+    const cleanupResidualAutoText = (text) => {{
+      try {{
+        for (const editor of candidateEditors().slice(0, 4)) cleanupResidualText(editor, text);
+      }} catch {{}}
+    }};
     const sendTextViaDom = async (text) => {{
       if (hasQueuedMessages()) throw new Error("Cascade 已有排队消息，暂停自动继续");
       const editors = candidateEditors();
       if (!editors.length) throw new Error("未找到可见的 Cascade 输入框");
       const errors = [];
       for (const editor of editors.slice(0, 4)) {{
+        let touchedEditor = false;
         try {{
+          if (hasQueuedMessages()) return "queued_existing";
           fillEditor(editor, text);
+          touchedEditor = true;
           await sleep(350);
           const buttons = findSubmitCandidates(editor);
           const button = buttons[0];
           if (button) {{
             clickControl(button);
-            await sleep(900);
-            if (hasQueuedMessages() || !readEditorText(editor).includes(text)) {{
+            if (await waitForSubmission(editor, text)) {{
               return "dom_button";
             }}
-            throw new Error("已点击发送按钮但输入框未清空，暂停避免重复排队");
+            cleanupResidualText(editor, text);
+            throw new Error("已点击发送按钮但未确认提交，已清理输入框并暂停避免重复排队");
           }}
           pressEnter(editor);
-          await sleep(900);
-          if (hasQueuedMessages() || !readEditorText(editor).includes(text)) {{
+          if (await waitForSubmission(editor, text)) {{
             return "dom_enter";
           }}
-          throw new Error("已填入文本但提交后输入框未清空，可能未命中发送按钮");
+          cleanupResidualText(editor, text);
+          throw new Error("已填入文本但未确认提交，已清理输入框并暂停避免重复排队");
         }} catch (error) {{
           errors.push(String(error && error.message ? error.message : error));
+          if (touchedEditor) break;
         }}
       }}
       throw new Error(errors.join(" | ") || "输入框填充失败");
     }};
     let actionRunning = false;
-    let lastHandledAt = 0;
-    const actionCooldownMs = 60000;
+    let lastHandledMarkerElement = null;
+    let lastHandledMarkerKey = "";
     const pollActions = async () => {{
       if (actionRunning) return;
       actionRunning = true;
       try {{
         const markerCandidate = findVisibleMarkerCandidate();
         if (!markerCandidate) {{
-          lastHandledAt = 0;
+          lastHandledMarkerElement = null;
+          lastHandledMarkerKey = "";
           return;
         }}
-        if (hasQueuedMessages()) return;
-        if (lastHandledAt && Date.now() - lastHandledAt < actionCooldownMs) return;
+        if (hasQueuedMessages()) {{
+          cleanupResidualAutoText(config.continueText || "继续工作");
+          return;
+        }}
         const result = await requestJson("GET", "/actions");
+        const sameMarkerAlreadyHandled = lastHandledMarkerElement === markerCandidate.element && lastHandledMarkerKey === markerCandidate.key;
         let sentOne = false;
         for (const action of result.actions || []) {{
           if (sentOne) {{
@@ -1511,12 +1569,13 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
               await reportResult(action.id, false, "skipped: cascade has queued messages", null);
               continue;
             }}
-            if (lastHandledAt && Date.now() - lastHandledAt < actionCooldownMs) {{
-              await reportResult(action.id, false, "skipped: marker is cooling down", null);
+            if (sameMarkerAlreadyHandled) {{
+              await reportResult(action.id, false, "skipped: marker already handled", null);
               continue;
             }}
             const method = await sendTextViaDom(action.text || config.continueText || "继续工作");
-            lastHandledAt = Date.now();
+            lastHandledMarkerElement = markerCandidate.element;
+            lastHandledMarkerKey = markerCandidate.key || "";
             sentOne = true;
             console.info("[WindsurfAccountManagerAutoContinueBridge] action sent via " + method);
             await reportResult(action.id, true, null, method);
@@ -1532,14 +1591,24 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
     setInterval(pollActions, 1500);
     setTimeout(pollActions, 1200);
     let lastMessage = "";
+    let markerMissingSince = 0;
     let scanTimer = 0;
     const scanVisibleText = () => {{
       scanTimer = 0;
       try {{
-        const candidate = findVisibleMarkerCandidate();
-        if (!candidate) return;
-        const text = candidate.text;
+        if (hasQueuedMessages()) {{
+          cleanupResidualAutoText(config.continueText || "继续工作");
+          return;
+        }}
         const now = Date.now();
+        const candidate = findVisibleMarkerCandidate();
+        if (!candidate) {{
+          if (!markerMissingSince) markerMissingSince = now;
+          if (now - markerMissingSince > 1500) lastMessage = "";
+          return;
+        }}
+        markerMissingSince = 0;
+        const text = candidate.text;
         const marker = (config.markers || []).find(item => text.toLowerCase().includes(String(item).toLowerCase()));
         const index = marker ? text.toLowerCase().indexOf(String(marker).toLowerCase()) : 0;
         const start = Math.max(0, index - 240);
@@ -1547,7 +1616,7 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
         const messageKey = candidate.key || message;
         if (messageKey === lastMessage) return;
         lastMessage = messageKey;
-        report("dom_text", message, "workbench-dom", String(location.href));
+        report("dom_text", message, "workbench-dom", String(location.href), {{ markerKey: messageKey }});
       }} catch {{}}
     }};
     const scheduleScan = () => {{
