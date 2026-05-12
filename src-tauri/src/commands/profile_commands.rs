@@ -949,6 +949,8 @@ async fn switch_profile_to_account(
     let verified_info = wait_for_profile_account(&profile.user_data_dir, &account.email).await;
     if verified_info.is_some() {
         clear_managed_switch_intent(profile, "verified_target_account");
+    } else {
+        clear_managed_switch_intent(profile, "switch_flow_finished_unverified");
     }
     if verified_info.is_none() {
         if used_file_based_login {

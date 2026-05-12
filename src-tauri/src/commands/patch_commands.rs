@@ -14,7 +14,8 @@ use crate::commands::auto_continue_commands::AUTO_CONTINUE_BRIDGE_PORT;
 
 const SEAMLESS_PATCH_MARKER: &str = "WindsurfAccountManagerSeamlessOAuthPatchV2";
 const SEAMLESS_OAUTH_ERROR_MARKER: &[u8] = b"Failed to handle OAuth callback";
-const MANAGED_SWITCH_REFRESH_BLOCK_MARKER: &str = "WindsurfAccountManagerManagedSwitchRefreshBlockV1";
+const MANAGED_SWITCH_REFRESH_BLOCK_MARKER: &str = "WindsurfAccountManagerManagedSwitchRefreshBlockV2";
+const MANAGED_SWITCH_REFRESH_BLOCK_LEGACY_MARKER: &[u8] = b"WindsurfAccountManagerManagedSwitchRefreshBlockV1";
 const AUTO_CONTINUE_WORKBENCH_MARKER: &[u8] = b"WindsurfAccountManagerAutoContinueBridge";
 const AUTO_CONTINUE_LEGACY_SENDER_MARKER: &[u8] = b"WindsurfAccountManagerAutoContinueSenderBridge";
 const AUTO_CONTINUE_EXTENSION_MARKER: &[u8] = b"WindsurfAccountManagerAutoContinueExtensionBridgeV2";
@@ -321,7 +322,8 @@ pub async fn apply_seamless_patch(
             && var_name4.as_deref().map(|v| v == var_name1).unwrap_or(true);
 
         if vars_consistent && !var_name1.is_empty() && !module_name.is_empty() {
-            let replacement = build_oauth_handler_replacement(&var_name1, &module_name);
+            let replacement =
+                build_oauth_handler_replacement(&var_name1, &module_name, variant == "new");
 
             // 字节级替换：取整段匹配的字节切片，构造新的 Vec<u8>
             let full_match: Vec<u8> = captures.get(0).unwrap().as_bytes().to_vec();
@@ -733,6 +735,9 @@ fn is_full_patch_installed(file_path: &Path) -> bool {
 
 fn has_any_seamless_patch(content: &[u8]) -> bool {
     bytes_contains(content, SEAMLESS_OAUTH_ERROR_MARKER)
+        || bytes_contains(content, SEAMLESS_PATCH_MARKER.as_bytes())
+        || bytes_contains(content, MANAGED_SWITCH_REFRESH_BLOCK_MARKER.as_bytes())
+        || bytes_contains(content, MANAGED_SWITCH_REFRESH_BLOCK_LEGACY_MARKER)
 }
 
 fn has_current_seamless_patch(content: &[u8]) -> bool {
@@ -743,18 +748,33 @@ fn has_managed_switch_refresh_block(content: &[u8]) -> bool {
     bytes_contains(content, MANAGED_SWITCH_REFRESH_BLOCK_MARKER.as_bytes())
 }
 
-fn build_oauth_handler_replacement(var_name: &str, module_name: &str) -> String {
-    format!(
-        r#"this._uriHandler.event(async {}=>{{if("/refresh-authentication-session"==={}.path){{try{{let n=null;try{{const e="undefined"!=typeof require?require:null,t=e?e("fs"):null,o=e?e("path"):null,r="undefined"!=typeof process?process:null,i=r&&r.argv?Array.from(r.argv):[],s=(()=>{{for(let e=0;e<i.length;e++){{const t=String(i[e]||"");if("--user-data-dir"===t&&i[e+1])return String(i[e+1]);if(t.startsWith("--user-data-dir="))return t.slice(16)}}return""}})();if(t&&o&&s){{const e=o.join(s,"User","globalStorage","windsurf-account-manager-managed-switch.json");if(t.existsSync(e)){{const o=JSON.parse(t.readFileSync(e,"utf8")),r=Date.now();o&&"managed_switch"===o.mode&&!0===o.block_browser_login&&Number(o.expires_at_ms||0)>r&&(n=o)}}}}catch(e){{console.warn("[{}] Failed to read managed switch intent:",e)}}if(n){{console.warn("[{}] Blocked browser login refresh during managed profile switch:",n.target_email||"unknown");return}}(0,{}.refreshAuthenticationSession)()}}catch(e){{console.error("[{}] Failed to refresh authentication session:",e)}}}}else{{try{{const t=new URLSearchParams({}.fragment).get("access_token");if(null===t)throw new Error("No token");console.info("[{}] Profile login applied");await this.handleAuthToken(t)}}catch(e){{console.error("[Windsurf] Failed to handle OAuth callback:",e)}}}}}})"#,
-        var_name,
-        var_name,
-        MANAGED_SWITCH_REFRESH_BLOCK_MARKER,
-        MANAGED_SWITCH_REFRESH_BLOCK_MARKER,
-        module_name,
-        MANAGED_SWITCH_REFRESH_BLOCK_MARKER,
-        var_name,
-        SEAMLESS_PATCH_MARKER
-    )
+fn has_legacy_managed_switch_refresh_block(content: &[u8]) -> bool {
+    bytes_contains(content, MANAGED_SWITCH_REFRESH_BLOCK_LEGACY_MARKER)
+}
+
+fn build_oauth_handler_replacement(
+    var_name: &str,
+    module_name: &str,
+    preserve_native_token_handler: bool,
+) -> String {
+    let token_handler = if preserve_native_token_handler {
+        format!(
+            r#"this._loginInProgress||this.maybeHandleUriWithToken({})"#,
+            var_name
+        )
+    } else {
+        format!(
+            r#"try{{const t=new URLSearchParams({}.fragment).get("access_token");if(null===t)throw new Error("No token");console.info("[{}] Profile login applied");await this.handleAuthToken(t)}}catch(e){{console.error("[Windsurf] Failed to handle OAuth callback:",e)}}"#,
+            var_name,
+            SEAMLESS_PATCH_MARKER
+        )
+    };
+    r#"this._uriHandler.event(async __VAR__=>{if("/refresh-authentication-session"===__VAR__.path){try{let n=null;try{const e="undefined"!=typeof require?require:null,t=e?e("fs"):null,o=e?e("path"):null,r="undefined"!=typeof process?process:null,i=r&&r.argv?Array.from(r.argv):[],s=(()=>{for(let e=0;e<i.length;e++){const t=String(i[e]||"");if("--user-data-dir"===t&&i[e+1])return String(i[e+1]);if(t.startsWith("--user-data-dir="))return t.slice(16)}return""})();if(t&&o&&s){const e=o.join(s,"User","globalStorage","windsurf-account-manager-managed-switch.json");if(t.existsSync(e)){const o=JSON.parse(t.readFileSync(e,"utf8")),r=Date.now(),a=Number(o&&o.expires_at_ms||0);o&&"managed_switch"===o.mode&&!0===o.block_browser_login&&a>r?n=o:a&&a<=r&&(()=>{try{t.unlinkSync(e)}catch(e){}})()}}}catch(e){console.warn("[__SEAMLESS__][__MARKER__] Failed to read managed switch intent:",e)}if(n){console.warn("[__SEAMLESS__][__MARKER__] Blocked browser login refresh during managed profile switch:",n.target_email||"unknown");return}(0,__MODULE__.refreshAuthenticationSession)()}catch(e){console.error("[__SEAMLESS__][__MARKER__] Failed to refresh authentication session:",e)}}else{__TOKEN_HANDLER__}})"#
+        .replace("__VAR__", var_name)
+        .replace("__SEAMLESS__", SEAMLESS_PATCH_MARKER)
+        .replace("__MARKER__", MANAGED_SWITCH_REFRESH_BLOCK_MARKER)
+        .replace("__MODULE__", module_name)
+        .replace("__TOKEN_HANDLER__", &token_handler)
 }
 
 fn upgrade_current_oauth_handler(content: &[u8]) -> Option<Vec<u8>> {
@@ -778,7 +798,11 @@ fn upgrade_current_oauth_handler(content: &[u8]) -> Option<Vec<u8>> {
         return None;
     }
     let full_match = captures.get(0)?.as_bytes().to_vec();
-    let replacement = build_oauth_handler_replacement(var_name, module_name);
+    let replacement = build_oauth_handler_replacement(
+        var_name,
+        module_name,
+        has_legacy_managed_switch_refresh_block(content),
+    );
     Some(replace_bytes(content, &full_match, replacement.as_bytes()))
 }
 
