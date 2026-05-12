@@ -35,6 +35,25 @@ struct WindsurfProcessInfo {
     command_line: String,
 }
 
+#[cfg(target_os = "macos")]
+const MANAGED_SWITCH_INTENT_FILE: &str = "windsurf-account-manager-managed-switch.json";
+#[cfg(target_os = "macos")]
+const MANAGED_SWITCH_INTENT_TTL_MS: i64 = 5 * 60 * 1000;
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, Serialize)]
+struct ManagedProfileSwitchIntent {
+    version: u8,
+    #[serde(rename = "mode")]
+    mode_name: &'static str,
+    profile_id: String,
+    account_id: String,
+    target_email: String,
+    block_browser_login: bool,
+    created_at_ms: i64,
+    expires_at_ms: i64,
+}
+
 static PROFILE_SWITCHING_IDS: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
 
 struct ProfileSwitchGuard {
@@ -95,6 +114,88 @@ fn normalize_text(value: &str) -> String {
 fn path_text(path: &Path) -> String {
     normalize_text(&path.to_string_lossy())
 }
+
+#[cfg(target_os = "macos")]
+fn managed_switch_intent_path(profile: &WindsurfProfile) -> PathBuf {
+    profile
+        .user_data_dir
+        .join("User")
+        .join("globalStorage")
+        .join(MANAGED_SWITCH_INTENT_FILE)
+}
+
+#[cfg(target_os = "macos")]
+fn write_managed_switch_intent(
+    profile: &WindsurfProfile,
+    account_id: &str,
+    target_email: &str,
+) -> Result<(), String> {
+    if profile.is_main() {
+        return Ok(());
+    }
+
+    let intent_path = managed_switch_intent_path(profile);
+    let Some(global_storage) = intent_path.parent() else {
+        return Err("无法获取分身 globalStorage 路径".to_string());
+    };
+    std::fs::create_dir_all(global_storage)
+        .map_err(|e| format!("创建分身登录意图目录失败: {}", e))?;
+
+    let now = Utc::now().timestamp_millis();
+    let intent = ManagedProfileSwitchIntent {
+        version: 1,
+        mode_name: "managed_switch",
+        profile_id: profile.id.clone(),
+        account_id: account_id.to_string(),
+        target_email: target_email.to_string(),
+        block_browser_login: true,
+        created_at_ms: now,
+        expires_at_ms: now + MANAGED_SWITCH_INTENT_TTL_MS,
+    };
+    let serialized = serde_json::to_string_pretty(&intent)
+        .map_err(|e| format!("序列化分身登录意图失败: {}", e))?;
+    std::fs::write(&intent_path, serialized)
+        .map_err(|e| format!("写入分身登录意图失败: {}", e))?;
+    info!(
+        "[Profile][macOS][Intent] Managed switch browser-login block enabled: profile_id={}, target_email={}, intent_file={}, expires_at_ms={}",
+        profile.id,
+        target_email,
+        intent_path.display(),
+        intent.expires_at_ms
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn clear_managed_switch_intent(profile: &WindsurfProfile, reason: &str) {
+    if profile.is_main() {
+        return;
+    }
+
+    let intent_path = managed_switch_intent_path(profile);
+    if !intent_path.exists() {
+        return;
+    }
+
+    match std::fs::remove_file(&intent_path) {
+        Ok(()) => info!(
+            "[Profile][macOS][Intent] Managed switch browser-login block cleared: profile_id={}, reason={}, intent_file={}",
+            profile.id,
+            reason,
+            intent_path.display()
+        ),
+        Err(e) => warn!(
+            "[Profile][macOS][Intent] Failed to clear managed switch browser-login block: profile_id={}, reason={}, intent_file={}, error={}",
+            profile.id,
+            reason,
+            intent_path.display(),
+            e
+        ),
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn clear_managed_switch_intent(_profile: &WindsurfProfile, _reason: &str) {}
 
 fn list_windsurf_processes() -> Vec<WindsurfProcessInfo> {
     #[cfg(target_os = "windows")]
@@ -777,6 +878,7 @@ async fn switch_profile_to_account(
         }
         #[cfg(target_os = "macos")]
         {
+            write_managed_switch_intent(profile, account_id, &account.email)?;
             let exe_path = find_windsurf_exe()
                 .ok_or_else(|| "找不到 Windsurf，请确认已安装到 /Applications 或 ~/Applications".to_string())?;
 
@@ -822,6 +924,7 @@ async fn switch_profile_to_account(
                 Ok(_) => {}
                 Err(e) => {
                     error!("[Profile][macOS] Profile callback failed: {}", e);
+                    clear_managed_switch_intent(profile, "callback_error");
                     return Ok(json!({
                         "success": false,
                         "error": e
@@ -844,6 +947,9 @@ async fn switch_profile_to_account(
     // 这里的 wait 只是尝试在短时间内拿到最新的 state.vscdb 解析结果。
     // 即使等不到也不应判定为失败：分身可能仍在启动/处理 URL，前端 5s 轮询会兜底刷新。
     let verified_info = wait_for_profile_account(&profile.user_data_dir, &account.email).await;
+    if verified_info.is_some() {
+        clear_managed_switch_intent(profile, "verified_target_account");
+    }
     if verified_info.is_none() {
         if used_file_based_login {
             info!(
@@ -1118,6 +1224,7 @@ pub async fn launch_profile(
 ) -> Result<Value, String> {
     let store = data_store.inner().clone();
     let profile = resolve_profile(&store, &profile_id).await.map_err(|e| e.to_string())?;
+    clear_managed_switch_intent(&profile, "manual_launch");
     let command_lines = list_windsurf_process_command_lines();
     if is_profile_running_from_cmds(&profile, &command_lines) {
         return Ok(json!({
@@ -1152,6 +1259,7 @@ pub async fn stop_profile(
 ) -> Result<Value, String> {
     let store = data_store.inner().clone();
     let profile = resolve_profile(&store, &profile_id).await.map_err(|e| e.to_string())?;
+    clear_managed_switch_intent(&profile, "stop_profile");
     let processes = list_windsurf_processes();
     let pids = matching_profile_process_ids(&profile, &processes);
 

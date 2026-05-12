@@ -14,6 +14,7 @@ use crate::commands::auto_continue_commands::AUTO_CONTINUE_BRIDGE_PORT;
 
 const SEAMLESS_PATCH_MARKER: &str = "WindsurfAccountManagerSeamlessOAuthPatchV2";
 const SEAMLESS_OAUTH_ERROR_MARKER: &[u8] = b"Failed to handle OAuth callback";
+const MANAGED_SWITCH_REFRESH_BLOCK_MARKER: &str = "WindsurfAccountManagerManagedSwitchRefreshBlockV1";
 const AUTO_CONTINUE_WORKBENCH_MARKER: &[u8] = b"WindsurfAccountManagerAutoContinueBridge";
 const AUTO_CONTINUE_LEGACY_SENDER_MARKER: &[u8] = b"WindsurfAccountManagerAutoContinueSenderBridge";
 const AUTO_CONTINUE_EXTENSION_MARKER: &[u8] = b"WindsurfAccountManagerAutoContinueExtensionBridgeV2";
@@ -320,10 +321,7 @@ pub async fn apply_seamless_patch(
             && var_name4.as_deref().map(|v| v == var_name1).unwrap_or(true);
 
         if vars_consistent && !var_name1.is_empty() && !module_name.is_empty() {
-            let replacement = format!(
-                r#"this._uriHandler.event(async {}=>{{if("/refresh-authentication-session"==={}.path){{(0,{}.refreshAuthenticationSession)()}}else{{try{{const t=new URLSearchParams({}.fragment).get("access_token");if(null===t)throw new Error("No token");console.info("[{}] Profile login applied");await this.handleAuthToken(t)}}catch(e){{console.error("[Windsurf] Failed to handle OAuth callback:",e)}}}}}})"#,
-                var_name1, var_name1, module_name, var_name1, SEAMLESS_PATCH_MARKER
-            );
+            let replacement = build_oauth_handler_replacement(&var_name1, &module_name);
 
             // 字节级替换：取整段匹配的字节切片，构造新的 Vec<u8>
             let full_match: Vec<u8> = captures.get(0).unwrap().as_bytes().to_vec();
@@ -334,9 +332,10 @@ pub async fn apply_seamless_patch(
                 "OAuth回调处理器"
             });
             info!(
-                "[Patch][Seamless] matched OAuth handler: variant={}, extension_file={}",
+                "[Patch][Seamless] matched OAuth handler: variant={}, extension_file={}, managed_switch_refresh_block={}",
                 variant,
-                extension_file.display()
+                extension_file.display(),
+                MANAGED_SWITCH_REFRESH_BLOCK_MARKER
             );
         }
     }
@@ -366,6 +365,42 @@ pub async fn apply_seamless_patch(
     //      之前这里被错误地当作 "已打过补丁" 从而陷入死循环）
     if modified_content == content {
         if has_current_seamless_patch(&content) {
+            if !has_managed_switch_refresh_block(&content) {
+                let upgraded_content = upgrade_current_oauth_handler(&content)
+                    .ok_or_else(|| "当前补丁缺少浏览器登录拦截标记，但未能自动升级 OAuth 处理器，请点击\"重新打补丁\"".to_string())?;
+                let parent_dir = extension_file.parent()
+                    .ok_or("无法获取父目录")?;
+                let backup_file = parent_dir.join(format!(
+                    "extension.js.backup.managed_switch.{}",
+                    Local::now().format("%Y%m%d_%H%M%S")
+                ));
+                fs::copy(&extension_file, &backup_file)
+                    .map_err(|e| format!("备份失败: {}", e))?;
+                fs::write(&extension_file, upgraded_content)
+                    .map_err(|e| format!("写入文件失败: {}", e))?;
+                info!(
+                    "[Patch][Seamless] upgraded existing OAuth patch with managed switch refresh block: extension_file={}, backup_file={}, marker={}",
+                    extension_file.display(),
+                    backup_file.display(),
+                    MANAGED_SWITCH_REFRESH_BLOCK_MARKER
+                );
+                let restart_result = restart_windsurf(Some(&windsurf_path)).await?;
+                return Ok(serde_json::json!({
+                    "success": true,
+                    "already_patched": false,
+                    "upgraded": true,
+                    "forced": force,
+                    "backup_file": backup_file.to_string_lossy().to_string(),
+                    "manual_restart_required": restart_result.manual_restart_required(),
+                    "seamless_patch_marker": SEAMLESS_PATCH_MARKER,
+                    "managed_switch_refresh_block": true,
+                    "message": if restart_result.manual_restart_required() {
+                        "补丁已升级，请手动完全退出并重新打开 Windsurf"
+                    } else {
+                        "补丁已升级，Windsurf正在重启"
+                    }
+                }));
+            }
             info!(
                 "[Patch][Seamless] no changes needed, current patch marker already installed: extension_file={}",
                 extension_file.display()
@@ -702,6 +737,49 @@ fn has_any_seamless_patch(content: &[u8]) -> bool {
 
 fn has_current_seamless_patch(content: &[u8]) -> bool {
     bytes_contains(content, SEAMLESS_PATCH_MARKER.as_bytes())
+}
+
+fn has_managed_switch_refresh_block(content: &[u8]) -> bool {
+    bytes_contains(content, MANAGED_SWITCH_REFRESH_BLOCK_MARKER.as_bytes())
+}
+
+fn build_oauth_handler_replacement(var_name: &str, module_name: &str) -> String {
+    format!(
+        r#"this._uriHandler.event(async {}=>{{if("/refresh-authentication-session"==={}.path){{try{{let n=null;try{{const e="undefined"!=typeof require?require:null,t=e?e("fs"):null,o=e?e("path"):null,r="undefined"!=typeof process?process:null,i=r&&r.argv?Array.from(r.argv):[],s=(()=>{{for(let e=0;e<i.length;e++){{const t=String(i[e]||"");if("--user-data-dir"===t&&i[e+1])return String(i[e+1]);if(t.startsWith("--user-data-dir="))return t.slice(16)}}return""}})();if(t&&o&&s){{const e=o.join(s,"User","globalStorage","windsurf-account-manager-managed-switch.json");if(t.existsSync(e)){{const o=JSON.parse(t.readFileSync(e,"utf8")),r=Date.now();o&&"managed_switch"===o.mode&&!0===o.block_browser_login&&Number(o.expires_at_ms||0)>r&&(n=o)}}}}catch(e){{console.warn("[{}] Failed to read managed switch intent:",e)}}if(n){{console.warn("[{}] Blocked browser login refresh during managed profile switch:",n.target_email||"unknown");return}}(0,{}.refreshAuthenticationSession)()}}catch(e){{console.error("[{}] Failed to refresh authentication session:",e)}}}}else{{try{{const t=new URLSearchParams({}.fragment).get("access_token");if(null===t)throw new Error("No token");console.info("[{}] Profile login applied");await this.handleAuthToken(t)}}catch(e){{console.error("[Windsurf] Failed to handle OAuth callback:",e)}}}}}})"#,
+        var_name,
+        var_name,
+        MANAGED_SWITCH_REFRESH_BLOCK_MARKER,
+        MANAGED_SWITCH_REFRESH_BLOCK_MARKER,
+        module_name,
+        MANAGED_SWITCH_REFRESH_BLOCK_MARKER,
+        var_name,
+        SEAMLESS_PATCH_MARKER
+    )
+}
+
+fn upgrade_current_oauth_handler(content: &[u8]) -> Option<Vec<u8>> {
+    let pattern = Regex::new(
+        r#"this\._uriHandler\.event\(async (\w+)=>\{if\("/refresh-authentication-session"===(\w+)\.path\)\{\(0,(\w+)\.refreshAuthenticationSession\)\(\)\}else\{try\{const t=new URLSearchParams\((\w+)\.fragment\)\.get\("access_token"\);if\(null===t\)throw new Error\("No token"\);console\.info\("\[WindsurfAccountManagerSeamlessOAuthPatchV2\] Profile login applied"\);await this\.handleAuthToken\(t\)\}catch\(e\)\{console\.error\("\[Windsurf\] Failed to handle OAuth callback:",e\)\}\}\}\)"#
+    ).ok()?;
+    let captures = pattern.captures(content)?;
+    let var_name = captures
+        .get(1)
+        .and_then(|m| std::str::from_utf8(m.as_bytes()).ok())?;
+    let var_name2 = captures
+        .get(2)
+        .and_then(|m| std::str::from_utf8(m.as_bytes()).ok())?;
+    let module_name = captures
+        .get(3)
+        .and_then(|m| std::str::from_utf8(m.as_bytes()).ok())?;
+    let var_name4 = captures
+        .get(4)
+        .and_then(|m| std::str::from_utf8(m.as_bytes()).ok())?;
+    if var_name != var_name2 || var_name != var_name4 {
+        return None;
+    }
+    let full_match = captures.get(0)?.as_bytes().to_vec();
+    let replacement = build_oauth_handler_replacement(var_name, module_name);
+    Some(replace_bytes(content, &full_match, replacement.as_bytes()))
 }
 
 fn is_auto_continue_extension_installed(file_path: &Path) -> bool {
@@ -1363,6 +1441,7 @@ pub async fn check_patch_status(
     // 检查是否包含补丁标识（字节级 contains）
     let has_oauth_handler = has_any_seamless_patch(&content);
     let has_current_oauth_handler = has_current_seamless_patch(&content);
+    let has_managed_switch_refresh_block = has_managed_switch_refresh_block(&content);
     let has_extension_login = bytes_contains(&content, b"WindsurfAccountManager v2] Profile login applied")
         || bytes_contains(&content, b"WindsurfAccountManager] Profile login applied")
         || has_current_oauth_handler;
@@ -1384,12 +1463,13 @@ pub async fn check_patch_status(
     let has_auto_continue_extension = is_auto_continue_extension_installed(&extension_file);
     let has_auto_continue_bridge = has_auto_continue_extension && has_auto_continue_workbench && workbench_checksum_current.unwrap_or(true);
     info!(
-        "[Patch][Status] windsurf_path={}, extension_file={}, workbench_file={}, installed={}, current_oauth_handler={}, oauth_handler={}, timeout_removed={}, auto_continue_bridge={}, auto_continue_sender={}, auto_continue_detector={}, workbench_checksum_current={:?}",
+        "[Patch][Status] windsurf_path={}, extension_file={}, workbench_file={}, installed={}, current_oauth_handler={}, managed_switch_refresh_block={}, oauth_handler={}, timeout_removed={}, auto_continue_bridge={}, auto_continue_sender={}, auto_continue_detector={}, workbench_checksum_current={:?}",
         windsurf_path,
         extension_file.display(),
         workbench_file.display(),
         has_oauth_handler,
         has_current_oauth_handler,
+        has_managed_switch_refresh_block,
         has_oauth_handler,
         has_timeout_removed,
         has_auto_continue_bridge,
@@ -1403,6 +1483,7 @@ pub async fn check_patch_status(
         "oauth_handler": has_oauth_handler,
         "current_oauth_handler": has_current_oauth_handler,
         "seamless_patch_marker": SEAMLESS_PATCH_MARKER,
+        "managed_switch_refresh_block": has_managed_switch_refresh_block,
         "extension_login": has_extension_login,
         "timeout_removed": has_timeout_removed,
         "auto_continue_bridge": has_auto_continue_bridge,
