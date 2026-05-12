@@ -574,6 +574,11 @@ fn spawn_profile_window(profile: &WindsurfProfile, exe_path: &str) -> Result<(),
     if !profile.is_main() {
         command.arg("--user-data-dir").arg(&profile.user_data_dir);
         command.arg("--new-window");
+        command.env("WINDSURF_ACCOUNT_MANAGER_PROFILE_DIR", &profile.user_data_dir);
+        command.env(
+            "WINDSURF_ACCOUNT_MANAGER_MANAGED_SWITCH_INTENT_FILE",
+            managed_switch_intent_path(profile),
+        );
     }
     info!(
         "[Profile][macOS] Launching Windsurf: profile_id={}, name={}, exe={}, user_data_dir={}, arch={}",
