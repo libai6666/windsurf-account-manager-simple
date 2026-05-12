@@ -21,6 +21,7 @@ const MANAGED_SWITCH_REFRESH_BLOCK_V3_MARKER: &[u8] = b"WindsurfAccountManagerMa
 const MANAGED_SWITCH_REFRESH_BLOCK_V2_MARKER: &[u8] = b"WindsurfAccountManagerManagedSwitchRefreshBlockV2";
 const MANAGED_SWITCH_REFRESH_BLOCK_V1_MARKER: &[u8] = b"WindsurfAccountManagerManagedSwitchRefreshBlockV1";
 const MANAGED_SWITCH_REFRESH_FUNCTION_MARKER: &str = "WindsurfAccountManagerManagedSwitchRefreshFunctionBlockV1";
+const DIRECT_WRITE_SESSION_REUSE_MARKER: &str = "WindsurfAccountManagerDirectWriteSessionReuseV1";
 const AUTO_CONTINUE_WORKBENCH_MARKER: &[u8] = b"WindsurfAccountManagerAutoContinueBridge";
 const AUTO_CONTINUE_LEGACY_SENDER_MARKER: &[u8] = b"WindsurfAccountManagerAutoContinueSenderBridge";
 const AUTO_CONTINUE_EXTENSION_MARKER: &[u8] = b"WindsurfAccountManagerAutoContinueExtensionBridgeV2";
@@ -351,6 +352,11 @@ pub async fn apply_seamless_patch(
         modified_content = patched_refresh_function;
         modifications.push("认证刷新函数拦截");
     }
+
+    if let Some(patched_create_session) = apply_direct_write_session_reuse_patch(&modified_content) {
+        modified_content = patched_create_session;
+        modifications.push("直写登录本地Session复用");
+    }
     
     // 3. 应用修改2: 移除180秒超时限制
     let pattern2_str = r#",new Promise\(\((\w+),(\w+)\)=>setTimeout\(\(\)=>\{(\w+)\(new (\w+)\)\},18e4\)\)"#;
@@ -377,7 +383,9 @@ pub async fn apply_seamless_patch(
     //      之前这里被错误地当作 "已打过补丁" 从而陷入死循环）
     if modified_content == content {
         if has_current_seamless_patch(&content) {
-            if !has_managed_switch_refresh_block(&content) {
+            if !has_managed_switch_refresh_block(&content)
+                || !has_direct_write_session_reuse_patch(&content)
+            {
                 let upgraded_content = upgrade_current_oauth_handler(&content)
                     .ok_or_else(|| "当前补丁缺少浏览器登录拦截标记，但未能自动升级 OAuth 处理器，请点击\"重新打补丁\"".to_string())?;
                 let parent_dir = extension_file.parent()
@@ -748,6 +756,7 @@ fn has_any_seamless_patch(content: &[u8]) -> bool {
         || bytes_contains(content, SEAMLESS_PATCH_MARKER.as_bytes())
         || bytes_contains(content, MANAGED_SWITCH_REFRESH_BLOCK_MARKER.as_bytes())
         || bytes_contains(content, MANAGED_SWITCH_REFRESH_FUNCTION_MARKER.as_bytes())
+        || bytes_contains(content, DIRECT_WRITE_SESSION_REUSE_MARKER.as_bytes())
         || bytes_contains(content, MANAGED_SWITCH_REFRESH_BLOCK_V5_MARKER)
         || bytes_contains(content, MANAGED_SWITCH_REFRESH_BLOCK_V4_MARKER)
         || bytes_contains(content, MANAGED_SWITCH_REFRESH_BLOCK_V3_MARKER)
@@ -761,6 +770,10 @@ fn has_current_seamless_patch(content: &[u8]) -> bool {
 
 fn has_managed_switch_refresh_block(content: &[u8]) -> bool {
     bytes_contains(content, MANAGED_SWITCH_REFRESH_BLOCK_MARKER.as_bytes())
+}
+
+fn has_direct_write_session_reuse_patch(content: &[u8]) -> bool {
+    bytes_contains(content, DIRECT_WRITE_SESSION_REUSE_MARKER.as_bytes())
 }
 
 fn has_legacy_managed_switch_refresh_block(content: &[u8]) -> bool {
@@ -829,6 +842,38 @@ fn apply_refresh_auth_function_guard(content: &[u8]) -> Option<Vec<u8>> {
     Some(replace_bytes(content, &full_match, replacement.as_bytes()))
 }
 
+fn apply_direct_write_session_reuse_patch(content: &[u8]) -> Option<Vec<u8>> {
+    if bytes_contains(content, DIRECT_WRITE_SESSION_REUSE_MARKER.as_bytes()) {
+        return None;
+    }
+    let pattern = Regex::new(
+        r#"async createSession\((\w+),(\w+)\)\{const \w+=function\(\w+\)\{const \w+=\w+\.join\(";\"\);return\{shouldRegisterNewUser:\w+\.includes\([\w.]+\.SIGNUP\),fromOnboarding:\w+\.includes\([\w.]+\.ONBOARDING\)\}\}\(\w+\);try\{const \w+=await this\.login\(\w+\);return await this\.handleAuthToken\(\w+\)\}catch\(\w+\)\{if\(!0===\w+\.fromOnboarding\|\|\w+ instanceof \w+\)throw \w+;let \w+=`Sign in failed: \$\{\w+\}`;return \w+ instanceof \w+\?\w+="Sign in timed out":\w+ instanceof \w+&&\(\w+="Sign in cancelled"\),await Promise\.race\(\[\(async\(\)=>\{const \w+=await this\.promptProvideAuthToken\(\w+\);if\(\w+\)return \w+;throw \w+\}\)\(\),this\._cancellationPromise\.then\(\(\)=>\{throw new \w+\}\)\]\)\}\}"#
+    ).ok()?;
+    let captures = pattern.captures(content)?;
+    let full_match = captures.get(0)?.as_bytes().to_vec();
+    let original = std::str::from_utf8(&full_match).ok()?;
+    let arg1 = captures
+        .get(1)
+        .and_then(|m| std::str::from_utf8(m.as_bytes()).ok())?;
+    let arg2 = captures
+        .get(2)
+        .and_then(|m| std::str::from_utf8(m.as_bytes()).ok())?;
+    let prefix = format!(
+        r#"async createSession({},{}){{try{{const o=await this.getSecret(),g=this.context&&this.context.globalState&&this.context.globalState.get("windsurfAccountManager.directWriteAuth");if(!0===g&&Array.isArray(o)&&o.length>0){{const r=o[0];this._cachedSessions=o;console.warn("[{}] Reusing direct-write local session instead of opening browser:",r&&r.account&&r.account.label||"unknown");return r}}}}catch(o){{console.warn("[{}] Failed to reuse direct-write local session:",o)}}"#,
+        arg1,
+        arg2,
+        DIRECT_WRITE_SESSION_REUSE_MARKER,
+        DIRECT_WRITE_SESSION_REUSE_MARKER
+    );
+    let original_body = original.strip_prefix(&format!(
+        "async createSession({},{}){{",
+        arg1,
+        arg2
+    ))?;
+    let replacement = format!("{}{}", prefix, original_body);
+    Some(replace_bytes(content, &full_match, replacement.as_bytes()))
+}
+
 fn upgrade_current_oauth_handler(content: &[u8]) -> Option<Vec<u8>> {
     let current_iife_direct_pattern = Regex::new(
         r#"\(\(\)=>\{const __WAM_READ__=.*?this\._uriHandler\.event\(async (\w+)=>\{if\("/refresh-authentication-session"===(\w+)\.path\)\{.*?await\(0,(\w+)\.refreshAuthenticationSession\)\(\).*?\}else\{try\{const t=new URLSearchParams\((\w+)\.fragment\)\.get\("access_token"\);.*?this\.handleAuthToken\(t\).*?\}\}\}\)\}\)\(\)"#
@@ -852,7 +897,9 @@ fn upgrade_current_oauth_handler(content: &[u8]) -> Option<Vec<u8>> {
         let full_match = captures.get(0)?.as_bytes().to_vec();
         let replacement = build_oauth_handler_replacement(var_name, module_name, false);
         let upgraded = replace_bytes(content, &full_match, replacement.as_bytes());
-        return apply_refresh_auth_function_guard(&upgraded).or(Some(upgraded));
+        let upgraded = apply_refresh_auth_function_guard(&upgraded).unwrap_or(upgraded);
+        let upgraded = apply_direct_write_session_reuse_patch(&upgraded).unwrap_or(upgraded);
+        return Some(upgraded);
     }
 
     let current_iife_native_pattern = Regex::new(
@@ -877,7 +924,9 @@ fn upgrade_current_oauth_handler(content: &[u8]) -> Option<Vec<u8>> {
         let full_match = captures.get(0)?.as_bytes().to_vec();
         let replacement = build_oauth_handler_replacement(var_name, module_name, true);
         let upgraded = replace_bytes(content, &full_match, replacement.as_bytes());
-        return apply_refresh_auth_function_guard(&upgraded).or(Some(upgraded));
+        let upgraded = apply_refresh_auth_function_guard(&upgraded).unwrap_or(upgraded);
+        let upgraded = apply_direct_write_session_reuse_patch(&upgraded).unwrap_or(upgraded);
+        return Some(upgraded);
     }
 
     let legacy_direct_pattern = Regex::new(
@@ -906,7 +955,9 @@ fn upgrade_current_oauth_handler(content: &[u8]) -> Option<Vec<u8>> {
             has_legacy_managed_switch_refresh_block(content),
         );
         let upgraded = replace_bytes(content, &full_match, replacement.as_bytes());
-        return apply_refresh_auth_function_guard(&upgraded).or(Some(upgraded));
+        let upgraded = apply_refresh_auth_function_guard(&upgraded).unwrap_or(upgraded);
+        let upgraded = apply_direct_write_session_reuse_patch(&upgraded).unwrap_or(upgraded);
+        return Some(upgraded);
     }
 
     let legacy_native_pattern = Regex::new(
@@ -931,7 +982,9 @@ fn upgrade_current_oauth_handler(content: &[u8]) -> Option<Vec<u8>> {
     let full_match = captures.get(0)?.as_bytes().to_vec();
     let replacement = build_oauth_handler_replacement(var_name, module_name, true);
     let upgraded = replace_bytes(content, &full_match, replacement.as_bytes());
-    apply_refresh_auth_function_guard(&upgraded).or(Some(upgraded))
+    let upgraded = apply_refresh_auth_function_guard(&upgraded).unwrap_or(upgraded);
+    let upgraded = apply_direct_write_session_reuse_patch(&upgraded).unwrap_or(upgraded);
+    Some(upgraded)
 }
 
 fn is_auto_continue_extension_installed(file_path: &Path) -> bool {

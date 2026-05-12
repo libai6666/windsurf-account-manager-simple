@@ -226,6 +226,9 @@ pub(crate) struct SwitchAuthResult {
     pub(crate) access_token: String,
     pub(crate) refresh_token: Option<String>,
     pub(crate) expires_in: String,
+    pub(crate) account_id: Option<String>,
+    pub(crate) org_id: Option<String>,
+    pub(crate) email: Option<String>,
 }
 
 async fn get_auth_token_from_auth_result(
@@ -248,6 +251,9 @@ async fn get_auth_token_from_auth_result(
         access_token: auth_result.session_token,
         refresh_token: Some(auth_result.auth1_token),
         expires_in: "3600".to_string(),
+        account_id: (!auth_result.account_id.is_empty()).then_some(auth_result.account_id),
+        org_id: (!auth_result.org_id.is_empty()).then_some(auth_result.org_id),
+        email: (!auth_result.email.is_empty()).then_some(auth_result.email),
     })
 }
 
@@ -279,8 +285,103 @@ async fn get_auth_token(refresh_token: &str) -> AppResult<SwitchAuthResult> {
             access_token: token_response.access_token,
             refresh_token: Some(token_response.refresh_token),
             expires_in: token_response.expires_in,
+            account_id: None,
+            org_id: None,
+            email: None,
         })
     }
+}
+
+#[cfg(target_os = "windows")]
+fn encode_proto_varint(mut value: u64, output: &mut Vec<u8>) {
+    while value >= 0x80 {
+        output.push((value as u8 & 0x7f) | 0x80);
+        value >>= 7;
+    }
+    output.push(value as u8);
+}
+
+#[cfg(target_os = "windows")]
+fn write_proto_tag(field_number: u32, wire_type: u8, output: &mut Vec<u8>) {
+    encode_proto_varint(((field_number as u64) << 3) | wire_type as u64, output);
+}
+
+#[cfg(target_os = "windows")]
+fn write_proto_string(field_number: u32, value: &str, output: &mut Vec<u8>) {
+    if value.is_empty() {
+        return;
+    }
+    write_proto_tag(field_number, 2, output);
+    encode_proto_varint(value.len() as u64, output);
+    output.extend_from_slice(value.as_bytes());
+}
+
+#[cfg(target_os = "windows")]
+fn write_proto_varint(field_number: u32, value: u64, output: &mut Vec<u8>) {
+    write_proto_tag(field_number, 0, output);
+    encode_proto_varint(value, output);
+}
+
+#[cfg(target_os = "windows")]
+fn write_proto_message(field_number: u32, message: &[u8], output: &mut Vec<u8>) {
+    if message.is_empty() {
+        return;
+    }
+    write_proto_tag(field_number, 2, output);
+    encode_proto_varint(message.len() as u64, output);
+    output.extend_from_slice(message);
+}
+
+#[cfg(target_os = "windows")]
+fn build_user_status_proto_base64(
+    name: &str,
+    email: &str,
+    plan_name: Option<&str>,
+    account_id: Option<&str>,
+    org_id: Option<&str>,
+    api_server_url: &str,
+) -> String {
+    use base64::{Engine, engine::general_purpose};
+
+    let mut output = Vec::new();
+    write_proto_string(3, name, &mut output);
+    if let Some(account_id) = account_id.filter(|value| !value.is_empty()) {
+        write_proto_string(5, account_id, &mut output);
+    }
+    write_proto_varint(6, 2, &mut output);
+    write_proto_string(7, email, &mut output);
+    write_proto_varint(10, 20, &mut output);
+
+    if let Some(plan_name) = plan_name.filter(|value| !value.is_empty()) {
+        let mut plan_details = Vec::new();
+        write_proto_varint(1, 20, &mut plan_details);
+        write_proto_string(2, plan_name, &mut plan_details);
+        write_proto_varint(7, 16384, &mut plan_details);
+        write_proto_varint(8, 600, &mut plan_details);
+
+        if let Some(org_id) = org_id.filter(|value| !value.is_empty()) {
+            let mut org_details = Vec::new();
+            write_proto_string(4, org_id, &mut org_details);
+            write_proto_string(5, "app.devin.ai", &mut org_details);
+            write_proto_string(7, "https://api.devin.ai", &mut org_details);
+            write_proto_string(8, "My Team", &mut org_details);
+            write_proto_message(33, &org_details, &mut plan_details);
+        }
+
+        let mut plan_status = Vec::new();
+        write_proto_message(1, &plan_details, &mut plan_status);
+        write_proto_message(13, &plan_status, &mut output);
+    }
+
+    let mut command_config = Vec::new();
+    write_proto_string(32, "enabled", &mut command_config);
+    write_proto_message(32, &command_config, &mut output);
+
+    let mut model_config = Vec::new();
+    write_proto_string(18, api_server_url, &mut model_config);
+    write_proto_message(33, &model_config, &mut output);
+
+    general_purpose::STANDARD.encode(output)
 }
 
 pub(crate) async fn get_auth_token_for_account(
@@ -309,6 +410,10 @@ pub(crate) async fn get_auth_token_for_account(
 pub(crate) fn write_windsurf_auth_direct(
     api_key: &str,
     name: &str,
+    email: &str,
+    plan_name: Option<&str>,
+    account_id: Option<&str>,
+    org_id: Option<&str>,
     api_server_url: &str,
     user_data_dir: &std::path::Path,
 ) -> AppResult<()> {
@@ -396,7 +501,16 @@ pub(crate) fn write_windsurf_auth_direct(
     let url_db_value = serde_json::to_string(&url_buffer_json)
         .map_err(|e| AppError::Config(format!("Failed to serialize url buffer: {}", e)))?;
     
-    // 5. 更新 windsurfAuthStatus (只更新 apiKey，保留其他字段)
+    let user_status_proto = build_user_status_proto_base64(
+        name,
+        email,
+        plan_name,
+        account_id,
+        org_id,
+        api_server_url,
+    );
+
+    // 5. 更新 windsurfAuthStatus
     let db_path = user_data_dir
         .join("User")
         .join("globalStorage")
@@ -420,23 +534,63 @@ pub(crate) fn write_windsurf_auth_direct(
         |row| row.get(0),
     ).ok();
     
-    let new_auth_status = if let Some(ref auth_str) = current_auth {
+    let mut auth_status_value = if let Some(ref auth_str) = current_auth {
         if let Ok(mut auth_val) = serde_json::from_str::<serde_json::Value>(auth_str) {
             auth_val["apiKey"] = serde_json::Value::String(api_key.to_string());
-            serde_json::to_string(&auth_val).unwrap_or_else(|_| 
-                format!(r#"{{"apiKey":"{}"}}"#, api_key))
+            auth_val
         } else {
-            format!(r#"{{"apiKey":"{}"}}"#, api_key)
+            json!({})
         }
     } else {
-        format!(r#"{{"apiKey":"{}"}}"#, api_key)
+        json!({})
     };
+    auth_status_value["apiKey"] = json!(api_key);
+    auth_status_value["name"] = json!(name);
+    auth_status_value["email"] = json!(email);
+    auth_status_value["userStatusProtoBinaryBase64"] = json!(user_status_proto);
+    if auth_status_value.get("allowedCommandModelConfigsProtoBinaryBase64").is_none() {
+        auth_status_value["allowedCommandModelConfigsProtoBinaryBase64"] = json!([]);
+    }
+    if let Some(plan_name) = plan_name.filter(|value| !value.is_empty()) {
+        auth_status_value["planName"] = json!(plan_name);
+    }
+    if let Some(team_id) = account_id
+        .filter(|value| !value.is_empty())
+        .or_else(|| org_id.filter(|value| !value.is_empty()))
+    {
+        auth_status_value["teamId"] = json!(team_id);
+    }
+    let new_auth_status = serde_json::to_string(&auth_status_value)
+        .map_err(|e| AppError::Config(format!("Failed to serialize new auth status: {}", e)))?;
+
+    let current_extension_state: Option<String> = conn.query_row(
+        "SELECT value FROM ItemTable WHERE key = 'codeium.windsurf'",
+        [],
+        |row| row.get(0),
+    ).ok();
+    let mut extension_state_value = if let Some(ref state_str) = current_extension_state {
+        serde_json::from_str::<serde_json::Value>(state_str).unwrap_or_else(|_| json!({}))
+    } else {
+        json!({})
+    };
+    extension_state_value["apiServerUrl"] = json!(api_server_url);
+    extension_state_value["lastLoginEmail"] = json!(email);
+    extension_state_value["windsurfAccountManager.directWriteAuth"] = json!(true);
+    extension_state_value["windsurfAccountManager.directWriteAuthEmail"] = json!(email);
+    extension_state_value["windsurfAccountManager.directWriteAuthAt"] = json!(Utc::now().timestamp_millis());
+    let extension_state = serde_json::to_string(&extension_state_value)
+        .map_err(|e| AppError::Config(format!("Failed to serialize extension state: {}", e)))?;
     
     // 6. 写入数据库
     conn.execute(
         "INSERT OR REPLACE INTO ItemTable (key, value) VALUES ('windsurfAuthStatus', ?1)",
         rusqlite::params![new_auth_status],
     ).map_err(|e| AppError::Database(format!("Failed to update windsurfAuthStatus: {}", e)))?;
+
+    conn.execute(
+        "INSERT OR REPLACE INTO ItemTable (key, value) VALUES ('codeium.windsurf', ?1)",
+        rusqlite::params![extension_state],
+    ).map_err(|e| AppError::Database(format!("Failed to update extension state: {}", e)))?;
     
     let session_secret_key = r#"secret://{"extensionId":"codeium.windsurf","key":"windsurf_auth.sessions"}"#;
     conn.execute(
@@ -449,9 +603,45 @@ pub(crate) fn write_windsurf_auth_direct(
         "INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?1, ?2)",
         rusqlite::params![url_secret_key, url_db_value],
     ).map_err(|e| AppError::Database(format!("Failed to update apiServerUrl secret: {}", e)))?;
+
+    if let Some(plan_name) = plan_name.filter(|value| !value.is_empty()) {
+        let cached_plan_info = json!({
+            "planName": plan_name,
+            "usage": {
+                "messages": 0,
+                "flowActions": 0,
+                "flexCredits": 0,
+                "usedMessages": 0,
+                "usedFlowActions": 0,
+                "usedFlexCredits": 0
+            }
+        }).to_string();
+        conn.execute(
+            "INSERT OR REPLACE INTO ItemTable (key, value) VALUES ('windsurf.settings.cachedPlanInfo', ?1)",
+            rusqlite::params![cached_plan_info],
+        ).map_err(|e| AppError::Database(format!("Failed to update cachedPlanInfo: {}", e)))?;
+    }
     
-    info!("Successfully wrote auth data to state.vscdb: apiKey={}..., name={}, server={}", 
-        &api_key[..std::cmp::min(api_key.len(), 20)], name, api_server_url);
+    let provider_key = format!("windsurf_auth-{}", name);
+    conn.execute(
+        "INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?1, '[]')",
+        rusqlite::params![provider_key],
+    ).map_err(|e| AppError::Database(format!("Failed to update auth provider key: {}", e)))?;
+
+    let usage_key = format!("windsurf_auth-{}-usages", name);
+    let usage_value = json!([{
+        "extensionId": "codeium.windsurf",
+        "extensionName": "Windsurf",
+        "scopes": [],
+        "lastUsed": Utc::now().timestamp_millis()
+    }]).to_string();
+    conn.execute(
+        "INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?1, ?2)",
+        rusqlite::params![usage_key, usage_value],
+    ).map_err(|e| AppError::Database(format!("Failed to update auth usages: {}", e)))?;
+
+    info!("Successfully wrote auth data to state.vscdb: apiKey={}..., name={}, email={}, plan={:?}, server={}",
+        &api_key[..std::cmp::min(api_key.len(), 20)], name, email, plan_name, api_server_url);
     
     Ok(())
 }
@@ -616,11 +806,18 @@ pub(crate) async fn trigger_windsurf_callback_url(
     state: &str,
     user_data_dir: Option<&std::path::Path>,
 ) -> AppResult<()> {
-    info!(
-        "Triggering Windsurf callback (target={}): windsurf://codeium.windsurf#access_token=<hidden>&state={}&token_type=Bearer",
-        user_data_dir.map(|p| p.display().to_string()).unwrap_or_else(|| "main".to_string()),
-        state
-    );
+    let target = user_data_dir
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "main".to_string());
+    if callback_url.contains("access_token=") {
+        info!(
+            "Triggering Windsurf callback (target={}): windsurf://codeium.windsurf#access_token=<hidden>&state={}&token_type=Bearer",
+            target,
+            state
+        );
+    } else {
+        info!("Dispatching Windsurf URL (target={}): {}", target, callback_url);
+    }
     
     // Windows: 使用 Windsurf CLI --open-url 直接传递给运行中的 Windsurf 实例（避免 ShellExecuteW 弹出 Git Bash）
     #[cfg(target_os = "windows")]

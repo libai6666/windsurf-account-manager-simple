@@ -7,7 +7,7 @@ use crate::commands::switch_account_commands::{
 #[cfg(target_os = "macos")]
 use crate::commands::switch_account_commands::{build_windsurf_callback_url, trigger_windsurf_callback_url};
 #[cfg(target_os = "windows")]
-use crate::commands::switch_account_commands::{prepare_profile_local_state, write_windsurf_auth_direct};
+use crate::commands::switch_account_commands::{prepare_profile_local_state, trigger_windsurf_callback_url, write_windsurf_auth_direct};
 use crate::commands::windsurf_info::{get_windsurf_info_from_dir, WindsurfCurrentInfo};
 use crate::models::{main_profile, main_user_data_dir, Account, AccountStatus, ProfileAutoSwitch, WindsurfProfile, MAIN_PROFILE_ID};
 use crate::repository::DataStore;
@@ -353,6 +353,39 @@ async fn wait_for_profile_account(user_data_dir: &Path, target_email: &str) -> O
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
     }
     None
+}
+
+#[cfg(target_os = "windows")]
+fn schedule_windows_profile_auth_refresh(
+    app: tauri::AppHandle,
+    profile_id: String,
+    user_data_dir: PathBuf,
+) {
+    tokio::spawn(async move {
+        let refresh_url = "windsurf://codeium.windsurf/refresh-authentication-session";
+        for (attempt, delay_ms) in [1500_u64, 3500, 6500].into_iter().enumerate() {
+            tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+            match trigger_windsurf_callback_url(
+                &app,
+                refresh_url,
+                "refresh-authentication-session",
+                Some(&user_data_dir),
+            ).await {
+                Ok(_) => info!(
+                    "[Profile][Windows] Auth refresh URI dispatched: profile_id={}, attempt={}, user_data_dir={}",
+                    profile_id,
+                    attempt + 1,
+                    user_data_dir.display()
+                ),
+                Err(e) => warn!(
+                    "[Profile][Windows] Auth refresh URI dispatch failed: profile_id={}, attempt={}, error={}",
+                    profile_id,
+                    attempt + 1,
+                    e
+                ),
+            }
+        }
+    });
 }
 
 #[cfg(target_os = "macos")]
@@ -876,6 +909,10 @@ async fn switch_profile_to_account(
             if let Err(e) = write_windsurf_auth_direct(
                 &auth.register_result.api_key,
                 &auth.register_result.name,
+                auth.email.as_deref().unwrap_or(&account.email),
+                account.plan_name.as_deref(),
+                auth.account_id.as_deref(),
+                auth.org_id.as_deref(),
                 &auth.register_result.api_server_url,
                 &profile.user_data_dir,
             ) {
@@ -888,6 +925,11 @@ async fn switch_profile_to_account(
 
             spawn_profile_window(profile, &exe_path)
                 .map_err(|e| format!("启动分身失败: {}", e))?;
+            schedule_windows_profile_auth_refresh(
+                app.clone(),
+                profile.id.clone(),
+                profile.user_data_dir.clone(),
+            );
             true
         }
         #[cfg(target_os = "macos")]
