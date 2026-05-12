@@ -226,6 +226,9 @@ pub(crate) struct SwitchAuthResult {
     pub(crate) access_token: String,
     pub(crate) refresh_token: Option<String>,
     pub(crate) expires_in: String,
+    pub(crate) account_id: Option<String>,
+    pub(crate) org_id: Option<String>,
+    pub(crate) email: Option<String>,
 }
 
 async fn get_auth_token_from_auth_result(
@@ -248,6 +251,9 @@ async fn get_auth_token_from_auth_result(
         access_token: auth_result.session_token,
         refresh_token: Some(auth_result.auth1_token),
         expires_in: "3600".to_string(),
+        account_id: (!auth_result.account_id.is_empty()).then_some(auth_result.account_id),
+        org_id: (!auth_result.org_id.is_empty()).then_some(auth_result.org_id),
+        email: (!auth_result.email.is_empty()).then_some(auth_result.email),
     })
 }
 
@@ -279,8 +285,103 @@ async fn get_auth_token(refresh_token: &str) -> AppResult<SwitchAuthResult> {
             access_token: token_response.access_token,
             refresh_token: Some(token_response.refresh_token),
             expires_in: token_response.expires_in,
+            account_id: None,
+            org_id: None,
+            email: None,
         })
     }
+}
+
+#[cfg(target_os = "windows")]
+fn encode_proto_varint(mut value: u64, output: &mut Vec<u8>) {
+    while value >= 0x80 {
+        output.push((value as u8 & 0x7f) | 0x80);
+        value >>= 7;
+    }
+    output.push(value as u8);
+}
+
+#[cfg(target_os = "windows")]
+fn write_proto_tag(field_number: u32, wire_type: u8, output: &mut Vec<u8>) {
+    encode_proto_varint(((field_number as u64) << 3) | wire_type as u64, output);
+}
+
+#[cfg(target_os = "windows")]
+fn write_proto_string(field_number: u32, value: &str, output: &mut Vec<u8>) {
+    if value.is_empty() {
+        return;
+    }
+    write_proto_tag(field_number, 2, output);
+    encode_proto_varint(value.len() as u64, output);
+    output.extend_from_slice(value.as_bytes());
+}
+
+#[cfg(target_os = "windows")]
+fn write_proto_varint(field_number: u32, value: u64, output: &mut Vec<u8>) {
+    write_proto_tag(field_number, 0, output);
+    encode_proto_varint(value, output);
+}
+
+#[cfg(target_os = "windows")]
+fn write_proto_message(field_number: u32, message: &[u8], output: &mut Vec<u8>) {
+    if message.is_empty() {
+        return;
+    }
+    write_proto_tag(field_number, 2, output);
+    encode_proto_varint(message.len() as u64, output);
+    output.extend_from_slice(message);
+}
+
+#[cfg(target_os = "windows")]
+fn build_user_status_proto_base64(
+    name: &str,
+    email: &str,
+    plan_name: Option<&str>,
+    account_id: Option<&str>,
+    org_id: Option<&str>,
+    api_server_url: &str,
+) -> String {
+    use base64::{Engine, engine::general_purpose};
+
+    let mut output = Vec::new();
+    write_proto_string(3, name, &mut output);
+    if let Some(account_id) = account_id.filter(|value| !value.is_empty()) {
+        write_proto_string(5, account_id, &mut output);
+    }
+    write_proto_varint(6, 2, &mut output);
+    write_proto_string(7, email, &mut output);
+    write_proto_varint(10, 20, &mut output);
+
+    if let Some(plan_name) = plan_name.filter(|value| !value.is_empty()) {
+        let mut plan_details = Vec::new();
+        write_proto_varint(1, 20, &mut plan_details);
+        write_proto_string(2, plan_name, &mut plan_details);
+        write_proto_varint(7, 16384, &mut plan_details);
+        write_proto_varint(8, 600, &mut plan_details);
+
+        if let Some(org_id) = org_id.filter(|value| !value.is_empty()) {
+            let mut org_details = Vec::new();
+            write_proto_string(4, org_id, &mut org_details);
+            write_proto_string(5, "app.devin.ai", &mut org_details);
+            write_proto_string(7, "https://api.devin.ai", &mut org_details);
+            write_proto_string(8, "My Team", &mut org_details);
+            write_proto_message(33, &org_details, &mut plan_details);
+        }
+
+        let mut plan_status = Vec::new();
+        write_proto_message(1, &plan_details, &mut plan_status);
+        write_proto_message(13, &plan_status, &mut output);
+    }
+
+    let mut command_config = Vec::new();
+    write_proto_string(32, "enabled", &mut command_config);
+    write_proto_message(32, &command_config, &mut output);
+
+    let mut model_config = Vec::new();
+    write_proto_string(18, api_server_url, &mut model_config);
+    write_proto_message(33, &model_config, &mut output);
+
+    general_purpose::STANDARD.encode(output)
 }
 
 pub(crate) async fn get_auth_token_for_account(
@@ -307,6 +408,10 @@ pub(crate) async fn get_auth_token_for_account(
 pub(crate) fn write_windsurf_auth_direct(
     api_key: &str,
     name: &str,
+    email: &str,
+    plan_name: Option<&str>,
+    account_id: Option<&str>,
+    org_id: Option<&str>,
     api_server_url: &str,
     user_data_dir: &std::path::Path,
 ) -> AppResult<()> {
@@ -417,23 +522,72 @@ pub(crate) fn write_windsurf_auth_direct(
         |row| row.get(0),
     ).ok();
 
-    let new_auth_status = if let Some(ref auth_str) = current_auth {
+    let user_status_proto = build_user_status_proto_base64(
+        name,
+        email,
+        plan_name,
+        account_id,
+        org_id,
+        api_server_url,
+    );
+
+    let mut auth_status_value = if let Some(ref auth_str) = current_auth {
         if let Ok(mut auth_val) = serde_json::from_str::<serde_json::Value>(auth_str) {
             auth_val["apiKey"] = serde_json::Value::String(api_key.to_string());
-            serde_json::to_string(&auth_val).unwrap_or_else(|_|
-                format!(r#"{{"apiKey":"{}"}}"#, api_key))
+            auth_val
         } else {
-            format!(r#"{{"apiKey":"{}"}}"#, api_key)
+            json!({})
         }
     } else {
-        format!(r#"{{"apiKey":"{}"}}"#, api_key)
+        json!({})
     };
+    auth_status_value["apiKey"] = json!(api_key);
+    auth_status_value["name"] = json!(name);
+    auth_status_value["email"] = json!(email);
+    auth_status_value["userStatusProtoBinaryBase64"] = json!(user_status_proto);
+    if auth_status_value.get("allowedCommandModelConfigsProtoBinaryBase64").is_none() {
+        auth_status_value["allowedCommandModelConfigsProtoBinaryBase64"] = json!([]);
+    }
+    if let Some(plan_name) = plan_name.filter(|value| !value.is_empty()) {
+        auth_status_value["planName"] = json!(plan_name);
+    }
+    if let Some(team_id) = account_id
+        .filter(|value| !value.is_empty())
+        .or_else(|| org_id.filter(|value| !value.is_empty()))
+    {
+        auth_status_value["teamId"] = json!(team_id);
+    }
+    let new_auth_status = serde_json::to_string(&auth_status_value)
+        .map_err(|e| AppError::Config(format!("Failed to serialize new auth status: {}", e)))?;
+
+    let current_extension_state: Option<String> = conn.query_row(
+        "SELECT value FROM ItemTable WHERE key = 'codeium.windsurf'",
+        [],
+        |row| row.get(0),
+    ).ok();
+    let mut extension_state_value = if let Some(ref state_str) = current_extension_state {
+        serde_json::from_str::<serde_json::Value>(state_str).unwrap_or_else(|_| json!({}))
+    } else {
+        json!({})
+    };
+    extension_state_value["apiServerUrl"] = json!(api_server_url);
+    extension_state_value["lastLoginEmail"] = json!(email);
+    extension_state_value["windsurfAccountManager.directWriteAuth"] = json!(true);
+    extension_state_value["windsurfAccountManager.directWriteAuthEmail"] = json!(email);
+    extension_state_value["windsurfAccountManager.directWriteAuthAt"] = json!(Utc::now().timestamp_millis());
+    let extension_state = serde_json::to_string(&extension_state_value)
+        .map_err(|e| AppError::Config(format!("Failed to serialize extension state: {}", e)))?;
 
     // 6. 写入数据库
     conn.execute(
         "INSERT OR REPLACE INTO ItemTable (key, value) VALUES ('windsurfAuthStatus', ?1)",
         rusqlite::params![new_auth_status],
     ).map_err(|e| AppError::Database(format!("Failed to update windsurfAuthStatus: {}", e)))?;
+
+    conn.execute(
+        "INSERT OR REPLACE INTO ItemTable (key, value) VALUES ('codeium.windsurf', ?1)",
+        rusqlite::params![extension_state],
+    ).map_err(|e| AppError::Database(format!("Failed to update extension state: {}", e)))?;
 
     let session_secret_key = r#"secret://{"extensionId":"codeium.windsurf","key":"windsurf_auth.sessions"}"#;
     conn.execute(
@@ -447,8 +601,44 @@ pub(crate) fn write_windsurf_auth_direct(
         rusqlite::params![url_secret_key, url_db_value],
     ).map_err(|e| AppError::Database(format!("Failed to update apiServerUrl secret: {}", e)))?;
 
-    info!("Successfully wrote auth data to state.vscdb: apiKey={}..., name={}, server={}",
-        &api_key[..std::cmp::min(api_key.len(), 20)], name, api_server_url);
+    if let Some(plan_name) = plan_name.filter(|value| !value.is_empty()) {
+        let cached_plan_info = json!({
+            "planName": plan_name,
+            "usage": {
+                "messages": 0,
+                "flowActions": 0,
+                "flexCredits": 0,
+                "usedMessages": 0,
+                "usedFlowActions": 0,
+                "usedFlexCredits": 0
+            }
+        }).to_string();
+        conn.execute(
+            "INSERT OR REPLACE INTO ItemTable (key, value) VALUES ('windsurf.settings.cachedPlanInfo', ?1)",
+            rusqlite::params![cached_plan_info],
+        ).map_err(|e| AppError::Database(format!("Failed to update cachedPlanInfo: {}", e)))?;
+    }
+
+    let provider_key = format!("windsurf_auth-{}", name);
+    conn.execute(
+        "INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?1, '[]')",
+        rusqlite::params![provider_key],
+    ).map_err(|e| AppError::Database(format!("Failed to update auth provider key: {}", e)))?;
+
+    let usage_key = format!("windsurf_auth-{}-usages", name);
+    let usage_value = json!([{
+        "extensionId": "codeium.windsurf",
+        "extensionName": "Windsurf",
+        "scopes": [],
+        "lastUsed": Utc::now().timestamp_millis()
+    }]).to_string();
+    conn.execute(
+        "INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?1, ?2)",
+        rusqlite::params![usage_key, usage_value],
+    ).map_err(|e| AppError::Database(format!("Failed to update auth usages: {}", e)))?;
+
+    info!("Successfully wrote auth data to state.vscdb: apiKey={}..., name={}, email={}, plan={:?}, server={}",
+        &api_key[..std::cmp::min(api_key.len(), 20)], name, email, plan_name, api_server_url);
 
     Ok(())
 }
@@ -593,12 +783,27 @@ pub(crate) async fn trigger_windsurf_callback(
     user_data_dir: Option<&std::path::Path>,
 ) -> AppResult<()> {
     let (callback_url, state) = build_windsurf_callback_url(auth_token)?;
+    trigger_windsurf_callback_url(app, &callback_url, &state, user_data_dir).await
+}
 
-    info!(
-        "Triggering Windsurf callback (target={}): windsurf://codeium.windsurf#access_token=<hidden>&state={}&token_type=Bearer",
-        user_data_dir.map(|p| p.display().to_string()).unwrap_or_else(|| "main".to_string()),
-        state
-    );
+pub(crate) async fn trigger_windsurf_callback_url(
+    app: &tauri::AppHandle,
+    callback_url: &str,
+    state: &str,
+    user_data_dir: Option<&std::path::Path>,
+) -> AppResult<()> {
+    let target = user_data_dir
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "main".to_string());
+    if callback_url.contains("access_token=") {
+        info!(
+            "Triggering Windsurf callback (target={}): windsurf://codeium.windsurf#access_token=<hidden>&state={}&token_type=Bearer",
+            target,
+            state
+        );
+    } else {
+        info!("Dispatching Windsurf URL (target={}): {}", target, callback_url);
+    }
 
     // Windows: 使用 Windsurf CLI --open-url 直接传递给运行中的 Windsurf 实例（避免 ShellExecuteW 弹出 Git Bash）
     #[cfg(target_os = "windows")]
@@ -609,7 +814,7 @@ pub(crate) async fn trigger_windsurf_callback(
             if let Some(dir) = user_data_dir {
                 cmd.arg("--user-data-dir").arg(dir);
             }
-            cmd.arg("--open-url").arg(&callback_url);
+            cmd.arg("--open-url").arg(callback_url);
             cmd.creation_flags(0x08000000);
             let output = cmd.output();
             match output {
@@ -630,7 +835,7 @@ pub(crate) async fn trigger_windsurf_callback(
                     warn!("Windsurf CLI failed (exe={}, error={}), falling back to opener", exe_path, e);
                     use tauri_plugin_opener::OpenerExt;
                     app.opener()
-                        .open_url(&callback_url, None::<&str>)
+                        .open_url(callback_url.to_string(), None::<&str>)
                         .map_err(|e| AppError::FileOperation(format!("Failed to open URL: {}", e)))?;
                 }
             }
@@ -641,17 +846,80 @@ pub(crate) async fn trigger_windsurf_callback(
         } else {
             use tauri_plugin_opener::OpenerExt;
             app.opener()
-                .open_url(&callback_url, None::<&str>)
+                .open_url(callback_url.to_string(), None::<&str>)
                 .map_err(|e| AppError::FileOperation(format!("Failed to open URL: {}", e)))?;
         }
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(exe_path) = find_windsurf_exe() {
+            let mut cmd = std::process::Command::new(&exe_path);
+            if let Some(dir) = user_data_dir {
+                cmd.arg("--user-data-dir").arg(dir);
+            }
+            cmd.arg("--open-url").arg(callback_url);
+            info!(
+                "[Profile][macOS] Dispatching callback via Windsurf app binary: target={}, exe={}, arch={}",
+                user_data_dir.map(|p| p.display().to_string()).unwrap_or_else(|| "main".to_string()),
+                exe_path,
+                std::env::consts::ARCH
+            );
+            match cmd.output() {
+                Ok(o) => {
+                    if !o.status.success() {
+                        let stdout = String::from_utf8_lossy(&o.stdout);
+                        let stderr = String::from_utf8_lossy(&o.stderr);
+                        warn!(
+                            "[Profile][macOS] Windsurf --open-url exited with {:?}: stdout={}, stderr={}",
+                            o.status.code(),
+                            stdout.trim(),
+                            stderr.trim()
+                        );
+                        if user_data_dir.is_some() {
+                            return Err(AppError::FileOperation(format!(
+                                "Windsurf CLI exited with {:?} for macOS profile callback: {}",
+                                o.status.code(),
+                                stderr.trim()
+                            )));
+                        }
+                    } else {
+                        info!("[Profile][macOS] Successfully triggered Windsurf callback via CLI");
+                    }
+                }
+                Err(e) => {
+                    if user_data_dir.is_some() {
+                        return Err(AppError::FileOperation(format!(
+                            "Windsurf CLI failed for macOS profile callback: {}",
+                            e
+                        )));
+                    }
+                    warn!("[Profile][macOS] Windsurf CLI failed ({}), falling back to opener for main instance", e);
+                    use tauri_plugin_opener::OpenerExt;
+                    app.opener()
+                        .open_url(callback_url.to_string(), None::<&str>)
+                        .map_err(|e| AppError::FileOperation(format!("Failed to open URL: {}", e)))?;
+                }
+            }
+        } else if user_data_dir.is_some() {
+            return Err(AppError::FileOperation(
+                "Cannot dispatch macOS profile callback: Windsurf executable not found".to_string()
+            ));
+        } else {
+            warn!("[Profile][macOS] Windsurf executable not found, falling back to opener for main instance");
+            use tauri_plugin_opener::OpenerExt;
+            app.opener()
+                .open_url(callback_url.to_string(), None::<&str>)
+                .map_err(|e| AppError::FileOperation(format!("Failed to open URL: {}", e)))?;
+        }
+    }
+
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
     {
         let _ = user_data_dir;
         use tauri_plugin_opener::OpenerExt;
         app.opener()
-            .open_url(&callback_url, None::<&str>)
+            .open_url(callback_url.to_string(), None::<&str>)
             .map_err(|e| AppError::FileOperation(format!("Failed to open URL: {}", e)))?;
     }
 
@@ -665,6 +933,7 @@ pub(crate) fn build_windsurf_callback_url(auth_token: &str) -> AppResult<(String
         ("access_token", auth_token),
         ("state", state.as_str()),
         ("token_type", "Bearer"),
+        ("wam_seamless_switch", "1"),
     ];
     let fragment = serde_urlencoded::to_string(&params)
         .map_err(|e| AppError::ApiRequest(format!("Failed to encode URL parameters: {}", e)))?;
@@ -728,36 +997,167 @@ async fn restart_windsurf() -> bool {
 /// 查找 Windsurf 可执行文件路径
 #[cfg(target_os = "windows")]
 pub(crate) fn find_windsurf_exe() -> Option<String> {
-    let candidates = [
-        r"C:\Program Files\Windsurf\Windsurf.exe",
-        r"C:\Users\Default\AppData\Local\Programs\Windsurf\Windsurf.exe",
-    ];
+    let mut candidates: Vec<PathBuf> = Vec::new();
 
-    // 先检查常见路径
-    for path in &candidates {
-        if std::path::Path::new(path).exists() {
-            return Some(path.to_string());
-        }
+    if let Some(path) = find_running_windsurf_exe_path_windows() {
+        candidates.push(path);
     }
 
-    // 尝试从用户 LOCALAPPDATA 查找
     if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
-        let user_path = format!(r"{}\Programs\Windsurf\Windsurf.exe", local_app_data);
-        if std::path::Path::new(&user_path).exists() {
-            return Some(user_path);
-        }
+        candidates.push(PathBuf::from(local_app_data).join("Programs").join("Windsurf").join("Windsurf.exe"));
     }
 
-    // 尝试 which/where 查找
+    if let Ok(user_profile) = std::env::var("USERPROFILE") {
+        candidates.push(PathBuf::from(user_profile).join("AppData").join("Local").join("Programs").join("Windsurf").join("Windsurf.exe"));
+    }
+
+    candidates.push(PathBuf::from(r"C:\Program Files\Windsurf\Windsurf.exe"));
+    candidates.push(PathBuf::from(r"C:\Program Files (x86)\Windsurf\Windsurf.exe"));
+    candidates.push(PathBuf::from(r"C:\Users\Default\AppData\Local\Programs\Windsurf\Windsurf.exe"));
+
     if let Ok(output) = std::process::Command::new("where").arg("Windsurf").output() {
         if output.status.success() {
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !path.is_empty() {
-                return Some(path.lines().next().unwrap_or(&path).to_string());
+            for line in String::from_utf8_lossy(&output.stdout).lines() {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() {
+                    candidates.push(PathBuf::from(trimmed));
+                }
             }
         }
     }
 
+    let mut seen = std::collections::HashSet::new();
+    for path in candidates {
+        let key = path.to_string_lossy().to_lowercase();
+        if !seen.insert(key) {
+            continue;
+        }
+
+        if is_valid_windsurf_exe_windows(&path) {
+            let value = path.to_string_lossy().to_string();
+            info!("[Profile][Windows] Found Windsurf executable: {}", value);
+            return Some(value);
+        } else if path.exists() {
+            warn!("[Profile][Windows] Ignoring invalid Windsurf executable candidate: {}", path.display());
+        }
+    }
+
+    warn!("[Profile][Windows] No valid Windsurf.exe found");
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn is_valid_windsurf_exe_windows(path: &std::path::Path) -> bool {
+    let Some(file_name) = path.file_name().and_then(|v| v.to_str()) else {
+        return false;
+    };
+    if !file_name.eq_ignore_ascii_case("Windsurf.exe") {
+        return false;
+    }
+
+    let path_text = path.to_string_lossy().to_lowercase();
+    if path_text.contains("\\microsoft\\windowsapps\\") || path_text.contains("\\windowsapps\\") {
+        return false;
+    }
+
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() || metadata.len() < 1024 * 1024 {
+        return false;
+    }
+
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut magic = [0u8; 2];
+    use std::io::Read;
+    file.read_exact(&mut magic).is_ok() && magic == *b"MZ"
+}
+
+#[cfg(target_os = "windows")]
+fn find_running_windsurf_exe_path_windows() -> Option<PathBuf> {
+    use std::os::windows::process::CommandExt;
+
+    let script = r#"
+$p = Get-CimInstance Win32_Process -Filter "Name='Windsurf.exe'" | Select-Object -First 1
+if ($p -and $p.ExecutablePath) { $p.ExecutablePath }
+"#;
+    let output = std::process::Command::new("powershell")
+        .arg("-NoProfile")
+        .arg("-ExecutionPolicy")
+        .arg("Bypass")
+        .arg("-Command")
+        .arg(script)
+        .creation_flags(0x08000000)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if path.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(path))
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn find_windsurf_exe() -> Option<String> {
+    let mut candidates: Vec<std::path::PathBuf> = vec![
+        std::path::PathBuf::from("/Applications/Windsurf.app/Contents/MacOS/Windsurf"),
+    ];
+
+    if let Ok(home) = std::env::var("HOME") {
+        candidates.push(
+            std::path::PathBuf::from(&home)
+                .join("Applications")
+                .join("Windsurf.app")
+                .join("Contents")
+                .join("MacOS")
+                .join("Windsurf"),
+        );
+    }
+
+    for path in candidates {
+        if path.exists() {
+            let value = path.to_string_lossy().to_string();
+            info!("[Profile][macOS] Found Windsurf executable: {}", value);
+            return Some(value);
+        }
+    }
+
+    match std::process::Command::new("mdfind")
+        .arg("kMDItemCFBundleIdentifier == 'com.exafunction.windsurf'")
+        .output()
+    {
+        Ok(output) if output.status.success() => {
+            for line in String::from_utf8_lossy(&output.stdout).lines() {
+                let bundle = std::path::PathBuf::from(line.trim());
+                let exe = bundle.join("Contents").join("MacOS").join("Windsurf");
+                if exe.exists() {
+                    let value = exe.to_string_lossy().to_string();
+                    info!("[Profile][macOS] Found Windsurf executable via mdfind: {}", value);
+                    return Some(value);
+                }
+            }
+        }
+        Ok(output) => warn!(
+            "[Profile][macOS] mdfind failed while locating Windsurf: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ),
+        Err(e) => warn!("[Profile][macOS] Failed to run mdfind while locating Windsurf: {}", e),
+    }
+
+    warn!("[Profile][macOS] Windsurf executable not found in common app bundle locations");
+    None
+}
+
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+pub(crate) fn find_windsurf_exe() -> Option<String> {
     None
 }
 
@@ -1264,11 +1664,17 @@ pub async fn check_auto_switch(
 
             // 跳到候选号选择逻辑（设置 dummy 值以继续后续流程）
             // 构造一个"需要切换"的场景
+            let in_use = crate::commands::profile_commands::accounts_in_use_by_other_profiles(
+                &data_store,
+                crate::models::MAIN_PROFILE_ID,
+            ).await;
             let group_candidates: Vec<_> = all_accounts.iter()
                 .filter(|a| {
                     a.group.as_deref() == Some(group)
                     && !matches!(a.status, crate::models::AccountStatus::Error(_))
                     && a.refresh_token.is_some()
+                    && !a.plan_name.as_ref().map(|p| p.to_lowercase().contains("free")).unwrap_or(true)
+                    && !in_use.contains(&a.email.to_ascii_lowercase())
                 })
                 .collect();
 
@@ -1285,24 +1691,28 @@ pub async fn check_auto_switch(
             let is_free_plan = |acc: &crate::models::Account| -> bool {
                 acc.plan_name.as_ref().map(|p| p.to_lowercase().contains("free")).unwrap_or(true)
             };
-            let is_better_candidate = |new_daily: i32, new_is_free: bool, cur: &Option<(Uuid, String, i32, i32, bool)>| -> bool {
+            let is_better_candidate = |new_daily: i32, new_weekly: i32, new_is_free: bool, cur: &Option<(Uuid, String, i32, i32, bool)>| -> bool {
                 match cur {
                     None => true,
-                    Some((_, _, cur_daily, _, cur_is_free)) => {
+                    Some((_, _, cur_daily, cur_weekly, cur_is_free)) => {
                         if !new_is_free && *cur_is_free { return true; }
                         if new_is_free && !*cur_is_free { return false; }
-                        new_daily > *cur_daily
+                        if new_daily != *cur_daily { return new_daily > *cur_daily; }
+                        new_weekly > *cur_weekly
                     }
                 }
             };
 
             let mut best_candidate: Option<(Uuid, String, i32, i32, bool)> = None;
             for acc in &group_candidates {
+                if is_free_plan(acc) {
+                    continue;
+                }
                 let daily = acc.daily_quota_remaining.unwrap_or(0);
                 let weekly = acc.weekly_quota_remaining.unwrap_or(0);
                 let acc_is_free = is_free_plan(acc);
                 if daily > threshold && weekly > 0 {
-                    if is_better_candidate(daily, acc_is_free, &best_candidate) {
+                    if is_better_candidate(daily, weekly, acc_is_free, &best_candidate) {
                         best_candidate = Some((acc.id, acc.email.clone(), daily, weekly, acc_is_free));
                     }
                 }
@@ -1313,6 +1723,9 @@ pub async fn check_auto_switch(
                 let cache_ttl = chrono::Duration::minutes(3);
                 let now = chrono::Utc::now();
                 for acc in &group_candidates {
+                    if is_free_plan(acc) {
+                        continue;
+                    }
                     if let Some(last_update) = acc.last_quota_update {
                         if now - last_update < cache_ttl { continue; }
                     }
@@ -1328,7 +1741,7 @@ pub async fn check_auto_switch(
                                 let _ = data_store.update_account(updated).await;
                                 let acc_is_free = is_free_plan(acc);
                                 if daily > threshold && weekly > 0 {
-                                    if is_better_candidate(daily, acc_is_free, &best_candidate) {
+                                    if is_better_candidate(daily, weekly, acc_is_free, &best_candidate) {
                                         best_candidate = Some((acc.id, acc.email.clone(), daily, weekly, acc_is_free));
                                     }
                                 }
@@ -1459,12 +1872,18 @@ pub async fn check_auto_switch(
     println!("[自动换号] {}，从分组 '{}' 中查找可用账号...", switch_reason, group);
 
     let all_accounts = data_store.get_all_accounts().await.map_err(|e| e.to_string())?;
+    let in_use = crate::commands::profile_commands::accounts_in_use_by_other_profiles(
+        &data_store,
+        crate::models::MAIN_PROFILE_ID,
+    ).await;
     let group_accounts: Vec<_> = all_accounts.iter()
         .filter(|a| {
             a.group.as_deref() == Some(group)
             && a.id != current_uuid
             && !matches!(a.status, crate::models::AccountStatus::Error(_))
             && a.refresh_token.is_some()
+            && !a.plan_name.as_ref().map(|p| p.to_lowercase().contains("free")).unwrap_or(true)
+            && !in_use.contains(&a.email.to_ascii_lowercase())
         })
         .collect();
 
@@ -1484,10 +1903,10 @@ pub async fn check_auto_switch(
 
     // 候选号比较逻辑：非Free优先，然后日配额最高
     // 返回true表示new_acc比current更优
-    let is_better_candidate = |new_daily: i32, new_is_free: bool, cur: &Option<(Uuid, String, i32, i32, bool)>| -> bool {
+    let is_better_candidate = |new_daily: i32, new_weekly: i32, new_is_free: bool, cur: &Option<(Uuid, String, i32, i32, bool)>| -> bool {
         match cur {
             None => true,
-            Some((_, _, cur_daily, _, cur_is_free)) => {
+            Some((_, _, cur_daily, cur_weekly, cur_is_free)) => {
                 // 非Free优先于Free
                 if !new_is_free && *cur_is_free {
                     return true;
@@ -1496,7 +1915,11 @@ pub async fn check_auto_switch(
                     return false;
                 }
                 // 同类型中，日配额更高的优先
-                new_daily > *cur_daily
+                if new_daily != *cur_daily {
+                    return new_daily > *cur_daily;
+                }
+                // 日配额相同时，周配额更高的优先
+                new_weekly > *cur_weekly
             }
         }
     };
@@ -1506,12 +1929,15 @@ pub async fn check_auto_switch(
     let mut best_candidate: Option<(Uuid, String, i32, i32, bool)> = None;
 
     for acc in &group_accounts {
+        if is_free_plan(acc) {
+            continue;
+        }
         let daily = acc.daily_quota_remaining.unwrap_or(0);
         let weekly = acc.weekly_quota_remaining.unwrap_or(0);
         let acc_is_free = is_free_plan(acc);
         // 候选号必须同时满足：周配额>0 且 日配额>阈值
         if daily > threshold && weekly > 0 {
-            if is_better_candidate(daily, acc_is_free, &best_candidate) {
+            if is_better_candidate(daily, weekly, acc_is_free, &best_candidate) {
                 best_candidate = Some((acc.id, acc.email.clone(), daily, weekly, acc_is_free));
             }
         }
@@ -1527,6 +1953,9 @@ pub async fn check_auto_switch(
 
         println!("[自动换号] 缓存数据中未找到合适账号，逐个刷新分组账号配额...");
         for acc in &group_accounts {
+            if is_free_plan(acc) {
+                continue;
+            }
             // 如果账号在3分钟内已刷新过，使用缓存数据
             if let Some(last_update) = acc.last_quota_update {
                 if now - last_update < cache_ttl {
@@ -1535,7 +1964,7 @@ pub async fn check_auto_switch(
                     let weekly = acc.weekly_quota_remaining.unwrap_or(0);
                     let acc_is_free = is_free_plan(acc);
                     if daily > threshold && weekly > 0 {
-                        if is_better_candidate(daily, acc_is_free, &best_candidate) {
+                        if is_better_candidate(daily, weekly, acc_is_free, &best_candidate) {
                             best_candidate = Some((acc.id, acc.email.clone(), daily, weekly, acc_is_free));
                         }
                     }
@@ -1570,7 +1999,7 @@ pub async fn check_auto_switch(
 
                         // 候选号必须同时满足：周配额>0 且 日配额>阈值
                         if daily > threshold && weekly > 0 {
-                            if is_better_candidate(daily, acc_is_free, &best_candidate) {
+                            if is_better_candidate(daily, weekly, acc_is_free, &best_candidate) {
                                 best_candidate = Some((acc.id, acc.email.clone(), daily, weekly, acc_is_free));
                             }
                         }

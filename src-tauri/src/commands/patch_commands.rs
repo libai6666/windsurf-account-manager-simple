@@ -11,6 +11,9 @@ use crate::commands::auto_continue_commands::AUTO_CONTINUE_BRIDGE_PORT;
 use base64::{engine::general_purpose, Engine as _};
 use sha2::{Digest, Sha256};
 
+const SEAMLESS_PATCH_MARKER: &[u8] = b"WindsurfAccountManagerSeamlessOAuthPatchV2";
+const SEAMLESS_OAUTH_ERROR_MARKER: &[u8] = b"Failed to handle OAuth callback";
+const SEAMLESS_ACCOUNT_MANAGER_ERROR_MARKER: &[u8] = b"Failed to handle account-manager OAuth callback";
 const AUTO_CONTINUE_WORKBENCH_MARKER: &[u8] = b"WindsurfAccountManagerAutoContinueBridge";
 const AUTO_CONTINUE_LEGACY_SENDER_MARKER: &[u8] = b"WindsurfAccountManagerAutoContinueSenderBridge";
 const AUTO_CONTINUE_EXTENSION_MARKER: &[u8] = b"WindsurfAccountManagerAutoContinueExtensionBridgeV2";
@@ -217,7 +220,7 @@ pub async fn apply_seamless_patch(
     
     let force = force.unwrap_or(false);
     let mut restored_from_backup: Option<String> = None;
-    
+
     // force 模式：先用最干净的备份覆盖当前文件，再走正常的打补丁流程
     if force && is_file_patched(&extension_file) {
         let extension_dir = extension_file.parent()
@@ -330,10 +333,11 @@ pub async fn apply_seamless_patch(
     //   b) 正则表达式未能匹配当前 Windsurf 版本（常见于首次安装最新版 Windsurf 的新用户，
     //      之前这里被错误地当作 "已打过补丁" 从而陷入死循环）
     if modified_content == content {
-        if is_file_patched(&extension_file) {
+        if has_any_seamless_patch(&content) {
             return Ok(serde_json::json!({
                 "success": true,
                 "already_patched": true,
+                "seamless_patch_marker": has_current_seamless_patch(&content),
                 "message": "补丁已经应用过了"
             }));
         } else {
@@ -468,6 +472,16 @@ fn bytes_contains(haystack: &[u8], needle: &[u8]) -> bool {
     haystack.windows(needle.len()).any(|w| w == needle)
 }
 
+fn has_any_seamless_patch(content: &[u8]) -> bool {
+    bytes_contains(content, SEAMLESS_PATCH_MARKER)
+        || bytes_contains(content, SEAMLESS_OAUTH_ERROR_MARKER)
+        || bytes_contains(content, SEAMLESS_ACCOUNT_MANAGER_ERROR_MARKER)
+}
+
+fn has_current_seamless_patch(content: &[u8]) -> bool {
+    bytes_contains(content, SEAMLESS_PATCH_MARKER)
+}
+
 /// 字节级 replace：把 haystack 中第一次出现的 needle 替换为 replacement
 fn replace_bytes(haystack: &[u8], needle: &[u8], replacement: &[u8]) -> Vec<u8> {
     if needle.is_empty() || haystack.len() < needle.len() {
@@ -492,7 +506,7 @@ fn is_file_patched(file_path: &Path) -> bool {
     // 按字节读取，避免 UTF-8 校验失败导致这里直接判定为"未打补丁"，
     // 进而错误地把一个其实已经打过补丁的文件当成"干净的备份"返回。
     if let Ok(content) = fs::read(file_path) {
-        bytes_contains(&content, b"Failed to handle OAuth callback")
+        has_any_seamless_patch(&content)
     } else {
         false
     }
@@ -1176,8 +1190,9 @@ pub async fn check_patch_status(
         .map_err(|e| format!("读取文件失败: {}", e))?;
     
     // 检查是否包含补丁标识（字节级 contains）
-    let has_oauth_handler = bytes_contains(&content, b"Failed to handle OAuth callback");
+    let has_oauth_handler = has_any_seamless_patch(&content);
     let has_timeout_removed = !bytes_contains(&content, b"18e4");
+    let has_current_seamless_marker = has_current_seamless_patch(&content);
     let has_auto_continue_extension = bytes_contains(&content, AUTO_CONTINUE_EXTENSION_MARKER);
     let workbench_content = if workbench_file.exists() {
         Some(fs::read(&workbench_file).map_err(|e| format!("读取 workbench 文件失败: {}", e))?)
@@ -1197,6 +1212,7 @@ pub async fn check_patch_status(
     Ok(serde_json::json!({
         "installed": has_oauth_handler,
         "oauth_handler": has_oauth_handler,
+        "seamless_patch_marker": has_current_seamless_marker,
         "timeout_removed": has_timeout_removed,
         "auto_continue_bridge": has_auto_continue_extension && has_auto_continue_workbench && workbench_checksum_current.unwrap_or(true),
         "auto_continue_detector": has_auto_continue_workbench,

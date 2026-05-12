@@ -4,8 +4,10 @@ use crate::commands::switch_account_commands::{
     reset_storage_json_for_profile,
     trigger_windsurf_callback,
 };
+#[cfg(target_os = "macos")]
+use crate::commands::switch_account_commands::{build_windsurf_callback_url, trigger_windsurf_callback_url};
 #[cfg(target_os = "windows")]
-use crate::commands::switch_account_commands::{prepare_profile_local_state, write_windsurf_auth_direct};
+use crate::commands::switch_account_commands::{prepare_profile_local_state, trigger_windsurf_callback_url, write_windsurf_auth_direct};
 use crate::commands::windsurf_info::{get_windsurf_info_from_dir, WindsurfCurrentInfo};
 use crate::models::{main_profile, main_user_data_dir, Account, AccountStatus, ProfileAutoSwitch, WindsurfProfile, MAIN_PROFILE_ID};
 use crate::repository::DataStore;
@@ -33,6 +35,27 @@ pub struct ProfileRuntimeInfo {
 struct WindsurfProcessInfo {
     pid: u32,
     command_line: String,
+}
+
+#[cfg(target_os = "macos")]
+const MANAGED_SWITCH_INTENT_FILE: &str = "windsurf-account-manager-managed-switch.json";
+#[cfg(target_os = "macos")]
+const MANAGED_SWITCH_INTENT_TTL_MS: i64 = 5 * 60 * 1000;
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, Serialize)]
+struct ManagedProfileSwitchIntent {
+    version: u8,
+    #[serde(rename = "mode")]
+    mode_name: &'static str,
+    profile_id: String,
+    account_id: String,
+    target_email: String,
+    target_callback_url: String,
+    target_callback_state: String,
+    block_browser_login: bool,
+    created_at_ms: i64,
+    expires_at_ms: i64,
 }
 
 static PROFILE_SWITCHING_IDS: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
@@ -95,6 +118,92 @@ fn normalize_text(value: &str) -> String {
 fn path_text(path: &Path) -> String {
     normalize_text(&path.to_string_lossy())
 }
+
+#[cfg(target_os = "macos")]
+fn managed_switch_intent_path(profile: &WindsurfProfile) -> PathBuf {
+    profile
+        .user_data_dir
+        .join("User")
+        .join("globalStorage")
+        .join(MANAGED_SWITCH_INTENT_FILE)
+}
+
+#[cfg(target_os = "macos")]
+fn write_managed_switch_intent(
+    profile: &WindsurfProfile,
+    account_id: &str,
+    target_email: &str,
+    target_callback_url: &str,
+    target_callback_state: &str,
+) -> Result<(), String> {
+    if profile.is_main() {
+        return Ok(());
+    }
+
+    let intent_path = managed_switch_intent_path(profile);
+    let Some(global_storage) = intent_path.parent() else {
+        return Err("无法获取分身 globalStorage 路径".to_string());
+    };
+    std::fs::create_dir_all(global_storage)
+        .map_err(|e| format!("创建分身登录意图目录失败: {}", e))?;
+
+    let now = Utc::now().timestamp_millis();
+    let intent = ManagedProfileSwitchIntent {
+        version: 1,
+        mode_name: "managed_switch",
+        profile_id: profile.id.clone(),
+        account_id: account_id.to_string(),
+        target_email: target_email.to_string(),
+        target_callback_url: target_callback_url.to_string(),
+        target_callback_state: target_callback_state.to_string(),
+        block_browser_login: true,
+        created_at_ms: now,
+        expires_at_ms: now + MANAGED_SWITCH_INTENT_TTL_MS,
+    };
+    let serialized = serde_json::to_string_pretty(&intent)
+        .map_err(|e| format!("序列化分身登录意图失败: {}", e))?;
+    std::fs::write(&intent_path, serialized)
+        .map_err(|e| format!("写入分身登录意图失败: {}", e))?;
+    info!(
+        "[Profile][macOS][Intent] Managed switch browser-login block enabled: profile_id={}, target_email={}, intent_file={}, expires_at_ms={}",
+        profile.id,
+        target_email,
+        intent_path.display(),
+        intent.expires_at_ms
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn clear_managed_switch_intent(profile: &WindsurfProfile, reason: &str) {
+    if profile.is_main() {
+        return;
+    }
+
+    let intent_path = managed_switch_intent_path(profile);
+    if !intent_path.exists() {
+        return;
+    }
+
+    match std::fs::remove_file(&intent_path) {
+        Ok(()) => info!(
+            "[Profile][macOS][Intent] Managed switch browser-login block cleared: profile_id={}, reason={}, intent_file={}",
+            profile.id,
+            reason,
+            intent_path.display()
+        ),
+        Err(e) => warn!(
+            "[Profile][macOS][Intent] Failed to clear managed switch browser-login block: profile_id={}, reason={}, intent_file={}, error={}",
+            profile.id,
+            reason,
+            intent_path.display(),
+            e
+        ),
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn clear_managed_switch_intent(_profile: &WindsurfProfile, _reason: &str) {}
 
 fn list_windsurf_processes() -> Vec<WindsurfProcessInfo> {
     #[cfg(target_os = "windows")]
@@ -246,30 +355,108 @@ async fn wait_for_profile_account(user_data_dir: &Path, target_email: &str) -> O
     None
 }
 
+#[cfg(target_os = "windows")]
+fn schedule_windows_profile_auth_refresh(
+    app: tauri::AppHandle,
+    profile_id: String,
+    user_data_dir: PathBuf,
+) {
+    tokio::spawn(async move {
+        let refresh_url = "windsurf://codeium.windsurf/refresh-authentication-session";
+        for (attempt, delay_ms) in [1500_u64, 3500, 6500].into_iter().enumerate() {
+            tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+            match trigger_windsurf_callback_url(
+                &app,
+                refresh_url,
+                "refresh-authentication-session",
+                Some(&user_data_dir),
+            ).await {
+                Ok(_) => info!(
+                    "[Profile][Windows] Auth refresh URI dispatched: profile_id={}, attempt={}, user_data_dir={}",
+                    profile_id,
+                    attempt + 1,
+                    user_data_dir.display()
+                ),
+                Err(e) => warn!(
+                    "[Profile][Windows] Auth refresh URI dispatch failed: profile_id={}, attempt={}, error={}",
+                    profile_id,
+                    attempt + 1,
+                    e
+                ),
+            }
+        }
+    });
+}
+
 #[cfg(target_os = "macos")]
-async fn trigger_macos_profile_callback_with_retry(
-    app: &tauri::AppHandle,
+async fn wait_for_macos_profile_callback_readiness(
     profile: &WindsurfProfile,
-    callback_token: &str,
-    target_email: &str,
-    initial_delay_ms: u64,
-    dispatch_callback: bool,
-) -> Result<Option<WindsurfCurrentInfo>, String> {
-    if initial_delay_ms > 0 {
+    min_wait_ms: u64,
+    max_wait_ms: u64,
+) {
+    if min_wait_ms > 0 {
         info!(
-            "[Profile][macOS] Waiting {}ms for profile window before callback: profile_id={}, user_data_dir={}",
-            initial_delay_ms,
+            "[Profile][macOS] Waiting at least {}ms for cold profile startup before callback: profile_id={}, user_data_dir={}",
+            min_wait_ms,
             profile.id,
             profile.user_data_dir.display()
         );
-        tokio::time::sleep(tokio::time::Duration::from_millis(initial_delay_ms)).await;
+        tokio::time::sleep(tokio::time::Duration::from_millis(min_wait_ms)).await;
     }
 
-    if dispatch_callback {
-        trigger_windsurf_callback(app, callback_token, Some(&profile.user_data_dir))
-            .await
-            .map_err(|e| format!("触发分身回调失败: {}", e))?;
+    let state_db_path = profile.state_vscdb_path();
+    let storage_json_path = profile.storage_json_path();
+    let mut waited_ms = min_wait_ms;
+
+    loop {
+        let running = is_profile_running_from_cmds(profile, &list_windsurf_process_command_lines());
+        let state_db_exists = state_db_path.exists();
+        let storage_json_exists = storage_json_path.exists();
+
+        if running && state_db_exists {
+            info!(
+                "[Profile][macOS] Profile appears ready for callback: profile_id={}, waited_ms={}, state_vscdb=true, storage_json={}",
+                profile.id,
+                waited_ms,
+                storage_json_exists
+            );
+            return;
+        }
+
+        if waited_ms >= max_wait_ms {
+            warn!(
+                "[Profile][macOS] Profile callback readiness wait reached limit: profile_id={}, waited_ms={}, running={}, state_vscdb={}, storage_json={}",
+                profile.id,
+                waited_ms,
+                running,
+                state_db_exists,
+                storage_json_exists
+            );
+            return;
+        }
+
+        let step_ms = max_wait_ms.saturating_sub(waited_ms).min(500);
+        tokio::time::sleep(tokio::time::Duration::from_millis(step_ms)).await;
+        waited_ms += step_ms;
     }
+}
+
+#[cfg(target_os = "macos")]
+async fn trigger_macos_profile_callback_best_effort(
+    app: &tauri::AppHandle,
+    profile: &WindsurfProfile,
+    callback_url: &str,
+    callback_state: &str,
+    target_email: &str,
+    initial_delay_ms: u64,
+) -> Result<Option<WindsurfCurrentInfo>, String> {
+    if initial_delay_ms > 0 {
+        wait_for_macos_profile_callback_readiness(profile, initial_delay_ms, 12000).await;
+    }
+
+    trigger_windsurf_callback_url(app, callback_url, callback_state, Some(&profile.user_data_dir))
+        .await
+        .map_err(|e| format!("触发分身回调失败: {}", e))?;
 
     if let Some(info) = wait_for_profile_account(&profile.user_data_dir, target_email).await {
         info!(
@@ -281,13 +468,34 @@ async fn trigger_macos_profile_callback_with_retry(
     }
 
     warn!(
-        "[Profile][macOS] Profile callback not reflected yet, leaving editor to finish asynchronously: profile_id={}, target_email={}, user_data_dir={}, dispatch_callback={}",
+        "[Profile][macOS] First callback attempt did not update profile auth, retrying once: profile_id={}, target_email={}, user_data_dir={}",
         profile.id,
         target_email,
-        profile.user_data_dir.display(),
-        dispatch_callback
+        profile.user_data_dir.display()
     );
-    Ok(None)
+    let retry_delay_ms = if initial_delay_ms > 0 { 3000 } else { 1200 };
+    tokio::time::sleep(tokio::time::Duration::from_millis(retry_delay_ms)).await;
+
+    trigger_windsurf_callback_url(app, callback_url, callback_state, Some(&profile.user_data_dir))
+        .await
+        .map_err(|e| format!("重试触发分身回调失败: {}", e))?;
+
+    let verified = wait_for_profile_account(&profile.user_data_dir, target_email).await;
+    if verified.is_some() {
+        info!(
+            "[Profile][macOS] Profile callback verified after retry: profile_id={}, target_email={}",
+            profile.id,
+            target_email
+        );
+    } else {
+        warn!(
+            "[Profile][macOS] Profile callback retry still not reflected in state.vscdb: profile_id={}, target_email={}, user_data_dir={}",
+            profile.id,
+            target_email,
+            profile.user_data_dir.display()
+        );
+    }
+    Ok(verified)
 }
 
 /// 检查分身是否已登录（state.vscdb 存在 windsurfAuthStatus 或 auth-usages 记录）
@@ -408,6 +616,11 @@ fn spawn_profile_window(profile: &WindsurfProfile, exe_path: &str) -> Result<(),
     if !profile.is_main() {
         command.arg("--user-data-dir").arg(&profile.user_data_dir);
         command.arg("--new-window");
+        command.env("WINDSURF_ACCOUNT_MANAGER_PROFILE_DIR", &profile.user_data_dir);
+        command.env(
+            "WINDSURF_ACCOUNT_MANAGER_MANAGED_SWITCH_INTENT_FILE",
+            managed_switch_intent_path(profile),
+        );
     }
     info!(
         "[Profile][macOS] Launching Windsurf: profile_id={}, name={}, exe={}, user_data_dir={}, arch={}",
@@ -477,6 +690,9 @@ fn consider_candidate(
     threshold: i32,
     best: &mut Option<(Uuid, String, i32, i32, bool)>,
 ) {
+    if is_free_plan(acc) {
+        return;
+    }
     if daily > threshold && weekly > 0 {
         let acc_is_free = is_free_plan(acc);
         if is_better_candidate(daily, weekly, acc_is_free, best) {
@@ -693,6 +909,10 @@ async fn switch_profile_to_account(
             if let Err(e) = write_windsurf_auth_direct(
                 &auth.register_result.api_key,
                 &auth.register_result.name,
+                auth.email.as_deref().unwrap_or(&account.email),
+                account.plan_name.as_deref(),
+                auth.account_id.as_deref(),
+                auth.org_id.as_deref(),
                 &auth.register_result.api_server_url,
                 &profile.user_data_dir,
             ) {
@@ -705,10 +925,24 @@ async fn switch_profile_to_account(
 
             spawn_profile_window(profile, &exe_path)
                 .map_err(|e| format!("启动分身失败: {}", e))?;
+            schedule_windows_profile_auth_refresh(
+                app.clone(),
+                profile.id.clone(),
+                profile.user_data_dir.clone(),
+            );
             true
         }
         #[cfg(target_os = "macos")]
         {
+            let (target_callback_url, target_callback_state) = build_windsurf_callback_url(&auth.callback_token)
+                .map_err(|e| format!("构建分身回调URL失败: {}", e))?;
+            write_managed_switch_intent(
+                profile,
+                account_id,
+                &account.email,
+                &target_callback_url,
+                &target_callback_state,
+            )?;
             let exe_path = find_windsurf_exe()
                 .ok_or_else(|| "找不到 Windsurf，请确认已安装到 /Applications 或 ~/Applications".to_string())?;
 
@@ -741,22 +975,26 @@ async fn switch_profile_to_account(
                 );
                 spawn_profile_window(profile, &exe_path)
                     .map_err(|e| format!("启动分身失败: {}", e))?;
-                1500
+                5000
             };
 
-            if let Err(e) = trigger_macos_profile_callback_with_retry(
+            match trigger_macos_profile_callback_best_effort(
                 app,
                 profile,
-                &auth.callback_token,
+                &target_callback_url,
+                &target_callback_state,
                 &account.email,
                 initial_delay_ms,
-                true,
             ).await {
-                error!("[Profile][macOS] Profile callback failed: {}", e);
-                return Ok(json!({
-                    "success": false,
-                    "error": e
-                }));
+                Ok(_) => {}
+                Err(e) => {
+                    error!("[Profile][macOS] Profile callback failed: {}", e);
+                    clear_managed_switch_intent(profile, "callback_error");
+                    return Ok(json!({
+                        "success": false,
+                        "error": e
+                    }));
+                }
             }
 
             false
@@ -774,6 +1012,11 @@ async fn switch_profile_to_account(
     // 这里的 wait 只是尝试在短时间内拿到最新的 state.vscdb 解析结果。
     // 即使等不到也不应判定为失败：分身可能仍在启动/处理 URL，前端 5s 轮询会兜底刷新。
     let verified_info = wait_for_profile_account(&profile.user_data_dir, &account.email).await;
+    if verified_info.is_some() {
+        clear_managed_switch_intent(profile, "verified_target_account");
+    } else {
+        clear_managed_switch_intent(profile, "switch_flow_finished_unverified");
+    }
     if verified_info.is_none() {
         if used_file_based_login {
             info!(
@@ -1048,6 +1291,7 @@ pub async fn launch_profile(
 ) -> Result<Value, String> {
     let store = data_store.inner().clone();
     let profile = resolve_profile(&store, &profile_id).await.map_err(|e| e.to_string())?;
+    clear_managed_switch_intent(&profile, "manual_launch");
     let command_lines = list_windsurf_process_command_lines();
     if is_profile_running_from_cmds(&profile, &command_lines) {
         return Ok(json!({
@@ -1082,6 +1326,7 @@ pub async fn stop_profile(
 ) -> Result<Value, String> {
     let store = data_store.inner().clone();
     let profile = resolve_profile(&store, &profile_id).await.map_err(|e| e.to_string())?;
+    clear_managed_switch_intent(&profile, "stop_profile");
     let processes = list_windsurf_processes();
     let pids = matching_profile_process_ids(&profile, &processes);
 
