@@ -1162,6 +1162,15 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
       const lower = String(text || "").toLowerCase();
       return (config.markers || []).some(marker => lower.includes(String(marker).toLowerCase()));
     }};
+    const isMacClient = (() => {{
+      try {{
+        const platform = String(navigator.platform || "");
+        const userAgent = String(navigator.userAgent || "");
+        return /mac/i.test(platform) || /macintosh|mac os x/i.test(userAgent);
+      }} catch {{
+        return false;
+      }}
+    }})();
     const isBridgeUrl = (url) => String(url || "").startsWith(base);
     const post = (event) => {{
       try {{
@@ -1559,12 +1568,30 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
         await sleep(250);
         const editorText = readEditorText(editor);
         if (hasQueuedMessages()) {{
-          if (editorText.includes(text)) clearEditor(editor);
-          return true;
+          if (!isMacClient && editorText.includes(text)) clearEditor(editor);
+          return isMacClient ? "queued" : "submitted";
         }}
-        if (!editorText.includes(text)) return true;
+        if (!editorText.includes(text)) return "submitted";
+      }}
+      return null;
+    }};
+    const waitForQueuedMessagesGone = async (timeoutMs = 3600) => {{
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {{
+        await sleep(250);
+        if (!hasQueuedMessages()) return true;
       }}
       return false;
+    }};
+    const confirmQueuedMessageOnMac = async (editor) => {{
+      if (!isMacClient) return false;
+      if (!hasQueuedMessages()) return true;
+      const confirmEditor = candidateEditors()[0] || editor;
+      confirmEditor?.scrollIntoView?.({{ block: "center", inline: "nearest" }});
+      confirmEditor?.focus?.();
+      await sleep(120);
+      pressEnter(confirmEditor || editor);
+      return await waitForQueuedMessagesGone();
     }};
     const cleanupResidualText = (editor, text) => {{
       try {{
@@ -1592,14 +1619,32 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
           const button = buttons[0];
           if (button) {{
             clickControl(button);
-            if (await waitForSubmission(editor, text)) {{
+            const buttonSubmission = await waitForSubmission(editor, text);
+            if (buttonSubmission === "queued") {{
+              if (await confirmQueuedMessageOnMac(editor)) {{
+                cleanupResidualText(editor, text);
+                return "dom_button_enter_queued";
+              }}
+              cleanupResidualText(editor, text);
+              throw new Error("Mac queued message confirmation did not clear queued state");
+            }}
+            if (buttonSubmission) {{
               return "dom_button";
             }}
             cleanupResidualText(editor, text);
             throw new Error("已点击发送按钮但未确认提交，已清理输入框并暂停避免重复排队");
           }}
           pressEnter(editor);
-          if (await waitForSubmission(editor, text)) {{
+          const enterSubmission = await waitForSubmission(editor, text);
+          if (enterSubmission === "queued") {{
+            if (await confirmQueuedMessageOnMac(editor)) {{
+              cleanupResidualText(editor, text);
+              return "dom_enter_queued";
+            }}
+            cleanupResidualText(editor, text);
+            throw new Error("Mac queued message confirmation did not clear queued state");
+          }}
+          if (enterSubmission) {{
             return "dom_enter";
           }}
           cleanupResidualText(editor, text);
