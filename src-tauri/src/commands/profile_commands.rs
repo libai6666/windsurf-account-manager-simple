@@ -1063,7 +1063,18 @@ async fn switch_profile_to_account(
     if verified_info.is_some() {
         clear_managed_switch_intent(profile, "verified_target_account");
     } else {
-        clear_managed_switch_intent(profile, "switch_flow_finished_unverified");
+        #[cfg(target_os = "macos")]
+        {
+            info!(
+                "[Profile][macOS][Intent] Keeping managed switch browser-login block active after unverified callback: profile_id={}, target_email={}",
+                profile.id,
+                account.email
+            );
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            clear_managed_switch_intent(profile, "switch_flow_finished_unverified");
+        }
     }
     if verified_info.is_none() {
         if used_file_based_login {

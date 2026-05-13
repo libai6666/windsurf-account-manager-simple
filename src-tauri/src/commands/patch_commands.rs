@@ -14,13 +14,16 @@ use crate::commands::auto_continue_commands::AUTO_CONTINUE_BRIDGE_PORT;
 
 const SEAMLESS_PATCH_MARKER: &str = "WindsurfAccountManagerSeamlessOAuthPatchV2";
 const SEAMLESS_OAUTH_ERROR_MARKER: &[u8] = b"Failed to handle OAuth callback";
-const MANAGED_SWITCH_REFRESH_BLOCK_MARKER: &str = "WindsurfAccountManagerManagedSwitchRefreshBlockV6";
+const MANAGED_SWITCH_REFRESH_BLOCK_MARKER: &str = "WindsurfAccountManagerManagedSwitchRefreshBlockV7";
+const MANAGED_SWITCH_REFRESH_BLOCK_V6_MARKER: &[u8] = b"WindsurfAccountManagerManagedSwitchRefreshBlockV6";
 const MANAGED_SWITCH_REFRESH_BLOCK_V5_MARKER: &[u8] = b"WindsurfAccountManagerManagedSwitchRefreshBlockV5";
 const MANAGED_SWITCH_REFRESH_BLOCK_V4_MARKER: &[u8] = b"WindsurfAccountManagerManagedSwitchRefreshBlockV4";
 const MANAGED_SWITCH_REFRESH_BLOCK_V3_MARKER: &[u8] = b"WindsurfAccountManagerManagedSwitchRefreshBlockV3";
 const MANAGED_SWITCH_REFRESH_BLOCK_V2_MARKER: &[u8] = b"WindsurfAccountManagerManagedSwitchRefreshBlockV2";
 const MANAGED_SWITCH_REFRESH_BLOCK_V1_MARKER: &[u8] = b"WindsurfAccountManagerManagedSwitchRefreshBlockV1";
-const MANAGED_SWITCH_REFRESH_FUNCTION_MARKER: &str = "WindsurfAccountManagerManagedSwitchRefreshFunctionBlockV1";
+const MANAGED_SWITCH_REFRESH_FUNCTION_MARKER: &str = "WindsurfAccountManagerManagedSwitchRefreshFunctionBlockV2";
+const MANAGED_SWITCH_REFRESH_FUNCTION_V1_MARKER: &[u8] = b"WindsurfAccountManagerManagedSwitchRefreshFunctionBlockV1";
+const INTENT_PROFILE_SCAN_SNIPPET: &str = r#"if(t&&o&&v.HOME){try{const e=o.join(String(v.HOME),"Library","Application Support","WindsurfProfiles");for(const r of t.readdirSync(e))c.push(o.join(e,r,"User","globalStorage",m))}catch(e){}}"#;
 const DIRECT_WRITE_SESSION_REUSE_MARKER: &str = "WindsurfAccountManagerDirectWriteSessionReuseV2";
 const DIRECT_WRITE_SESSION_REUSE_V1_MARKER: &[u8] = b"WindsurfAccountManagerDirectWriteSessionReuseV1";
 const AUTO_CONTINUE_WORKBENCH_MARKER: &[u8] = b"WindsurfAccountManagerAutoContinueBridge";
@@ -358,6 +361,11 @@ pub async fn apply_seamless_patch(
         modified_content = patched_create_session;
         modifications.push("直写登录本地Session复用");
     }
+    let sanitized_content = sanitize_managed_switch_intent_resolver(modified_content.clone());
+    if sanitized_content != modified_content {
+        modified_content = sanitized_content;
+        modifications.push("限定分身登录意图读取范围");
+    }
     
     // 3. 应用修改2: 移除180秒超时限制
     let pattern2_str = r#",new Promise\(\((\w+),(\w+)\)=>setTimeout\(\(\)=>\{(\w+)\(new (\w+)\)\},18e4\)\)"#;
@@ -389,6 +397,7 @@ pub async fn apply_seamless_patch(
             {
                 let upgraded_content = upgrade_current_oauth_handler(&content)
                     .ok_or_else(|| "当前补丁缺少浏览器登录拦截标记，但未能自动升级 OAuth 处理器，请点击\"重新打补丁\"".to_string())?;
+                let upgraded_content = sanitize_managed_switch_intent_resolver(upgraded_content);
                 let parent_dir = extension_file.parent()
                     .ok_or("无法获取父目录")?;
                 let backup_file = parent_dir.join(format!(
@@ -733,6 +742,39 @@ fn replace_bytes(haystack: &[u8], needle: &[u8], replacement: &[u8]) -> Vec<u8> 
     }
 }
 
+fn replace_all_bytes(haystack: &[u8], needle: &[u8], replacement: &[u8]) -> Vec<u8> {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return haystack.to_vec();
+    }
+    let mut out = Vec::with_capacity(haystack.len());
+    let mut start = 0;
+    while let Some(pos) = haystack[start..]
+        .windows(needle.len())
+        .position(|w| w == needle)
+    {
+        let absolute = start + pos;
+        out.extend_from_slice(&haystack[start..absolute]);
+        out.extend_from_slice(replacement);
+        start = absolute + needle.len();
+    }
+    out.extend_from_slice(&haystack[start..]);
+    out
+}
+
+fn sanitize_managed_switch_intent_resolver(content: Vec<u8>) -> Vec<u8> {
+    let content = replace_all_bytes(&content, INTENT_PROFILE_SCAN_SNIPPET.as_bytes(), b"");
+    let content = replace_all_bytes(
+        &content,
+        MANAGED_SWITCH_REFRESH_BLOCK_V6_MARKER,
+        MANAGED_SWITCH_REFRESH_BLOCK_MARKER.as_bytes(),
+    );
+    replace_all_bytes(
+        &content,
+        MANAGED_SWITCH_REFRESH_FUNCTION_V1_MARKER,
+        MANAGED_SWITCH_REFRESH_FUNCTION_MARKER.as_bytes(),
+    )
+}
+
 /// 检查文件是否包含补丁特征（是否已打过补丁）
 fn is_file_patched(file_path: &Path) -> bool {
     // 按字节读取，避免 UTF-8 校验失败导致这里直接判定为"未打补丁"，
@@ -757,8 +799,10 @@ fn has_any_seamless_patch(content: &[u8]) -> bool {
         || bytes_contains(content, SEAMLESS_PATCH_MARKER.as_bytes())
         || bytes_contains(content, MANAGED_SWITCH_REFRESH_BLOCK_MARKER.as_bytes())
         || bytes_contains(content, MANAGED_SWITCH_REFRESH_FUNCTION_MARKER.as_bytes())
+        || bytes_contains(content, MANAGED_SWITCH_REFRESH_FUNCTION_V1_MARKER)
         || bytes_contains(content, DIRECT_WRITE_SESSION_REUSE_MARKER.as_bytes())
         || bytes_contains(content, DIRECT_WRITE_SESSION_REUSE_V1_MARKER)
+        || bytes_contains(content, MANAGED_SWITCH_REFRESH_BLOCK_V6_MARKER)
         || bytes_contains(content, MANAGED_SWITCH_REFRESH_BLOCK_V5_MARKER)
         || bytes_contains(content, MANAGED_SWITCH_REFRESH_BLOCK_V4_MARKER)
         || bytes_contains(content, MANAGED_SWITCH_REFRESH_BLOCK_V3_MARKER)
@@ -779,7 +823,8 @@ fn has_direct_write_session_reuse_patch(content: &[u8]) -> bool {
 }
 
 fn has_legacy_managed_switch_refresh_block(content: &[u8]) -> bool {
-    bytes_contains(content, MANAGED_SWITCH_REFRESH_BLOCK_V5_MARKER)
+    bytes_contains(content, MANAGED_SWITCH_REFRESH_BLOCK_V6_MARKER)
+        || bytes_contains(content, MANAGED_SWITCH_REFRESH_BLOCK_V5_MARKER)
         || bytes_contains(content, MANAGED_SWITCH_REFRESH_BLOCK_V4_MARKER)
         || bytes_contains(content, MANAGED_SWITCH_REFRESH_BLOCK_V3_MARKER)
         || bytes_contains(content, MANAGED_SWITCH_REFRESH_BLOCK_V2_MARKER)
@@ -809,7 +854,8 @@ fn build_oauth_handler_replacement(
             SEAMLESS_PATCH_MARKER
         )
     };
-    r#"(()=>{const __WAM_READ__=()=>{let n=null;try{const e="undefined"!=typeof require?require:null,t=e?e("fs"):null,o=e?e("path"):null,r="undefined"!=typeof process?process:null,i=r&&r.argv?Array.from(r.argv):[],v=r&&r.env?r.env:{},m="windsurf-account-manager-managed-switch.json",c=[],s=(()=>{for(let e=0;e<i.length;e++){const t=String(i[e]||"");if("--user-data-dir"===t&&i[e+1])return String(i[e+1]);if(t.startsWith("--user-data-dir="))return t.slice(16)}return""})();v.WINDSURF_ACCOUNT_MANAGER_MANAGED_SWITCH_INTENT_FILE&&c.push(String(v.WINDSURF_ACCOUNT_MANAGER_MANAGED_SWITCH_INTENT_FILE));v.WINDSURF_ACCOUNT_MANAGER_PROFILE_DIR&&o&&c.push(o.join(String(v.WINDSURF_ACCOUNT_MANAGER_PROFILE_DIR),"User","globalStorage",m));s&&o&&c.push(o.join(s,"User","globalStorage",m));if(t&&o&&v.HOME){try{const e=o.join(String(v.HOME),"Library","Application Support","WindsurfProfiles");for(const r of t.readdirSync(e))c.push(o.join(e,r,"User","globalStorage",m))}catch(e){}}if(t){const e=[...new Set(c.filter(Boolean))];for(const o of e)if(t.existsSync(o)){const e=JSON.parse(t.readFileSync(o,"utf8")),i=Date.now(),s=Number(e&&e.expires_at_ms||0);if(e&&"managed_switch"===e.mode&&!0===e.block_browser_login&&s>i){n=e;break}s&&s<=i&&(()=>{try{t.unlinkSync(o)}catch(e){}})()}}}catch(e){console.warn("[__SEAMLESS__][__MARKER__] Failed to read managed switch intent:",e)}return n},__WAM_BLOCK__=e=>{const t=__WAM_READ__();return!!t&&(console.warn("[__SEAMLESS__][__MARKER__] Blocked "+e+" during managed profile switch:",t.target_email||"unknown"),!0)};try{if(!__MODULE__["__MARKER__"]){const e=__MODULE__.refreshAuthenticationSession;__MODULE__["__MARKER__"]=!0;__MODULE__.refreshAuthenticationSession=async function(){if(__WAM_BLOCK__("refreshAuthenticationSession"))return;return await e.apply(this,arguments)}}}catch(e){console.warn("[__SEAMLESS__][__MARKER__] Failed to wrap refreshAuthenticationSession:",e)}this._uriHandler.event(async __VAR__=>{if("/refresh-authentication-session"===__VAR__.path){try{if(__WAM_BLOCK__("browser login refresh"))return;await(0,__MODULE__.refreshAuthenticationSession)()}catch(e){console.error("[__SEAMLESS__][__MARKER__] Failed to refresh authentication session:",e)}}else{__TOKEN_HANDLER__}})})()"#
+    r#"(()=>{const __WAM_READ__=()=>{let n=null;try{const e="undefined"!=typeof require?require:null,t=e?e("fs"):null,o=e?e("path"):null,r="undefined"!=typeof process?process:null,i=r&&r.argv?Array.from(r.argv):[],v=r&&r.env?r.env:{},m="windsurf-account-manager-managed-switch.json",c=[],s=(()=>{for(let e=0;e<i.length;e++){const t=String(i[e]||"");if("--user-data-dir"===t&&i[e+1])return String(i[e+1]);if(t.startsWith("--user-data-dir="))return t.slice(16)}return""})();v.WINDSURF_ACCOUNT_MANAGER_MANAGED_SWITCH_INTENT_FILE&&c.push(String(v.WINDSURF_ACCOUNT_MANAGER_MANAGED_SWITCH_INTENT_FILE));v.WINDSURF_ACCOUNT_MANAGER_PROFILE_DIR&&o&&c.push(o.join(String(v.WINDSURF_ACCOUNT_MANAGER_PROFILE_DIR),"User","globalStorage",m));s&&o&&c.push(o.join(s,"User","globalStorage",m));if(t&&o&&v.HOME){try{const e=o.join(String(v.HOME),"Library","Application Support","WindsurfProfiles");for(const r of t.readdirSync(e))c.push(o.join(e,r,"User","globalStorage",m))}catch(e){}}if(t){const e=[...new Set(c.filter(Boolean))];for(const o of e)if(t.existsSync(o)){const e=JSON.parse(t.readFileSync(o,"utf8")),i=Date.now(),s=Number(e&&e.expires_at_ms||0);if(e&&"managed_switch"===e.mode&&!0===e.block_browser_login&&s>i){n=e;break}s&&s<=i&&(()=>{try{t.unlinkSync(o)}catch(e){}})()}}}catch(e){console.warn("[__SEAMLESS__][__MARKER__] Failed to read managed switch intent:",e)}return n},__WAM_BLOCK__=e=>{const t=__WAM_READ__();return!!t&&(console.warn("[__SEAMLESS__][__MARKER__] Blocked "+e+" during managed profile switch:",t.target_email||"unknown"),!0)};try{if(!__MODULE__["__MARKER__"]){const e=__MODULE__.refreshAuthenticationSession;__MODULE__["__MARKER__"]=!0;__MODULE__.refreshAuthenticationSession=async function(){if(__WAM_BLOCK__("refreshAuthenticationSession"))return;return await e.apply(this,arguments)}}}catch(e){console.warn("[__SEAMLESS__][__MARKER__] Failed to wrap refreshAuthenticationSession:",e)}this._uriHandler.event(async __VAR__=>{if("/refresh-authentication-session"===__VAR__.path){try{if(__WAM_BLOCK__("refresh-authentication-session uri"))return;await(0,__MODULE__.refreshAuthenticationSession)()}catch(e){console.warn("[__SEAMLESS__][__MARKER__] Failed to handle refresh-authentication-session:",e)}}else{__TOKEN_HANDLER__}})})()"#
+        .replace(INTENT_PROFILE_SCAN_SNIPPET, "")
         .replace("__VAR__", var_name)
         .replace("__SEAMLESS__", SEAMLESS_PATCH_MARKER)
         .replace("__MARKER__", MANAGED_SWITCH_REFRESH_BLOCK_MARKER)
@@ -836,6 +882,7 @@ fn apply_refresh_auth_function_guard(content: &[u8]) -> Option<Vec<u8>> {
         .and_then(|m| std::str::from_utf8(m.as_bytes()).ok())?;
     let full_match = captures.get(0)?.as_bytes().to_vec();
     let replacement = r#"__EXPORT__.refreshAuthenticationSession=async function(){try{let n=null;try{const e="undefined"!=typeof require?require:null,t=e?e("fs"):null,o=e?e("path"):null,r="undefined"!=typeof process?process:null,i=r&&r.argv?Array.from(r.argv):[],v=r&&r.env?r.env:{},m="windsurf-account-manager-managed-switch.json",c=[],s=(()=>{for(let e=0;e<i.length;e++){const t=String(i[e]||"");if("--user-data-dir"===t&&i[e+1])return String(i[e+1]);if(t.startsWith("--user-data-dir="))return t.slice(16)}return""})();v.WINDSURF_ACCOUNT_MANAGER_MANAGED_SWITCH_INTENT_FILE&&c.push(String(v.WINDSURF_ACCOUNT_MANAGER_MANAGED_SWITCH_INTENT_FILE));v.WINDSURF_ACCOUNT_MANAGER_PROFILE_DIR&&o&&c.push(o.join(String(v.WINDSURF_ACCOUNT_MANAGER_PROFILE_DIR),"User","globalStorage",m));s&&o&&c.push(o.join(s,"User","globalStorage",m));if(t&&o&&v.HOME){try{const e=o.join(String(v.HOME),"Library","Application Support","WindsurfProfiles");for(const r of t.readdirSync(e))c.push(o.join(e,r,"User","globalStorage",m))}catch(e){}}if(t){const e=[...new Set(c.filter(Boolean))];for(const o of e)if(t.existsSync(o)){const e=JSON.parse(t.readFileSync(o,"utf8")),i=Date.now(),s=Number(e&&e.expires_at_ms||0);if(e&&"managed_switch"===e.mode&&!0===e.block_browser_login&&s>i){n=e;break}s&&s<=i&&(()=>{try{t.unlinkSync(o)}catch(e){}})()}}}catch(e){console.warn("[__SEAMLESS__][__FUNCTION_MARKER__] Failed to read managed switch intent:",e)}if(n){console.warn("[__SEAMLESS__][__FUNCTION_MARKER__] Blocked refreshAuthenticationSession during managed profile switch:",n.target_email||"unknown");return}}catch(e){console.warn("[__SEAMLESS__][__FUNCTION_MARKER__] Failed to guard refreshAuthenticationSession:",e)}await __FUNCTION__(__EVENT__)}"#
+        .replace(INTENT_PROFILE_SCAN_SNIPPET, "")
         .replace("__EXPORT__", export_name)
         .replace("__FUNCTION__", function_name)
         .replace("__EVENT__", event_expr)
