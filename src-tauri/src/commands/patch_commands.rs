@@ -1172,6 +1172,41 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
       }}
     }})();
     const isBridgeUrl = (url) => String(url || "").startsWith(base);
+    const manualStopControlPattern = /\b(?:stop|abort|interrupt)\b|cancel\s+(?:request|response|generation|message)|terminate\s+(?:conversation|chat|generation)|终止(?:对话|生成|回答|响应)?|停止(?:生成|回答|响应)?|中止(?:对话|生成|回答|响应)?|取消(?:生成|回答|响应|请求)/i;
+    let autoContinueSuppressedUntil = 0;
+    let autoContinueSuppressReason = "";
+    let manualStoppedMarkerSignature = "";
+    const controlText = (target) => String([
+      target?.innerText,
+      target?.textContent,
+      target?.getAttribute?.("aria-label"),
+      target?.getAttribute?.("title"),
+      target?.getAttribute?.("data-testid"),
+      target?.getAttribute?.("class"),
+      target?.querySelector?.("[aria-label]")?.getAttribute("aria-label"),
+      target?.querySelector?.("[class*='codicon']")?.getAttribute("class")
+    ].filter(Boolean).join(" ")).trim();
+    const isManualStopControl = (target) => {{
+      try {{
+        const control = target?.closest?.("button,[role='button'],a,[aria-label],[title],[class*='stop'],[class*='cancel'],[class*='abort']") || target;
+        if (!control || /^(body|html)$/i.test(String(control.tagName || ""))) return false;
+        return manualStopControlPattern.test(controlText(control));
+      }} catch {{
+        return false;
+      }}
+    }};
+    const markerSignatureFromText = (text) => String(text || "").toLowerCase().replace(/\s+/g, " ").slice(0, 500);
+    const isAutoContinueSuppressed = () => Date.now() < autoContinueSuppressedUntil;
+    const suppressAutoContinue = (reason, durationMs = 300000) => {{
+      autoContinueSuppressedUntil = Math.max(autoContinueSuppressedUntil, Date.now() + durationMs);
+      autoContinueSuppressReason = reason || "skipped: user stopped conversation";
+      try {{
+        const candidate = findVisibleMarkerCandidate();
+        if (candidate?.signature) manualStoppedMarkerSignature = candidate.signature;
+      }} catch {{}}
+      try {{ cleanupResidualAutoText(config.continueText || "继续工作"); }} catch {{}}
+      try {{ drainPendingActions(autoContinueSuppressReason); }} catch {{}}
+    }};
     const post = (event) => {{
       try {{
         fetch(base + "/event", {{
@@ -1219,6 +1254,10 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
               target?.getAttribute?.("data-testid"),
               target?.className
             ].filter(Boolean).join(" ")).slice(0, 500);
+            if (isManualStopControl(target)) {{
+              suppressAutoContinue("skipped: user stopped conversation");
+              loginDiagnostic("auto_continue_suppressed", {{ reason: autoContinueSuppressReason, text, tag: target?.tagName, stack: briefStack() }});
+            }}
             if (/log\s*in|login|sign\s*in|signin|auth|browser|windsurf|codeium/i.test(text)) {{
               loginDiagnostic("click", {{ text, tag: target?.tagName, href: target?.getAttribute?.("href") || null, stack: briefStack() }});
             }}
@@ -1305,6 +1344,14 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
       method: method || null,
       error: error ? String(error && error.message ? error.message : error) : null
     }}).catch(() => {{}});
+    const drainPendingActions = async (reason) => {{
+      try {{
+        const result = await requestJson("GET", "/actions");
+        for (const action of result.actions || []) {{
+          await reportResult(action.id, false, reason || "skipped: auto continue suppressed", null);
+        }}
+      }} catch {{}}
+    }};
     const isVisible = (element) => {{
       try {{
         if (!element || !(element instanceof Element)) return false;
@@ -1390,8 +1437,8 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
         }}
       }}
       if (!best) return null;
-      const keyText = best.text.toLowerCase().replace(/\s+/g, " ").slice(0, 500);
-      return {{ element: best.element, text: best.text, key: keyText + ":" + markerElementId(best.element) }};
+      const keyText = markerSignatureFromText(best.text);
+      return {{ element: best.element, text: best.text, signature: keyText, key: keyText + ":" + markerElementId(best.element) }};
     }};
     const candidateEditors = () => {{
       const selector = "textarea,input[type='text'],input:not([type]),[contenteditable='true'],[role='textbox']";
@@ -1484,6 +1531,20 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
       button.querySelector?.("[class*='codicon']")?.getAttribute("class"),
       button.textContent
     ].filter(Boolean).join(" ")).toLowerCase();
+    const hasActiveStopControl = () => {{
+      try {{
+        return Array.from(document.querySelectorAll("button,[role='button'],a,[aria-label],[title],[class*='stop'],[class*='cancel'],[class*='abort']"))
+          .filter(isVisible)
+          .some(isManualStopControl);
+      }} catch {{
+        return false;
+      }}
+    }};
+    const autoContinueBlockReason = () => {{
+      if (isAutoContinueSuppressed()) return autoContinueSuppressReason || "skipped: user stopped conversation";
+      if (hasActiveStopControl()) return "skipped: stop control is visible";
+      return "";
+    }};
     const clickableAncestor = (element) => element?.closest?.("button,[role='button'],a,[tabindex]") || element;
     const findSubmitCandidates = (editor) => {{
       const containers = [];
@@ -1516,6 +1577,7 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
         button !== editor &&
         !editor.contains(button) &&
         !button.contains?.(editor) &&
+        !isManualStopControl(button) &&
         !button.matches?.("textarea,input,[contenteditable='true'],[role='textbox']") &&
         isVisible(button) &&
         !button.disabled &&
@@ -1604,6 +1666,8 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
       }} catch {{}}
     }};
     const sendTextViaDom = async (text) => {{
+      const blockReason = autoContinueBlockReason();
+      if (blockReason) throw new Error(blockReason);
       if (hasQueuedMessages()) throw new Error("Cascade 已有排队消息，暂停自动继续");
       const editors = candidateEditors();
       if (!editors.length) throw new Error("未找到可见的 Cascade 输入框");
@@ -1663,10 +1727,22 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
       if (actionRunning) return;
       actionRunning = true;
       try {{
+        const blockReason = autoContinueBlockReason();
+        if (blockReason) {{
+          cleanupResidualAutoText(config.continueText || "继续工作");
+          await drainPendingActions(blockReason);
+          return;
+        }}
         const markerCandidate = findVisibleMarkerCandidate();
         if (!markerCandidate) {{
           lastHandledMarkerElement = null;
           lastHandledMarkerKey = "";
+          if (!isAutoContinueSuppressed()) manualStoppedMarkerSignature = "";
+          return;
+        }}
+        if (manualStoppedMarkerSignature && markerCandidate.signature === manualStoppedMarkerSignature) {{
+          cleanupResidualAutoText(config.continueText || "继续工作");
+          await drainPendingActions("skipped: user stopped this conversation marker");
           return;
         }}
         if (hasQueuedMessages()) {{
@@ -1713,6 +1789,10 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
     const scanVisibleText = () => {{
       scanTimer = 0;
       try {{
+        if (autoContinueBlockReason()) {{
+          cleanupResidualAutoText(config.continueText || "继续工作");
+          return;
+        }}
         if (hasQueuedMessages()) {{
           cleanupResidualAutoText(config.continueText || "继续工作");
           return;
@@ -1722,8 +1802,10 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
         if (!candidate) {{
           if (!markerMissingSince) markerMissingSince = now;
           if (now - markerMissingSince > 1500) lastMessage = "";
+          if (!isAutoContinueSuppressed()) manualStoppedMarkerSignature = "";
           return;
         }}
+        if (manualStoppedMarkerSignature && candidate.signature === manualStoppedMarkerSignature) return;
         markerMissingSince = 0;
         const text = candidate.text;
         const marker = (config.markers || []).find(item => text.toLowerCase().includes(String(item).toLowerCase()));
