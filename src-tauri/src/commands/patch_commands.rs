@@ -1218,6 +1218,13 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
       body: body ? JSON.stringify(body) : undefined,
       cache: "no-store"
     }}).then(response => response.text()).then(text => text ? JSON.parse(text) : {{}});
+    const isMacClient = () => {{
+      try {{
+        return /mac/i.test(String(navigator.platform || "") + " " + String(navigator.userAgent || ""));
+      }} catch {{
+        return false;
+      }}
+    }};
     const reportResult = (actionId, success, error, method) => requestJson("POST", "/action-result", {{
       actionId,
       success,
@@ -1488,9 +1495,15 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
         const editorText = readEditorText(editor);
         if (hasQueuedMessages()) {{
           if (editorText.includes(text)) clearEditor(editor);
+          return isMacClient() ? "queued" : true;
+        }}
+        if (!editorText.includes(text)) {{
+          if (isMacClient()) {{
+            await sleep(600);
+            if (hasQueuedMessages()) return "queued";
+          }}
           return true;
         }}
-        if (!editorText.includes(text)) return true;
       }}
       return false;
     }};
@@ -1503,6 +1516,19 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
       try {{
         for (const editor of candidateEditors().slice(0, 4)) cleanupResidualText(editor, text);
       }} catch {{}}
+    }};
+    const confirmQueuedSubmission = async (editor, text, timeoutMs = 3200) => {{
+      if (!isMacClient() || !hasQueuedMessages()) return false;
+      cleanupResidualText(editor, text);
+      editor.focus?.();
+      pressEnter(editor);
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {{
+        await sleep(250);
+        if (!hasQueuedMessages()) return true;
+      }}
+      cleanupResidualText(editor, text);
+      return false;
     }};
     const sendTextViaDom = async (text) => {{
       if (hasQueuedMessages()) throw new Error("Cascade 已有排队消息，暂停自动继续");
@@ -1520,15 +1546,23 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
           const button = buttons[0];
           if (button) {{
             clickControl(button);
-            if (await waitForSubmission(editor, text)) {{
+            const submission = await waitForSubmission(editor, text);
+            if (submission === true) {{
               return "dom_button";
+            }}
+            if (submission === "queued" && await confirmQueuedSubmission(editor, text)) {{
+              return "dom_button_enter_queued";
             }}
             cleanupResidualText(editor, text);
             throw new Error("已点击发送按钮但未确认提交，已清理输入框并暂停避免重复排队");
           }}
           pressEnter(editor);
-          if (await waitForSubmission(editor, text)) {{
+          const submission = await waitForSubmission(editor, text);
+          if (submission === true) {{
             return "dom_enter";
+          }}
+          if (submission === "queued" && await confirmQueuedSubmission(editor, text)) {{
+            return "dom_enter_queued";
           }}
           cleanupResidualText(editor, text);
           throw new Error("已填入文本但未确认提交，已清理输入框并暂停避免重复排队");
