@@ -21,7 +21,8 @@ const MANAGED_SWITCH_REFRESH_BLOCK_V3_MARKER: &[u8] = b"WindsurfAccountManagerMa
 const MANAGED_SWITCH_REFRESH_BLOCK_V2_MARKER: &[u8] = b"WindsurfAccountManagerManagedSwitchRefreshBlockV2";
 const MANAGED_SWITCH_REFRESH_BLOCK_V1_MARKER: &[u8] = b"WindsurfAccountManagerManagedSwitchRefreshBlockV1";
 const MANAGED_SWITCH_REFRESH_FUNCTION_MARKER: &str = "WindsurfAccountManagerManagedSwitchRefreshFunctionBlockV1";
-const DIRECT_WRITE_SESSION_REUSE_MARKER: &str = "WindsurfAccountManagerDirectWriteSessionReuseV1";
+const DIRECT_WRITE_SESSION_REUSE_MARKER: &str = "WindsurfAccountManagerDirectWriteSessionReuseV2";
+const DIRECT_WRITE_SESSION_REUSE_V1_MARKER: &[u8] = b"WindsurfAccountManagerDirectWriteSessionReuseV1";
 const AUTO_CONTINUE_WORKBENCH_MARKER: &[u8] = b"WindsurfAccountManagerAutoContinueBridge";
 const AUTO_CONTINUE_LEGACY_SENDER_MARKER: &[u8] = b"WindsurfAccountManagerAutoContinueSenderBridge";
 const AUTO_CONTINUE_EXTENSION_MARKER: &[u8] = b"WindsurfAccountManagerAutoContinueExtensionBridgeV2";
@@ -757,6 +758,7 @@ fn has_any_seamless_patch(content: &[u8]) -> bool {
         || bytes_contains(content, MANAGED_SWITCH_REFRESH_BLOCK_MARKER.as_bytes())
         || bytes_contains(content, MANAGED_SWITCH_REFRESH_FUNCTION_MARKER.as_bytes())
         || bytes_contains(content, DIRECT_WRITE_SESSION_REUSE_MARKER.as_bytes())
+        || bytes_contains(content, DIRECT_WRITE_SESSION_REUSE_V1_MARKER)
         || bytes_contains(content, MANAGED_SWITCH_REFRESH_BLOCK_V5_MARKER)
         || bytes_contains(content, MANAGED_SWITCH_REFRESH_BLOCK_V4_MARKER)
         || bytes_contains(content, MANAGED_SWITCH_REFRESH_BLOCK_V3_MARKER)
@@ -846,6 +848,20 @@ fn apply_direct_write_session_reuse_patch(content: &[u8]) -> Option<Vec<u8>> {
     if bytes_contains(content, DIRECT_WRITE_SESSION_REUSE_MARKER.as_bytes()) {
         return None;
     }
+    let legacy_pattern = Regex::new(
+        r#"async createSession\((\w+),(\w+)\)\{try\{const \w+=await this\.getSecret\(\),\w+=this\.context&&this\.context\.globalState&&this\.context\.globalState\.get\("windsurfAccountManager\.directWriteAuth"\);if\(!0===\w+&&Array\.isArray\(\w+\)&&\w+\.length>0\)\{const \w+=\w+\[0\];this\._cachedSessions=\w+;console\.warn\("\[WindsurfAccountManagerDirectWriteSessionReuseV1\] Reusing direct-write local session instead of opening browser:",\w+&&\w+\.account&&\w+\.account\.label\|\|"unknown"\);return \w+\}\}catch\(\w+\)\{console\.warn\("\[WindsurfAccountManagerDirectWriteSessionReuseV1\] Failed to reuse direct-write local session:",\w+\)\}"#
+    ).ok()?;
+    if let Some(captures) = legacy_pattern.captures(content) {
+        let full_match = captures.get(0)?.as_bytes().to_vec();
+        let arg1 = captures
+            .get(1)
+            .and_then(|m| std::str::from_utf8(m.as_bytes()).ok())?;
+        let arg2 = captures
+            .get(2)
+            .and_then(|m| std::str::from_utf8(m.as_bytes()).ok())?;
+        let prefix = build_create_session_guard_prefix(arg1, arg2);
+        return Some(replace_bytes(content, &full_match, prefix.as_bytes()));
+    }
     let pattern = Regex::new(
         r#"async createSession\((\w+),(\w+)\)\{const \w+=function\(\w+\)\{const \w+=\w+\.join\(";\"\);return\{shouldRegisterNewUser:\w+\.includes\([\w.]+\.SIGNUP\),fromOnboarding:\w+\.includes\([\w.]+\.ONBOARDING\)\}\}\(\w+\);try\{const \w+=await this\.login\(\w+\);return await this\.handleAuthToken\(\w+\)\}catch\(\w+\)\{if\(!0===\w+\.fromOnboarding\|\|\w+ instanceof \w+\)throw \w+;let \w+=`Sign in failed: \$\{\w+\}`;return \w+ instanceof \w+\?\w+="Sign in timed out":\w+ instanceof \w+&&\(\w+="Sign in cancelled"\),await Promise\.race\(\[\(async\(\)=>\{const \w+=await this\.promptProvideAuthToken\(\w+\);if\(\w+\)return \w+;throw \w+\}\)\(\),this\._cancellationPromise\.then\(\(\)=>\{throw new \w+\}\)\]\)\}\}"#
     ).ok()?;
@@ -858,13 +874,7 @@ fn apply_direct_write_session_reuse_patch(content: &[u8]) -> Option<Vec<u8>> {
     let arg2 = captures
         .get(2)
         .and_then(|m| std::str::from_utf8(m.as_bytes()).ok())?;
-    let prefix = format!(
-        r#"async createSession({},{}){{try{{const o=await this.getSecret(),g=this.context&&this.context.globalState&&this.context.globalState.get("windsurfAccountManager.directWriteAuth");if(!0===g&&Array.isArray(o)&&o.length>0){{const r=o[0];this._cachedSessions=o;console.warn("[{}] Reusing direct-write local session instead of opening browser:",r&&r.account&&r.account.label||"unknown");return r}}}}catch(o){{console.warn("[{}] Failed to reuse direct-write local session:",o)}}"#,
-        arg1,
-        arg2,
-        DIRECT_WRITE_SESSION_REUSE_MARKER,
-        DIRECT_WRITE_SESSION_REUSE_MARKER
-    );
+    let prefix = build_create_session_guard_prefix(arg1, arg2);
     let original_body = original.strip_prefix(&format!(
         "async createSession({},{}){{",
         arg1,
@@ -872,6 +882,21 @@ fn apply_direct_write_session_reuse_patch(content: &[u8]) -> Option<Vec<u8>> {
     ))?;
     let replacement = format!("{}{}", prefix, original_body);
     Some(replace_bytes(content, &full_match, replacement.as_bytes()))
+}
+
+fn build_create_session_guard_prefix(arg1: &str, arg2: &str) -> String {
+    format!(
+        r#"async createSession({},{}){{try{{let n=null;try{{const e="undefined"!=typeof require?require:null,t=e?e("fs"):null,o=e?e("path"):null,r="undefined"!=typeof process?process:null,i=r&&r.argv?Array.from(r.argv):[],v=r&&r.env?r.env:{{}},m="windsurf-account-manager-managed-switch.json",c=[],s=(()=>{{for(let e=0;e<i.length;e++){{const t=String(i[e]||"");if("--user-data-dir"===t&&i[e+1])return String(i[e+1]);if(t.startsWith("--user-data-dir="))return t.slice(16)}}return""}})();v.WINDSURF_ACCOUNT_MANAGER_MANAGED_SWITCH_INTENT_FILE&&c.push(String(v.WINDSURF_ACCOUNT_MANAGER_MANAGED_SWITCH_INTENT_FILE));v.WINDSURF_ACCOUNT_MANAGER_PROFILE_DIR&&o&&c.push(o.join(String(v.WINDSURF_ACCOUNT_MANAGER_PROFILE_DIR),"User","globalStorage",m));s&&o&&c.push(o.join(s,"User","globalStorage",m));if(t)for(const o of [...new Set(c.filter(Boolean))])if(t.existsSync(o)){{const e=JSON.parse(t.readFileSync(o,"utf8")),r=Date.now(),i=Number(e&&e.expires_at_ms||0);if(e&&"managed_switch"===e.mode&&!0===e.block_browser_login&&i>r){{n=e;break}}i&&i<=r&&(()=>{{try{{t.unlinkSync(o)}}catch(e){{}}}})()}}}}catch(e){{console.warn("[{}] Failed to read managed switch intent in createSession:",e)}}if(n){{if(n.target_callback_url){{try{{const e=String(n.target_callback_url||""),t=e.indexOf(String.fromCharCode(35)),o=t>=0?new URLSearchParams(e.slice(t+1)).get("access_token"):null;if(!o)throw new Error("No managed switch target token");console.warn("[{}] Using managed switch target callback token in createSession:",n.target_email||"unknown");return await this.handleAuthToken(o)}}catch(e){{console.warn("[{}] Failed to apply managed switch target token in createSession:",e);throw e}}}}console.warn("[{}] Blocked createSession browser login during managed profile switch:",n.target_email||"unknown");return}}}}catch(o){{console.warn("[{}] Failed to guard managed switch in createSession:",o)}}try{{const o=await this.getSecret(),g=this.context&&this.context.globalState&&this.context.globalState.get("windsurfAccountManager.directWriteAuth");if(!0===g&&Array.isArray(o)&&o.length>0){{const r=o[0];this._cachedSessions=o;console.warn("[{}] Reusing direct-write local session instead of opening browser:",r&&r.account&&r.account.label||"unknown");return r}}}}catch(o){{console.warn("[{}] Failed to reuse direct-write local session:",o)}}"#,
+        arg1,
+        arg2,
+        DIRECT_WRITE_SESSION_REUSE_MARKER,
+        DIRECT_WRITE_SESSION_REUSE_MARKER,
+        DIRECT_WRITE_SESSION_REUSE_MARKER,
+        DIRECT_WRITE_SESSION_REUSE_MARKER,
+        DIRECT_WRITE_SESSION_REUSE_MARKER,
+        DIRECT_WRITE_SESSION_REUSE_MARKER,
+        DIRECT_WRITE_SESSION_REUSE_MARKER
+    )
 }
 
 fn upgrade_current_oauth_handler(content: &[u8]) -> Option<Vec<u8>> {

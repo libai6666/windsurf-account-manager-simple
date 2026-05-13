@@ -444,10 +444,15 @@ async fn wait_for_macos_profile_callback_readiness(
 #[cfg(target_os = "macos")]
 async fn trigger_macos_profile_callback_best_effort(
     app: &tauri::AppHandle,
+    store: &Arc<DataStore>,
     profile: &WindsurfProfile,
+    target_id: Uuid,
+    account_id: &str,
     callback_url: &str,
     callback_state: &str,
     target_email: &str,
+    refresh_token: &str,
+    auth: &mut crate::commands::switch_account_commands::SwitchAuthResult,
     initial_delay_ms: u64,
 ) -> Result<Option<WindsurfCurrentInfo>, String> {
     if initial_delay_ms > 0 {
@@ -476,7 +481,43 @@ async fn trigger_macos_profile_callback_best_effort(
     let retry_delay_ms = if initial_delay_ms > 0 { 3000 } else { 1200 };
     tokio::time::sleep(tokio::time::Duration::from_millis(retry_delay_ms)).await;
 
-    trigger_windsurf_callback_url(app, callback_url, callback_state, Some(&profile.user_data_dir))
+    let mut next_callback_url = callback_url.to_string();
+    let mut next_callback_state = callback_state.to_string();
+    match get_auth_token_for_account(store, target_id, target_email, refresh_token).await {
+        Ok(retry_auth) => match build_windsurf_callback_url(&retry_auth.callback_token) {
+            Ok((retry_callback_url, retry_callback_state)) => {
+                write_managed_switch_intent(
+                    profile,
+                    account_id,
+                    target_email,
+                    &retry_callback_url,
+                    &retry_callback_state,
+                )?;
+                next_callback_url = retry_callback_url;
+                next_callback_state = retry_callback_state;
+                *auth = retry_auth;
+                info!(
+                    "[Profile][macOS] Refreshed callback token for retry: profile_id={}, target_email={}",
+                    profile.id,
+                    target_email
+                );
+            }
+            Err(e) => warn!(
+                "[Profile][macOS] Failed to build refreshed retry callback URL, reusing previous callback: profile_id={}, target_email={}, error={}",
+                profile.id,
+                target_email,
+                e
+            ),
+        },
+        Err(e) => warn!(
+            "[Profile][macOS] Failed to refresh callback token for retry, reusing previous callback: profile_id={}, target_email={}, error={}",
+            profile.id,
+            target_email,
+            e
+        ),
+    }
+
+    trigger_windsurf_callback_url(app, &next_callback_url, &next_callback_state, Some(&profile.user_data_dir))
         .await
         .map_err(|e| format!("重试触发分身回调失败: {}", e))?;
 
@@ -852,7 +893,7 @@ async fn switch_profile_to_account(
         .ok_or_else(|| "账号没有refresh_token，请先登录".to_string())?;
 
     info!("Switching profile '{}' to account {}", profile.name, account.email);
-    let auth = match get_auth_token_for_account(store, target_id, &account.email, &refresh_token).await {
+    let auth_result = match get_auth_token_for_account(store, target_id, &account.email, &refresh_token).await {
         Ok(auth) => auth,
         Err(e) => {
             error!("Failed to get auth token for profile switch: {}", e);
@@ -862,6 +903,8 @@ async fn switch_profile_to_account(
             }));
         }
     };
+    #[allow(unused_mut)]
+    let mut auth = auth_result;
 
     let settings = store.get_settings().await.map_err(|e| e.to_string())?;
     let machine_id_reset = if settings.reset_machine_id_on_switch {
@@ -980,10 +1023,15 @@ async fn switch_profile_to_account(
 
             match trigger_macos_profile_callback_best_effort(
                 app,
+                store,
                 profile,
+                target_id,
+                account_id,
                 &target_callback_url,
                 &target_callback_state,
                 &account.email,
+                &refresh_token,
+                &mut auth,
                 initial_delay_ms,
             ).await {
                 Ok(_) => {}
