@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 pub const AUTO_CONTINUE_BRIDGE_PORT: u16 = 38478;
 const AUTO_CONTINUE_BRIDGE_PREFIX: &str = "/wam-auto-continue";
 const MAX_RECENT_EVENTS: usize = 50;
-const AUTO_CONTINUE_ACTION_COOLDOWN_MS: u64 = 0;
+const AUTO_CONTINUE_ACTION_COOLDOWN_MS: u64 = 5_000;
 
 static AUTO_CONTINUE_BRIDGE_STATE: OnceLock<Arc<AutoContinueBridgeState>> = OnceLock::new();
 
@@ -30,7 +30,7 @@ impl Default for AutoContinueBridgeConfig {
         Self {
             enabled: false,
             continue_text: "继续工作".to_string(),
-            debounce_ms: 10_000,
+            debounce_ms: 5_000,
             markers: vec![
                 "third-party model provider is experiencing issues".to_string(),
                 "included daily usage quota is exhausted".to_string(),
@@ -39,6 +39,7 @@ impl Default for AutoContinueBridgeConfig {
                 "usage quota is exhausted".to_string(),
                 "quota is exhausted".to_string(),
                 "global rate limit".to_string(),
+                "rate limit exceeded".to_string(),
                 "rate limit for trial users".to_string(),
                 "purchase extra usage".to_string(),
                 "premium models".to_string(),

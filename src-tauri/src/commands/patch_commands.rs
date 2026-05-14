@@ -1143,6 +1143,7 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
         "usage quota is exhausted",
         "quota is exhausted",
         "global rate limit",
+        "rate limit exceeded",
         "rate limit for trial users",
         "purchase extra usage",
         "premium models"
@@ -1171,6 +1172,7 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
         return false;
       }}
     }})();
+    const autoContinueRetryDelayMs = 5000;
     const isBridgeUrl = (url) => String(url || "").startsWith(base);
     const manualStopControlPattern = /\b(?:stop|abort|interrupt)\b|cancel\s+(?:request|response|generation|message)|terminate\s+(?:conversation|chat|generation)|终止(?:对话|生成|回答|响应)?|停止(?:生成|回答|响应)?|中止(?:对话|生成|回答|响应)?|取消(?:生成|回答|响应|请求)/i;
     let autoContinueSuppressedUntil = 0;
@@ -1630,8 +1632,7 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
         await sleep(250);
         const editorText = readEditorText(editor);
         if (hasQueuedMessages()) {{
-          if (!isMacClient && editorText.includes(text)) clearEditor(editor);
-          return isMacClient ? "queued" : "submitted";
+          return "queued";
         }}
         if (!editorText.includes(text)) return "submitted";
       }}
@@ -1645,8 +1646,7 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
       }}
       return false;
     }};
-    const confirmQueuedMessageOnMac = async (editor) => {{
-      if (!isMacClient) return false;
+    const confirmQueuedMessage = async (editor) => {{
       if (!hasQueuedMessages()) return true;
       const confirmEditor = candidateEditors()[0] || editor;
       confirmEditor?.scrollIntoView?.({{ block: "center", inline: "nearest" }});
@@ -1685,12 +1685,12 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
             clickControl(button);
             const buttonSubmission = await waitForSubmission(editor, text);
             if (buttonSubmission === "queued") {{
-              if (await confirmQueuedMessageOnMac(editor)) {{
+              if (await confirmQueuedMessage(editor)) {{
                 cleanupResidualText(editor, text);
                 return "dom_button_enter_queued";
               }}
               cleanupResidualText(editor, text);
-              throw new Error("Mac queued message confirmation did not clear queued state");
+              throw new Error("Queued message confirmation did not clear queued state");
             }}
             if (buttonSubmission) {{
               return "dom_button";
@@ -1701,12 +1701,12 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
           pressEnter(editor);
           const enterSubmission = await waitForSubmission(editor, text);
           if (enterSubmission === "queued") {{
-            if (await confirmQueuedMessageOnMac(editor)) {{
+            if (await confirmQueuedMessage(editor)) {{
               cleanupResidualText(editor, text);
               return "dom_enter_queued";
             }}
             cleanupResidualText(editor, text);
-            throw new Error("Mac queued message confirmation did not clear queued state");
+            throw new Error("Queued message confirmation did not clear queued state");
           }}
           if (enterSubmission) {{
             return "dom_enter";
@@ -1784,8 +1784,31 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
     setInterval(pollActions, 1500);
     setTimeout(pollActions, 1200);
     let lastMessage = "";
+    let pendingMessageKey = "";
+    let pendingMessageTimer = 0;
     let markerMissingSince = 0;
     let scanTimer = 0;
+    const reportPendingMarker = (messageKey, message) => {{
+      pendingMessageTimer = 0;
+      try {{
+        const blockReason = autoContinueBlockReason();
+        if (blockReason || hasQueuedMessages()) {{
+          cleanupResidualAutoText(config.continueText || "继续工作");
+          if (pendingMessageKey === messageKey) pendingMessageKey = "";
+          return;
+        }}
+        const candidate = findVisibleMarkerCandidate();
+        if (!candidate || (candidate.key || candidate.text) !== messageKey) {{
+          if (pendingMessageKey === messageKey) pendingMessageKey = "";
+          return;
+        }}
+        lastMessage = messageKey;
+        pendingMessageKey = "";
+        report("dom_text", message, "workbench-dom", String(location.href), {{ markerKey: messageKey }});
+      }} catch {{
+        if (pendingMessageKey === messageKey) pendingMessageKey = "";
+      }}
+    }};
     const scanVisibleText = () => {{
       scanTimer = 0;
       try {{
@@ -1801,7 +1824,10 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
         const candidate = findVisibleMarkerCandidate();
         if (!candidate) {{
           if (!markerMissingSince) markerMissingSince = now;
-          if (now - markerMissingSince > 1500) lastMessage = "";
+          if (now - markerMissingSince > 1500) {{
+            lastMessage = "";
+            pendingMessageKey = "";
+          }}
           if (!isAutoContinueSuppressed()) manualStoppedMarkerSignature = "";
           return;
         }}
@@ -1813,9 +1839,10 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
         const start = Math.max(0, index - 240);
         const message = text.slice(start, Math.min(text.length, index + 1200));
         const messageKey = candidate.key || message;
-        if (messageKey === lastMessage) return;
-        lastMessage = messageKey;
-        report("dom_text", message, "workbench-dom", String(location.href), {{ markerKey: messageKey }});
+        if (messageKey === lastMessage || messageKey === pendingMessageKey) return;
+        pendingMessageKey = messageKey;
+        if (pendingMessageTimer) clearTimeout(pendingMessageTimer);
+        pendingMessageTimer = setTimeout(() => reportPendingMarker(messageKey, message), autoContinueRetryDelayMs);
       }} catch {{}}
     }};
     const scheduleScan = () => {{
