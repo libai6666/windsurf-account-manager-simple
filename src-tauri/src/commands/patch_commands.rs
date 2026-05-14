@@ -1533,11 +1533,46 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
       button.querySelector?.("[class*='codicon']")?.getAttribute("class"),
       button.textContent
     ].filter(Boolean).join(" ")).toLowerCase();
+    const stopControlScopes = () => {{
+      try {{
+        const scopes = new Set();
+        for (const editor of candidateEditors().slice(0, 2)) {{
+          let node = editor;
+          for (let i = 0; node && i < 10; i += 1) {{
+            scopes.add(node);
+            node = node.parentElement;
+          }}
+        }}
+        try {{
+          document.querySelectorAll("[class*='cascade'],[class*='chat-panel'],[class*='ChatPanel'],[class*='conversation'],[data-testid*='cascade'],[data-testid*='chat']")
+            .forEach(node => scopes.add(node));
+        }} catch {{}}
+        return Array.from(scopes).filter(Boolean);
+      }} catch {{
+        return [];
+      }}
+    }};
     const hasActiveStopControl = () => {{
       try {{
-        return Array.from(document.querySelectorAll("button,[role='button'],a,[aria-label],[title],[class*='stop'],[class*='cancel'],[class*='abort']"))
-          .filter(isVisible)
-          .some(isManualStopControl);
+        const scopes = stopControlScopes();
+        if (!scopes.length) return false;
+        const selector = "button,[role='button'],a,[class*='stop'],[class*='cancel'],[class*='abort']";
+        const seen = new Set();
+        for (const scope of scopes) {{
+          let candidates;
+          try {{ candidates = scope.querySelectorAll?.(selector); }} catch {{ candidates = null; }}
+          if (!candidates) continue;
+          for (const candidate of candidates) {{
+            if (seen.has(candidate)) continue;
+            seen.add(candidate);
+            if (!isVisible(candidate)) continue;
+            if (!isManualStopControl(candidate)) continue;
+            const rect = candidate.getBoundingClientRect?.();
+            if (!rect || rect.width < 10 || rect.height < 10) continue;
+            return true;
+          }}
+        }}
+        return false;
       }} catch {{
         return false;
       }}
@@ -1723,6 +1758,20 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
     let actionRunning = false;
     let lastHandledMarkerElement = null;
     let lastHandledMarkerKey = "";
+    let lastMessage = "";
+    let pendingMessageKey = "";
+    let pendingMessageTimer = 0;
+    const resetMarkerReportState = () => {{
+      try {{
+        lastMessage = "";
+        pendingMessageKey = "";
+        if (pendingMessageTimer) {{
+          clearTimeout(pendingMessageTimer);
+          pendingMessageTimer = 0;
+        }}
+        markerMissingSince = 0;
+      }} catch {{}}
+    }};
     const pollActions = async () => {{
       if (actionRunning) return;
       actionRunning = true;
@@ -1730,7 +1779,9 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
         const blockReason = autoContinueBlockReason();
         if (blockReason) {{
           cleanupResidualAutoText(config.continueText || "继续工作");
-          await drainPendingActions(blockReason);
+          if (isAutoContinueSuppressed()) {{
+            await drainPendingActions(blockReason);
+          }}
           return;
         }}
         const markerCandidate = findVisibleMarkerCandidate();
@@ -1773,6 +1824,10 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
             console.info("[WindsurfAccountManagerAutoContinueBridge] action sent via " + method);
             await reportResult(action.id, true, null, method);
           }} catch (error) {{
+            lastHandledMarkerElement = null;
+            lastHandledMarkerKey = "";
+            resetMarkerReportState();
+            setTimeout(scheduleScan, autoContinueRetryDelayMs);
             await reportResult(action.id, false, error, null);
           }}
         }}
@@ -1783,30 +1838,30 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
     }};
     setInterval(pollActions, 1500);
     setTimeout(pollActions, 1200);
-    let lastMessage = "";
-    let pendingMessageKey = "";
-    let pendingMessageTimer = 0;
     let markerMissingSince = 0;
     let scanTimer = 0;
     const reportPendingMarker = (messageKey, message) => {{
       pendingMessageTimer = 0;
       try {{
+        if (pendingMessageKey !== messageKey) return;
         const blockReason = autoContinueBlockReason();
         if (blockReason || hasQueuedMessages()) {{
           cleanupResidualAutoText(config.continueText || "继续工作");
-          if (pendingMessageKey === messageKey) pendingMessageKey = "";
+          pendingMessageTimer = setTimeout(() => reportPendingMarker(messageKey, message), autoContinueRetryDelayMs);
           return;
         }}
         const candidate = findVisibleMarkerCandidate();
         if (!candidate || (candidate.key || candidate.text) !== messageKey) {{
-          if (pendingMessageKey === messageKey) pendingMessageKey = "";
+          pendingMessageKey = "";
           return;
         }}
         lastMessage = messageKey;
         pendingMessageKey = "";
         report("dom_text", message, "workbench-dom", String(location.href), {{ markerKey: messageKey }});
       }} catch {{
-        if (pendingMessageKey === messageKey) pendingMessageKey = "";
+        if (pendingMessageKey === messageKey) {{
+          pendingMessageTimer = setTimeout(() => reportPendingMarker(messageKey, message), autoContinueRetryDelayMs);
+        }}
       }}
     }};
     const scanVisibleText = () => {{
