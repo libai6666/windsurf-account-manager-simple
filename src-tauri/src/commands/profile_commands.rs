@@ -801,68 +801,84 @@ async fn choose_best_candidate(
     candidates: &[Account],
     threshold: i32,
 ) -> Option<(Uuid, String, i32, i32, bool)> {
-    let mut best_candidate: Option<(Uuid, String, i32, i32, bool)> = None;
-
-    for acc in candidates {
-        consider_candidate(
-            acc,
-            acc.daily_quota_remaining.unwrap_or(0),
-            acc.weekly_quota_remaining.unwrap_or(0),
-            threshold,
-            &mut best_candidate,
-        );
-    }
-
-    if best_candidate.is_some() {
-        return best_candidate;
-    }
-
+    // 换号决策前，强制把分组内候选号的额度刷新到 3 分钟之内，
+    // 避免使用过期缓存切到一个实际已经耗光额度的号。
+    // 30 秒一次的轮询自然落到 3 分钟 TTL 内，不会真正每次都打 API。
     let cache_ttl = chrono::Duration::minutes(3);
     let now = Utc::now();
     let windsurf_service = crate::services::windsurf_service::WindsurfService::new();
+    let mut best_candidate: Option<(Uuid, String, i32, i32, bool)> = None;
+    let mut refreshed = 0usize;
+    let mut skipped = 0usize;
 
     for acc in candidates {
-        if let Some(last_update) = acc.last_quota_update {
-            if now - last_update < cache_ttl {
-                continue;
+        if is_free_plan(acc) {
+            continue;
+        }
+
+        let stale = acc
+            .last_quota_update
+            .map_or(true, |last| now - last >= cache_ttl);
+
+        let (daily, weekly) = if stale {
+            match acc.token.as_ref() {
+                Some(token) => match windsurf_service.get_plan_status(token).await {
+                    Ok(result) => match result.get("plan_status") {
+                        Some(plan_status) => {
+                            let daily = plan_status
+                                .get("daily_quota_remaining")
+                                .and_then(|v| v.as_i64())
+                                .unwrap_or(0) as i32;
+                            let weekly = plan_status
+                                .get("weekly_quota_remaining")
+                                .and_then(|v| v.as_i64())
+                                .unwrap_or(0) as i32;
+
+                            let mut updated = acc.clone();
+                            updated.daily_quota_remaining = Some(daily);
+                            updated.weekly_quota_remaining = Some(weekly);
+                            if let Some(v) = plan_status.get("daily_quota_reset").and_then(|v| v.as_i64()) {
+                                updated.daily_quota_reset = Some(v);
+                            }
+                            if let Some(v) = plan_status.get("weekly_quota_reset").and_then(|v| v.as_i64()) {
+                                updated.weekly_quota_reset = Some(v);
+                            }
+                            updated.last_quota_update = Some(now);
+                            let _ = store.update_account(updated).await;
+                            refreshed += 1;
+                            println!("[分身自动换号] 刷新账号 {}: 日{}%, 周{}%", acc.email, daily, weekly);
+                            (daily, weekly)
+                        }
+                        None => (
+                            acc.daily_quota_remaining.unwrap_or(0),
+                            acc.weekly_quota_remaining.unwrap_or(0),
+                        ),
+                    },
+                    Err(_) => (
+                        acc.daily_quota_remaining.unwrap_or(0),
+                        acc.weekly_quota_remaining.unwrap_or(0),
+                    ),
+                },
+                None => (
+                    acc.daily_quota_remaining.unwrap_or(0),
+                    acc.weekly_quota_remaining.unwrap_or(0),
+                ),
             }
-        }
-
-        let Some(token) = acc.token.as_ref() else {
-            continue;
+        } else {
+            skipped += 1;
+            (
+                acc.daily_quota_remaining.unwrap_or(0),
+                acc.weekly_quota_remaining.unwrap_or(0),
+            )
         };
-
-        let Ok(result) = windsurf_service.get_plan_status(token).await else {
-            continue;
-        };
-
-        let Some(plan_status) = result.get("plan_status") else {
-            continue;
-        };
-
-        let daily = plan_status
-            .get("daily_quota_remaining")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0) as i32;
-        let weekly = plan_status
-            .get("weekly_quota_remaining")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0) as i32;
-
-        let mut updated = acc.clone();
-        updated.daily_quota_remaining = Some(daily);
-        updated.weekly_quota_remaining = Some(weekly);
-        if let Some(v) = plan_status.get("daily_quota_reset").and_then(|v| v.as_i64()) {
-            updated.daily_quota_reset = Some(v);
-        }
-        if let Some(v) = plan_status.get("weekly_quota_reset").and_then(|v| v.as_i64()) {
-            updated.weekly_quota_reset = Some(v);
-        }
-        updated.last_quota_update = Some(now);
-        let _ = store.update_account(updated).await;
 
         consider_candidate(acc, daily, weekly, threshold, &mut best_candidate);
     }
+
+    println!(
+        "[分身自动换号] 候选刷新完成: 实际刷新 {} 个, 跳过(3 分钟内已刷) {} 个",
+        refreshed, skipped
+    );
 
     best_candidate
 }

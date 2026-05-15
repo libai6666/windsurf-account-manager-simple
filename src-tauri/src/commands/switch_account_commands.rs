@@ -1705,13 +1705,51 @@ pub async fn check_auto_switch(
                 }
             };
             
+            // 换号决策前，强制把分组内候选号的额度刷新到 3 分钟之内，
+            // 避免使用过期缓存切到一个实际已经耗光额度的号。
+            let cache_ttl = chrono::Duration::minutes(3);
+            let now = chrono::Utc::now();
             let mut best_candidate: Option<(Uuid, String, i32, i32, bool)> = None;
+            let mut refreshed_count = 0usize;
+            let mut skipped_count = 0usize;
+            println!("[自动换号] 切号前刷新分组 '{}' 内候选账号配额(无已识别账号分支)...", group);
             for acc in &group_candidates {
                 if is_free_plan(acc) {
                     continue;
                 }
-                let daily = acc.daily_quota_remaining.unwrap_or(0);
-                let weekly = acc.weekly_quota_remaining.unwrap_or(0);
+                let stale = acc.last_quota_update.map_or(true, |last| now - last >= cache_ttl);
+                let (daily, weekly) = if stale {
+                    match acc.token.as_ref() {
+                        Some(token) => match windsurf_service.get_plan_status(token).await {
+                            Ok(result) => match result.get("plan_status") {
+                                Some(plan_status) => {
+                                    let daily = plan_status.get("daily_quota_remaining").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+                                    let weekly = plan_status.get("weekly_quota_remaining").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+                                    let mut updated = (*acc).clone();
+                                    updated.daily_quota_remaining = Some(daily);
+                                    updated.weekly_quota_remaining = Some(weekly);
+                                    if let Some(v) = plan_status.get("daily_quota_reset").and_then(|v| v.as_i64()) {
+                                        updated.daily_quota_reset = Some(v);
+                                    }
+                                    if let Some(v) = plan_status.get("weekly_quota_reset").and_then(|v| v.as_i64()) {
+                                        updated.weekly_quota_reset = Some(v);
+                                    }
+                                    updated.last_quota_update = Some(now);
+                                    let _ = data_store.update_account(updated).await;
+                                    refreshed_count += 1;
+                                    println!("[自动换号] 刷新账号 {}: 日{}%, 周{}%", acc.email, daily, weekly);
+                                    (daily, weekly)
+                                }
+                                None => (acc.daily_quota_remaining.unwrap_or(0), acc.weekly_quota_remaining.unwrap_or(0)),
+                            },
+                            Err(_) => (acc.daily_quota_remaining.unwrap_or(0), acc.weekly_quota_remaining.unwrap_or(0)),
+                        },
+                        None => (acc.daily_quota_remaining.unwrap_or(0), acc.weekly_quota_remaining.unwrap_or(0)),
+                    }
+                } else {
+                    skipped_count += 1;
+                    (acc.daily_quota_remaining.unwrap_or(0), acc.weekly_quota_remaining.unwrap_or(0))
+                };
                 let acc_is_free = is_free_plan(acc);
                 if daily > threshold && weekly > 0 {
                     if is_better_candidate(daily, weekly, acc_is_free, &best_candidate) {
@@ -1719,39 +1757,7 @@ pub async fn check_auto_switch(
                     }
                 }
             }
-            
-            // 没有缓存合适的，刷新后再找
-            if best_candidate.is_none() {
-                let cache_ttl = chrono::Duration::minutes(3);
-                let now = chrono::Utc::now();
-                for acc in &group_candidates {
-                    if is_free_plan(acc) {
-                        continue;
-                    }
-                    if let Some(last_update) = acc.last_quota_update {
-                        if now - last_update < cache_ttl { continue; }
-                    }
-                    if let Some(ref token) = acc.token {
-                        if let Ok(result) = windsurf_service.get_plan_status(token).await {
-                            if let Some(plan_status) = result.get("plan_status") {
-                                let daily = plan_status.get("daily_quota_remaining").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-                                let weekly = plan_status.get("weekly_quota_remaining").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-                                let mut updated = (*acc).clone();
-                                updated.daily_quota_remaining = Some(daily);
-                                updated.weekly_quota_remaining = Some(weekly);
-                                updated.last_quota_update = Some(now);
-                                let _ = data_store.update_account(updated).await;
-                                let acc_is_free = is_free_plan(acc);
-                                if daily > threshold && weekly > 0 {
-                                    if is_better_candidate(daily, weekly, acc_is_free, &best_candidate) {
-                                        best_candidate = Some((acc.id, acc.email.clone(), daily, weekly, acc_is_free));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            println!("[自动换号] 候选刷新完成: 实际刷新 {} 个, 跳过(3 分钟内已刷) {} 个", refreshed_count, skipped_count);
             
             let (target_id, target_email, target_daily, target_weekly, _) = match best_candidate {
                 Some(c) => c,
@@ -1931,91 +1937,63 @@ pub async fn check_auto_switch(
         }
     };
     
-    // 查找配额最高的账号（候选条件：周配额>0 且 日配额>阈值，Free账号优先级最低）
-    // best_candidate: (id, email, daily, weekly, is_free)
+    // 换号决策前，强制把分组内候选号的额度刷新到 3 分钟之内，
+    // 避免使用过期缓存切到一个实际已经耗光额度的号。
+    // 30 秒一次的轮询自然落到 3 分钟 TTL 内，不会真正每次都打 API。
+    // 候选条件：周配额 > 0 且 日配额 > 阈值，Free 账号优先级最低（在 is_free_plan 处直接跳过）。
+    let cache_ttl = chrono::Duration::minutes(3);
+    let now = chrono::Utc::now();
     let mut best_candidate: Option<(Uuid, String, i32, i32, bool)> = None;
-    
+    let mut refreshed_count = 0usize;
+    let mut skipped_count = 0usize;
+    println!("[自动换号] 切号前刷新分组 '{}' 内候选账号配额...", group);
     for acc in &group_accounts {
         if is_free_plan(acc) {
             continue;
         }
-        let daily = acc.daily_quota_remaining.unwrap_or(0);
-        let weekly = acc.weekly_quota_remaining.unwrap_or(0);
+        let stale = acc.last_quota_update.map_or(true, |last| now - last >= cache_ttl);
+        let (daily, weekly) = if stale {
+            match acc.token.as_ref() {
+                Some(token) => match windsurf_service.get_plan_status(token).await {
+                    Ok(result) => match result.get("plan_status") {
+                        Some(plan_status) => {
+                            let daily = plan_status.get("daily_quota_remaining")
+                                .and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+                            let weekly = plan_status.get("weekly_quota_remaining")
+                                .and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+                            let mut updated = (*acc).clone();
+                            updated.daily_quota_remaining = Some(daily);
+                            updated.weekly_quota_remaining = Some(weekly);
+                            if let Some(v) = plan_status.get("daily_quota_reset").and_then(|v| v.as_i64()) {
+                                updated.daily_quota_reset = Some(v);
+                            }
+                            if let Some(v) = plan_status.get("weekly_quota_reset").and_then(|v| v.as_i64()) {
+                                updated.weekly_quota_reset = Some(v);
+                            }
+                            updated.last_quota_update = Some(now);
+                            let _ = data_store.update_account(updated).await;
+                            refreshed_count += 1;
+                            println!("[自动换号] 刷新账号 {}: 日{}%, 周{}%", acc.email, daily, weekly);
+                            (daily, weekly)
+                        }
+                        None => (acc.daily_quota_remaining.unwrap_or(0), acc.weekly_quota_remaining.unwrap_or(0)),
+                    },
+                    Err(_) => (acc.daily_quota_remaining.unwrap_or(0), acc.weekly_quota_remaining.unwrap_or(0)),
+                },
+                None => (acc.daily_quota_remaining.unwrap_or(0), acc.weekly_quota_remaining.unwrap_or(0)),
+            }
+        } else {
+            skipped_count += 1;
+            (acc.daily_quota_remaining.unwrap_or(0), acc.weekly_quota_remaining.unwrap_or(0))
+        };
         let acc_is_free = is_free_plan(acc);
-        // 候选号必须同时满足：周配额>0 且 日配额>阈值
         if daily > threshold && weekly > 0 {
             if is_better_candidate(daily, weekly, acc_is_free, &best_candidate) {
                 best_candidate = Some((acc.id, acc.email.clone(), daily, weekly, acc_is_free));
             }
         }
     }
-    
-    // 如果没有找到已缓存的合适账号，逐个刷新分组账号配额再验证
-    // 优化：跳过3分钟内已刷新过的账号，避免频繁API调用
-    if best_candidate.is_none() {
-        let cache_ttl = chrono::Duration::minutes(3);
-        let now = chrono::Utc::now();
-        let mut refreshed_count = 0;
-        let mut skipped_count = 0;
-        
-        println!("[自动换号] 缓存数据中未找到合适账号，逐个刷新分组账号配额...");
-        for acc in &group_accounts {
-            if is_free_plan(acc) {
-                continue;
-            }
-            // 如果账号在3分钟内已刷新过，使用缓存数据
-            if let Some(last_update) = acc.last_quota_update {
-                if now - last_update < cache_ttl {
-                    skipped_count += 1;
-                    let daily = acc.daily_quota_remaining.unwrap_or(0);
-                    let weekly = acc.weekly_quota_remaining.unwrap_or(0);
-                    let acc_is_free = is_free_plan(acc);
-                    if daily > threshold && weekly > 0 {
-                        if is_better_candidate(daily, weekly, acc_is_free, &best_candidate) {
-                            best_candidate = Some((acc.id, acc.email.clone(), daily, weekly, acc_is_free));
-                        }
-                    }
-                    continue;
-                }
-            }
-            
-            if let Some(ref token) = acc.token {
-                if let Ok(result) = windsurf_service.get_plan_status(token).await {
-                    if let Some(plan_status) = result.get("plan_status") {
-                        let daily = plan_status.get("daily_quota_remaining")
-                            .and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-                        let weekly = plan_status.get("weekly_quota_remaining")
-                            .and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-                        
-                        // 更新数据库
-                        let mut updated = (*acc).clone();
-                        updated.daily_quota_remaining = Some(daily);
-                        updated.weekly_quota_remaining = Some(weekly);
-                        if let Some(v) = plan_status.get("daily_quota_reset").and_then(|v| v.as_i64()) {
-                            updated.daily_quota_reset = Some(v);
-                        }
-                        if let Some(v) = plan_status.get("weekly_quota_reset").and_then(|v| v.as_i64()) {
-                            updated.weekly_quota_reset = Some(v);
-                        }
-                        updated.last_quota_update = Some(now);
-                        let _ = data_store.update_account(updated).await;
-                        refreshed_count += 1;
-                        
-                        let acc_is_free = is_free_plan(acc);
-                        println!("[自动换号] 刷新账号 {}: 日{}%, 周{}%{}", acc.email, daily, weekly, if acc_is_free { " (Free)" } else { "" });
-                        
-                        // 候选号必须同时满足：周配额>0 且 日配额>阈值
-                        if daily > threshold && weekly > 0 {
-                            if is_better_candidate(daily, weekly, acc_is_free, &best_candidate) {
-                                best_candidate = Some((acc.id, acc.email.clone(), daily, weekly, acc_is_free));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        println!("[自动换号] 刷新完成: 实际刷新 {} 个, 跳过(缓存有效) {} 个", refreshed_count, skipped_count);
-    }
+    println!("[自动换号] 候选刷新完成: 实际刷新 {} 个, 跳过(3 分钟内已刷) {} 个", refreshed_count, skipped_count);
     
     let (target_id, target_email, target_daily, target_weekly, _is_free) = match best_candidate {
         Some(c) => c,
