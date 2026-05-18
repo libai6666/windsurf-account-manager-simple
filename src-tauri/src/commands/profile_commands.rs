@@ -16,9 +16,11 @@ use chrono::Utc;
 use log::{error, info, warn};
 use serde::Serialize;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 use tauri::State;
 use uuid::Uuid;
 
@@ -58,22 +60,35 @@ struct ManagedProfileSwitchIntent {
     expires_at_ms: i64,
 }
 
-static PROFILE_SWITCHING_IDS: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+const PROFILE_SWITCH_GUARD_MAX_AGE: Duration = Duration::from_secs(30);
+
+static PROFILE_SWITCHING_IDS: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
 
 struct ProfileSwitchGuard {
     profile_id: String,
+    acquired_at: Instant,
 }
 
 fn try_acquire_profile_switch_guard(profile_id: &str) -> Result<ProfileSwitchGuard, String> {
-    let switching_ids = PROFILE_SWITCHING_IDS.get_or_init(|| Mutex::new(std::collections::HashSet::new()));
+    let switching_ids = PROFILE_SWITCHING_IDS.get_or_init(|| Mutex::new(HashMap::new()));
     let mut guard = switching_ids
         .lock()
         .map_err(|_| "分身切号状态锁异常，请稍后再试".to_string())?;
-    if !guard.insert(profile_id.to_string()) {
-        return Err("该分身正在切号中，请等待当前切号完成后再试".to_string());
+    let now = Instant::now();
+    if let Some(acquired_at) = guard.get(profile_id) {
+        if now.duration_since(*acquired_at) <= PROFILE_SWITCH_GUARD_MAX_AGE {
+            return Err("该分身正在切号中，请等待当前切号完成后再试".to_string());
+        }
+        warn!(
+            "[Profile] stale profile switch guard reclaimed: profile_id={}, held_for_ms={}",
+            profile_id,
+            now.duration_since(*acquired_at).as_millis()
+        );
     }
+    guard.insert(profile_id.to_string(), now);
     Ok(ProfileSwitchGuard {
         profile_id: profile_id.to_string(),
+        acquired_at: now,
     })
 }
 
@@ -81,7 +96,13 @@ impl Drop for ProfileSwitchGuard {
     fn drop(&mut self) {
         if let Some(switching_ids) = PROFILE_SWITCHING_IDS.get() {
             if let Ok(mut guard) = switching_ids.lock() {
-                guard.remove(&self.profile_id);
+                if guard
+                    .get(&self.profile_id)
+                    .map(|acquired_at| *acquired_at == self.acquired_at)
+                    .unwrap_or(false)
+                {
+                    guard.remove(&self.profile_id);
+                }
             }
         }
     }

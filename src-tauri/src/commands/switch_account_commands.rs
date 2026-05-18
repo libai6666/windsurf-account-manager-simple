@@ -1,4 +1,4 @@
-use crate::repository::DataStore;
+﻿use crate::repository::DataStore;
 use crate::utils::errors::{AppError, AppResult};
 use chrono::Utc;
 use log::{error, info, warn};
@@ -871,18 +871,58 @@ pub(crate) async fn trigger_windsurf_callback_url(
     #[cfg(target_os = "macos")]
     {
         if let Some(exe_path) = find_windsurf_exe() {
-            let mut cmd = std::process::Command::new(&exe_path);
+            let target = user_data_dir.map(|p| p.display().to_string()).unwrap_or_else(|| "main".to_string());
+            let mut cmd = tokio::process::Command::new(&exe_path);
             if let Some(dir) = user_data_dir {
                 cmd.arg("--user-data-dir").arg(dir);
             }
             cmd.arg("--open-url").arg(callback_url);
+            cmd.kill_on_drop(true);
+            cmd.stdout(std::process::Stdio::piped());
+            cmd.stderr(std::process::Stdio::piped());
             info!(
                 "[Profile][macOS] Dispatching callback via Windsurf app binary: target={}, exe={}, arch={}",
-                user_data_dir.map(|p| p.display().to_string()).unwrap_or_else(|| "main".to_string()),
+                target,
                 exe_path,
                 std::env::consts::ARCH
             );
-            match cmd.output() {
+            let output = match cmd.spawn() {
+                Ok(child) => match tokio::time::timeout(std::time::Duration::from_secs(8), child.wait_with_output()).await {
+                    Ok(result) => result,
+                    Err(_) => {
+                        warn!(
+                            "[Profile][macOS] Windsurf --open-url timed out after 8s: target={}, exe={}",
+                            target,
+                            exe_path
+                        );
+                        if user_data_dir.is_some() {
+                            return Err(AppError::FileOperation(
+                                "Windsurf CLI timed out after 8s for macOS profile callback".to_string()
+                            ));
+                        }
+                        use tauri_plugin_opener::OpenerExt;
+                        app.opener()
+                            .open_url(callback_url.to_string(), None::<&str>)
+                            .map_err(|e| AppError::FileOperation(format!("Failed to open URL: {}", e)))?;
+                        return Ok(());
+                    }
+                },
+                Err(e) => {
+                    if user_data_dir.is_some() {
+                        return Err(AppError::FileOperation(format!(
+                            "Windsurf CLI failed for macOS profile callback: {}",
+                            e
+                        )));
+                    }
+                    warn!("[Profile][macOS] Windsurf CLI failed ({}), falling back to opener for main instance", e);
+                    use tauri_plugin_opener::OpenerExt;
+                    app.opener()
+                        .open_url(callback_url.to_string(), None::<&str>)
+                        .map_err(|e| AppError::FileOperation(format!("Failed to open URL: {}", e)))?;
+                    return Ok(());
+                }
+            };
+            match output {
                 Ok(o) => {
                     if !o.status.success() {
                         let stdout = String::from_utf8_lossy(&o.stdout);
