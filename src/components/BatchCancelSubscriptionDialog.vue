@@ -101,7 +101,7 @@
           </div>
           <div class="stat-card progress">
             <el-icon><User /></el-icon>
-            <div class="stat-value">{{ stats.processedAccounts }}/{{ selectedAccountIds.length }}</div>
+            <div class="stat-value">{{ stats.processedAccounts }}/{{ selectedWindsurfAccounts.length }}</div>
             <div class="stat-label">进度</div>
           </div>
         </div>
@@ -158,7 +158,7 @@
           type="danger"
           size="large"
           @click="startExecution"
-          :disabled="selectedAccountIds.length === 0"
+          :disabled="selectedWindsurfAccounts.length === 0"
         >
           <el-icon><CircleClose /></el-icon>
           开始批量取消
@@ -169,7 +169,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, watch, nextTick } from 'vue';
+import { computed, ref, reactive, watch, nextTick } from 'vue';
 import { ElMessage } from 'element-plus';
 import {
   User, SuccessFilled, CircleCloseFilled, DataLine,
@@ -194,14 +194,16 @@ const emit = defineEmits<{
 const visible = ref(props.modelValue);
 
 const cancelReasons = [
-  { value: 'too_expensive', label: '价格太贵', icon: '💸' },
-  { value: 'not_using', label: '不常使用', icon: '😴' },
-  { value: 'missing_features', label: '缺少功能', icon: '🔧' },
-  { value: 'switching_service', label: '切换服务', icon: '🔄' },
-  { value: 'other', label: '其他原因', icon: '📝' },
+  { value: 'customer_service', label: '客户服务', icon: 'CS' },
+  { value: 'low_quality', label: '质量不佳', icon: 'LQ' },
+  { value: 'missing_features', label: '缺少功能', icon: 'MF' },
+  { value: 'switching_service', label: '切换服务', icon: 'SW' },
+  { value: 'too_complex', label: '太复杂', icon: 'CX' },
+  { value: 'too_expensive', label: '价格太贵', icon: '$' },
+  { value: 'unused', label: '未使用', icon: 'UN' },
 ];
 
-const selectedReason = ref('other');
+const selectedReason = ref('unused');
 const isRunning = ref(false);
 const shouldStop = ref(false);
 const logsContainer = ref<HTMLElement | null>(null);
@@ -221,6 +223,7 @@ interface LogEntry {
 }
 
 const executionLogs = ref<LogEntry[]>([]);
+const selectedWindsurfAccounts = computed(() => getSelectedAccounts().filter(isWindsurfAccount));
 
 watch(() => props.modelValue, (val) => {
   visible.value = val;
@@ -234,7 +237,7 @@ watch(visible, (val) => {
 });
 
 function resetState() {
-  selectedReason.value = 'other';
+  selectedReason.value = 'unused';
   isRunning.value = false;
   shouldStop.value = false;
   stats.successCount = 0;
@@ -261,9 +264,17 @@ function getSelectedAccounts(): Account[] {
   return props.accounts.filter(a => props.selectedAccountIds.includes(a.id));
 }
 
+function isWindsurfAccount(account: Account): boolean {
+  return !account.account_source || account.account_source === 'windsurf';
+}
+
 async function executeSingleCancel(account: Account): Promise<{ success: boolean; error?: string }> {
   try {
-    const result = await apiService.cancelSubscription(account.id, selectedReason.value);
+    if (!isWindsurfAccount(account)) {
+      return { success: false, error: '非 Windsurf 来源账号，已跳过' };
+    }
+
+    const result = await apiService.cancelWindsurfSubscription(account.id, selectedReason.value);
     if (result.success) {
       return { success: true };
     } else {
@@ -276,8 +287,10 @@ async function executeSingleCancel(account: Account): Promise<{ success: boolean
 
 async function startExecution() {
   const selectedAccounts = getSelectedAccounts();
-  if (selectedAccounts.length === 0) {
-    ElMessage.warning('没有选中的账号');
+  const windsurfAccounts = selectedAccounts.filter(isWindsurfAccount);
+  const skippedAccounts = selectedAccounts.filter(account => !isWindsurfAccount(account));
+  if (windsurfAccounts.length === 0) {
+    ElMessage.warning('没有选中的 Windsurf 来源账号');
     return;
   }
 
@@ -289,10 +302,14 @@ async function startExecution() {
   stats.processedAccounts = 0;
   stats.lastError = '';
 
-  const reasonLabel = cancelReasons.find(r => r.value === selectedReason.value)?.label || selectedReason.value;
-  addLog(`开始批量取消订阅，原因：${reasonLabel}（${selectedAccounts.length} 个账号）`, 'info');
+  for (const account of skippedAccounts) {
+    addLog(`[${account.email}] 非 Windsurf 来源账号，跳过`, 'info');
+  }
 
-  const tasks = selectedAccounts.map(async (account) => {
+  const reasonLabel = cancelReasons.find(r => r.value === selectedReason.value)?.label || selectedReason.value;
+  addLog(`开始批量取消 Windsurf 订阅，原因：${reasonLabel}（${windsurfAccounts.length} 个账号）`, 'info');
+
+  const tasks = windsurfAccounts.map(async (account) => {
     if (shouldStop.value) return;
 
     stats.totalAttempts++;

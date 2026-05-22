@@ -213,4 +213,95 @@ impl DevinService {
         let plans_url = format!("{}/org/{}/plans", DEVIN_BASE_URL, auth.org_name);
         Ok((plans_url, auth.org_id, auth.org_name))
     }
+
+    pub async fn create_billing_portal_session(
+        &self,
+        auth1_token: &str,
+        org_id: &str,
+        org_name: &str,
+    ) -> AppResult<String> {
+        let url = format!("{}/api/billing/subscription/manage", DEVIN_BASE_URL);
+        let no_redirect_client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+            .map_err(|e| AppError::Network(format!("Failed to build client: {}", e)))?;
+
+        info!(
+            "[DevinService::create_billing_portal_session] GET {} org_id={} org_name={}",
+            url, org_id, org_name
+        );
+
+        let resp = match no_redirect_client
+            .get(&url)
+            .header("Accept", "application/json,text/plain,*/*")
+            .header("Authorization", format!("Bearer {}", auth1_token))
+            .header("X-Cog-Org-Id", org_id)
+            .header("Referer", format!("{}/org/{}/plans", DEVIN_BASE_URL, org_name))
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                if e.is_timeout() || e.is_connect() {
+                    super::report_timeout_error();
+                } else {
+                    super::report_request_failure();
+                }
+                return Err(AppError::Network(format!("Devin billing portal failed: {}", e)));
+            }
+        };
+
+        let status = resp.status().as_u16();
+        info!("[DevinService::create_billing_portal_session] status={}", status);
+
+        if (300..400).contains(&status) {
+            let location = resp
+                .headers()
+                .get("location")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string());
+            if let Some(loc) = location {
+                if loc.contains("billing.stripe.com") {
+                    return Ok(loc);
+                }
+                return Err(AppError::Api(format!("Unexpected redirect target: {}", loc)));
+            }
+            return Err(AppError::Api(format!("{} response but no Location header", status)));
+        }
+
+        let body = resp.text().await.unwrap_or_default();
+        if status == 200 {
+            if let Ok(j) = serde_json::from_str::<serde_json::Value>(&body) {
+                if let Some(url) = j
+                    .get("url")
+                    .or_else(|| j.get("portal_url"))
+                    .or_else(|| j.get("billing_portal_url"))
+                    .and_then(|v| v.as_str())
+                {
+                    if url.contains("billing.stripe.com") {
+                        return Ok(url.to_string());
+                    }
+                }
+            }
+            if let Some(url) = body
+                .split('"')
+                .find(|part| part.contains("billing.stripe.com/p/session/"))
+            {
+                return Ok(url.to_string());
+            }
+            return Err(AppError::Api(format!("200 but unexpected body (len={})", body.len())));
+        }
+
+        warn!(
+            "[DevinService::create_billing_portal_session] HTTP {}: {}",
+            status,
+            body.chars().take(500).collect::<String>()
+        );
+        Err(AppError::Api(format!(
+            "HTTP {} - {}",
+            status,
+            body.chars().take(200).collect::<String>()
+        )))
+    }
 }

@@ -520,12 +520,21 @@ impl AuthService {
 
         info!("[sign_in_v2_session] Step 2: Calling WindsurfPostAuth...");
         let post_auth_body = encode_protobuf_string(1, &login_data.token);
+        // 对齐 reference @devin_auth_service.rs::windsurf_post_auth：
+        //   - 直连 web-backend.windsurf.com（_backend/ 代理已不稳定，会返回降级响应缺 field 1）
+        //   - 浏览器风格 headers (accept: */*, origin, referer, sec-fetch-*)
+        //   - X-Devin-Auth1-Token 已在 v1.7.8 由 reference 验证为必须
         let post_auth_resp = match self.client
-            .post("https://windsurf.com/_backend/exa.seat_management_pb.SeatManagementService/WindsurfPostAuth")
-            .header("Content-Type", "application/proto")
-            .header("Accept", "application/proto")
-            .header("Connect-Protocol-Version", "1")
-            .header("User-Agent", "connect-es/1.6.1")
+            .post("https://web-backend.windsurf.com/exa.seat_management_pb.SeatManagementService/WindsurfPostAuth")
+            .header("accept", "*/*")
+            .header("accept-language", "zh-CN,zh;q=0.9")
+            .header("connect-protocol-version", "1")
+            .header("content-type", "application/proto")
+            .header("origin", "https://windsurf.com")
+            .header("referer", "https://windsurf.com/account/login")
+            .header("sec-fetch-dest", "empty")
+            .header("sec-fetch-mode", "cors")
+            .header("sec-fetch-site", "same-site")
             .header("X-Devin-Auth1-Token", &login_data.token)
             .body(post_auth_body)
             .send()
@@ -586,12 +595,19 @@ impl AuthService {
         info!("[refresh_session_with_auth1] Refreshing session via WindsurfPostAuth...");
 
         let post_auth_body = encode_protobuf_string(1, auth1_token);
+        // 对齐 reference：直连 web-backend.windsurf.com + 浏览器风格 headers，
+        // 避免 _backend/ 代理返回降级响应（缺 field 1 session_token）。
         let post_auth_resp = match self.client
-            .post("https://windsurf.com/_backend/exa.seat_management_pb.SeatManagementService/WindsurfPostAuth")
-            .header("Content-Type", "application/proto")
-            .header("Accept", "application/proto")
-            .header("Connect-Protocol-Version", "1")
-            .header("User-Agent", "connect-es/1.6.1")
+            .post("https://web-backend.windsurf.com/exa.seat_management_pb.SeatManagementService/WindsurfPostAuth")
+            .header("accept", "*/*")
+            .header("accept-language", "zh-CN,zh;q=0.9")
+            .header("connect-protocol-version", "1")
+            .header("content-type", "application/proto")
+            .header("origin", "https://windsurf.com")
+            .header("referer", "https://windsurf.com/account/login")
+            .header("sec-fetch-dest", "empty")
+            .header("sec-fetch-mode", "cors")
+            .header("sec-fetch-site", "same-site")
             .header("X-Devin-Auth1-Token", auth1_token)
             .body(post_auth_body)
             .send()
@@ -654,12 +670,18 @@ impl AuthService {
         
         // WindsurfPostAuth
         let post_auth_body = encode_protobuf_string(1, auth1_token);
+        // 对齐 reference：直连 web-backend.windsurf.com + 浏览器风格 headers。
         let post_auth_resp = self.client
-            .post("https://windsurf.com/_backend/exa.seat_management_pb.SeatManagementService/WindsurfPostAuth")
-            .header("Content-Type", "application/proto")
-            .header("Accept", "application/proto")
-            .header("Connect-Protocol-Version", "1")
-            .header("User-Agent", "connect-es/1.6.1")
+            .post("https://web-backend.windsurf.com/exa.seat_management_pb.SeatManagementService/WindsurfPostAuth")
+            .header("accept", "*/*")
+            .header("accept-language", "zh-CN,zh;q=0.9")
+            .header("connect-protocol-version", "1")
+            .header("content-type", "application/proto")
+            .header("origin", "https://windsurf.com")
+            .header("referer", "https://windsurf.com/account/login")
+            .header("sec-fetch-dest", "empty")
+            .header("sec-fetch-mode", "cors")
+            .header("sec-fetch-site", "same-site")
             .header("X-Devin-Auth1-Token", auth1_token)
             .body(post_auth_body)
             .send()
@@ -747,42 +769,64 @@ fn encode_protobuf_string(field_number: u32, value: &str) -> Vec<u8> {
 
 /// 瑙ｆ瀽 protobuf 娑堟伅涓殑鎵€鏈?string 瀛楁
 fn parse_protobuf_fields(data: &[u8]) -> std::collections::HashMap<u32, String> {
+    // 加固点（避免 WindsurfPostAuth 等响应里多余 fixed32/fixed64/大 field_num 字段中断解析）：
+    // 1. tag 按 varint 解码，支持 field_num > 15 的多字节 tag
+    // 2. 完整支持 wire_type 0/1/2/5 跳过，未知 wire_type 才停止
+    // 3. wire_type=2 但非 UTF-8（嵌套 message）时静默跳过并继续解析后续字段
     let mut fields = std::collections::HashMap::new();
     let mut i = 0;
     while i < data.len() {
-        let tag = data[i];
+        // 1) tag varint
+        let mut tag: u64 = 0;
+        let mut shift = 0;
+        loop {
+            if i >= data.len() { return fields; }
+            let b = data[i];
+            tag |= ((b & 0x7F) as u64) << shift;
+            i += 1;
+            if b & 0x80 == 0 { break; }
+            shift += 7;
+            if shift >= 64 { return fields; }
+        }
         let field_num = (tag >> 3) as u32;
-        let wire_type = tag & 0x07;
-        i += 1;
+        let wire_type = (tag & 0x07) as u8;
 
         match wire_type {
-            2 => { // length-delimited (string)
+            0 => {
+                // varint，整段跳过
+                while i < data.len() {
+                    let b = data[i];
+                    i += 1;
+                    if b & 0x80 == 0 { break; }
+                }
+            }
+            1 => { // 64-bit fixed
+                if i + 8 > data.len() { return fields; }
+                i += 8;
+            }
+            5 => { // 32-bit fixed
+                if i + 4 > data.len() { return fields; }
+                i += 4;
+            }
+            2 => { // length-delimited
                 let mut len: usize = 0;
                 let mut shift = 0;
-                while i < data.len() {
+                loop {
+                    if i >= data.len() { return fields; }
                     let b = data[i];
                     i += 1;
                     len |= ((b & 0x7F) as usize) << shift;
                     if b & 0x80 == 0 { break; }
                     shift += 7;
                 }
-                if i + len <= data.len() {
-                    if let Ok(s) = std::str::from_utf8(&data[i..i + len]) {
-                        fields.insert(field_num, s.to_string());
-                    }
-                    i += len;
-                } else {
-                    break;
+                let end = i + len;
+                if end > data.len() { return fields; }
+                if let Ok(s) = std::str::from_utf8(&data[i..end]) {
+                    fields.insert(field_num, s.to_string());
                 }
+                i = end;
             }
-            0 => { // varint
-                while i < data.len() {
-                    let b = data[i];
-                    i += 1;
-                    if b & 0x80 == 0 { break; }
-                }
-            }
-            _ => break, // 涓嶆敮鎸佺殑 wire type
+            _ => return fields, // 未知 wire type
         }
     }
     fields

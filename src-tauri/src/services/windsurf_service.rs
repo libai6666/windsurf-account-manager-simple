@@ -58,6 +58,26 @@ fn extract_token_with_prefix(raw: &str, prefix: &str) -> Option<String> {
     })
 }
 
+/// 在文本中查找 marker 之后到 end 之间的字符串（用于从 SSR HTML 抓嵌入的 JSON 字段）
+fn extract_between_markers(text: &str, marker: &str, end: &str) -> Option<String> {
+    let start = text.find(marker)? + marker.len();
+    let rest = &text[start..];
+    let end_pos = rest.find(end)?;
+    Some(rest[..end_pos].to_string())
+}
+
+/// Stripe Customer Portal 入口 SSR HTML 中提取出的 session 信息，
+/// 用于后续调用 portal 内部 `/v1/billing_portal/sessions/{bps}/...` API。
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct StripePortalSession {
+    /// `ek_live_xxx`，Bearer 鉴权 token（每个 portal session 唯一）
+    pub session_api_key: String,
+    /// `bps_xxx`，portal session id，API 路径里用
+    pub portal_session_id: String,
+    /// `pk_live_xxx`，商户 publishable key（可选）
+    pub publishable_key: Option<String>,
+}
+
 fn extract_card_details(value: &Value) -> Option<Value> {
     match value {
         Value::Object(map) => {
@@ -969,6 +989,307 @@ impl WindsurfService {
         )))
     }
 
+    /// 从 Stripe Customer Portal 入口 URL（`https://billing.stripe.com/p/session/live_xxx`）
+    /// 抓 SSR HTML，提取嵌入的 `session_api_key (ek_live_xxx)` 和 `portal_session_id (bps_xxx)`，
+    /// 用于后续直接调用 portal 内部 `/v1/billing_portal/sessions/{bps}/...` API。
+    ///
+    /// 抓包验证（2026-05-20）：portal 内部 API 只需 `Authorization: Bearer ek_live_xxx`，
+    /// 不需要 cookie/csrf token（`x-stripe-csrf-token: fake-deprecated-token` 即可通过）。
+    pub async fn extract_stripe_portal_session(&self, portal_url: &str) -> AppResult<StripePortalSession> {
+        if !portal_url.contains("billing.stripe.com") {
+            return Err(AppError::Api(format!(
+                "Not a Stripe portal URL: {}",
+                portal_url.chars().take(120).collect::<String>()
+            )));
+        }
+        info!(
+            "[StripePortal] GET portal entry: {}",
+            portal_url.chars().take(120).collect::<String>()
+        );
+
+        let resp = self.client
+            .get(portal_url)
+            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36")
+            .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+            .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+            .send()
+            .await
+            .map_err(|e| AppError::Network(format!("Stripe portal entry failed: {}", e)))?;
+
+        let status = resp.status().as_u16();
+        if !(200..400).contains(&status) {
+            return Err(AppError::Api(format!("Stripe portal entry HTTP {}", status)));
+        }
+
+        let html = resp.text().await.unwrap_or_default();
+        // SSR HTML 中嵌入 JSON 字段经 HTML entity 编码（`&quot;`），优先匹配 entity 形式
+        let ek = extract_between_markers(&html, r#"&quot;session_api_key&quot;:&quot;"#, "&quot;")
+            .or_else(|| extract_between_markers(&html, r#""session_api_key":""#, "\""))
+            .or_else(|| extract_token_with_prefix(&html, "ek_live_"))
+            .or_else(|| extract_token_with_prefix(&html, "ek_test_"));
+        let bps = extract_between_markers(&html, r#"&quot;portal_session_id&quot;:&quot;"#, "&quot;")
+            .or_else(|| extract_between_markers(&html, r#""portal_session_id":""#, "\""))
+            .or_else(|| extract_token_with_prefix(&html, "bps_"));
+        let pk = extract_between_markers(&html, r#"&quot;publishable_key&quot;:&quot;"#, "&quot;")
+            .or_else(|| extract_between_markers(&html, r#""publishable_key":""#, "\""))
+            .or_else(|| extract_token_with_prefix(&html, "pk_live_"));
+
+        let ek = ek.ok_or_else(|| AppError::Api("session_api_key (ek_live_*) not found in portal HTML".to_string()))?;
+        let bps = bps.ok_or_else(|| AppError::Api("portal_session_id (bps_*) not found in portal HTML".to_string()))?;
+
+        info!(
+            "[StripePortal] extracted bps={} ek_prefix={}",
+            bps,
+            ek.chars().take(16).collect::<String>()
+        );
+
+        Ok(StripePortalSession {
+            session_api_key: ek,
+            portal_session_id: bps,
+            publishable_key: pk,
+        })
+    }
+
+    /// 内部辅助：用 ek_live Bearer 鉴权调 Stripe Portal 内部 GET 接口，返回解析后的 JSON
+    async fn stripe_portal_get(&self, url: &str, ek: &str) -> AppResult<serde_json::Value> {
+        let resp = self.client
+            .get(url)
+            .bearer_auth(ek)
+            .header("Accept", "application/json")
+            .header("X-Requested-With", "XMLHttpRequest")
+            .header("X-Stripe-Csrf-Token", "fake-deprecated-token")
+            .header("Stripe-Version", STRIPE_VERSION_BASE)
+            .send()
+            .await
+            .map_err(|e| AppError::Network(format!("Stripe portal GET failed: {}", e)))?;
+
+        let status = resp.status().as_u16();
+        let body = resp.text().await.unwrap_or_default();
+        if status != 200 {
+            return Err(AppError::Api(format!(
+                "Stripe portal HTTP {}: {}",
+                status,
+                body.chars().take(200).collect::<String>()
+            )));
+        }
+        serde_json::from_str(&body)
+            .map_err(|e| AppError::Api(format!("Stripe portal JSON parse failed: {}", e)))
+    }
+
+    /// 从 Stripe Customer Portal 拉取完整账单数据（customer 卡号/地址 + subscriptions + invoices），
+    /// 用于在 BillingDialog 内对新账号补全卡号/订阅明细，避免单走 GetTeamBilling 拿不到 payment_method 的情况。
+    pub async fn fetch_stripe_portal_billing_data(&self, portal_url: &str) -> AppResult<serde_json::Value> {
+        let session = self.extract_stripe_portal_session(portal_url).await?;
+        let ek = session.session_api_key.as_str();
+        let bps = session.portal_session_id.as_str();
+
+        // customer：默认支付方式 (卡号、品牌、有效期、wallet) + 账单地址 + 姓名邮箱
+        let customer_url = format!(
+            "https://billing.stripe.com/v1/billing_portal/sessions/{}/customer\
+             ?expand[]=default_payment_method\
+             &include_only[]=id\
+             &include_only[]=name\
+             &include_only[]=email\
+             &include_only[]=phone\
+             &include_only[]=address.line1\
+             &include_only[]=address.line2\
+             &include_only[]=address.city\
+             &include_only[]=address.postal_code\
+             &include_only[]=address.state\
+             &include_only[]=address.country\
+             &include_only[]=default_payment_method.id\
+             &include_only[]=default_payment_method.type\
+             &include_only[]=default_payment_method.card.brand\
+             &include_only[]=default_payment_method.card.last4\
+             &include_only[]=default_payment_method.card.exp_month\
+             &include_only[]=default_payment_method.card.exp_year\
+             &include_only[]=default_payment_method.card.funding\
+             &include_only[]=default_payment_method.card.wallet.type",
+            bps
+        );
+
+        // subscriptions：状态、是否将到期取消、续期时间、试用期结束、价格、是否可取消
+        let subs_url = format!(
+            "https://billing.stripe.com/v1/billing_portal/sessions/{}/subscriptions\
+             ?include_only[]=has_more\
+             &include_only[]=data.id\
+             &include_only[]=data.status\
+             &include_only[]=data.cancel_at\
+             &include_only[]=data.cancel_at_period_end\
+             &include_only[]=data.current_period_end\
+             &include_only[]=data.created\
+             &include_only[]=data.trial_end\
+             &include_only[]=data.is_cancelable\
+             &include_only[]=data.is_pausable\
+             &include_only[]=data.description\
+             &include_only[]=data.items.id\
+             &include_only[]=data.items.quantity\
+             &include_only[]=data.items.price_details\
+             &limit=5",
+            bps
+        );
+
+        // invoices：账单记录（最近 10 条）
+        let invoices_url = format!(
+            "https://billing.stripe.com/v1/billing_portal/sessions/{}/invoices\
+             ?include_only[]=has_more\
+             &include_only[]=data.id\
+             &include_only[]=data.amount_due\
+             &include_only[]=data.currency\
+             &include_only[]=data.status\
+             &include_only[]=data.hosted_invoice_url\
+             &include_only[]=data.effective_at\
+             &include_only[]=data.finalized_at\
+             &include_only[]=data.due_date\
+             &include_only[]=data.lines.data.description\
+             &limit=10",
+            bps
+        );
+
+        // 顺序调用即可（portal API 返回快，~100ms 一次），避免引入 join 依赖
+        let customer = self
+            .stripe_portal_get(&customer_url, ek)
+            .await
+            .unwrap_or_else(|e| json!({ "error": e.to_string() }));
+        let subscriptions = self
+            .stripe_portal_get(&subs_url, ek)
+            .await
+            .unwrap_or_else(|e| json!({ "error": e.to_string() }));
+        let invoices = self
+            .stripe_portal_get(&invoices_url, ek)
+            .await
+            .unwrap_or_else(|e| json!({ "error": e.to_string() }));
+
+        Ok(json!({
+            "success": true,
+            "portal_session_id": bps,
+            "customer": customer,
+            "subscriptions": subscriptions,
+            "invoices": invoices,
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+        }))
+    }
+
+    /// 通过 Stripe Customer Portal API 取消订阅（新账号 auth1_ 专用）。
+    /// 流程：解析 portal session -> GET subscriptions 找到第一个可取消订阅 -> POST cancel。
+    ///
+    /// 对应浏览器抓包路径：`POST /v1/billing_portal/sessions/{bps}/subscriptions/{sub}/cancel`，
+    /// body: `refund=false`，header: `Authorization: Bearer ek_live_*`。
+    pub async fn cancel_stripe_portal_subscription(
+        &self,
+        portal_url: &str,
+        refund: bool,
+    ) -> AppResult<serde_json::Value> {
+        let session = self.extract_stripe_portal_session(portal_url).await?;
+        let ek = session.session_api_key.as_str();
+        let bps = session.portal_session_id.as_str();
+
+        // 1) 列出 subscriptions 选可取消的目标
+        let subs_url = format!(
+            "https://billing.stripe.com/v1/billing_portal/sessions/{}/subscriptions\
+             ?include_only[]=data.id\
+             &include_only[]=data.status\
+             &include_only[]=data.is_cancelable\
+             &include_only[]=data.cancel_at_period_end\
+             &limit=10",
+            bps
+        );
+        let subs = self.stripe_portal_get(&subs_url, ek).await?;
+        let data_arr = subs
+            .get("data")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        // 优先选 is_cancelable=true 且尚未标记 cancel_at_period_end 的活跃订阅
+        let target = data_arr
+            .iter()
+            .find(|sub| {
+                let is_cancelable = sub.get("is_cancelable").and_then(|v| v.as_bool()).unwrap_or(false);
+                let already_canceled = sub.get("cancel_at_period_end").and_then(|v| v.as_bool()).unwrap_or(false);
+                let status = sub.get("status").and_then(|v| v.as_str()).unwrap_or("");
+                is_cancelable
+                    && !already_canceled
+                    && matches!(status, "active" | "trialing" | "past_due" | "unpaid")
+            })
+            .cloned()
+            .or_else(|| data_arr.first().cloned());
+
+        let target = target.ok_or_else(|| {
+            AppError::Api("No subscriptions found in Stripe portal".to_string())
+        })?;
+
+        // 已标记将到期取消：视为已取消，直接返回 success 避免 Stripe 报 already_canceled
+        let already_canceled = target
+            .get("cancel_at_period_end")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let sub_id = target
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| AppError::Api("Subscription id missing".to_string()))?
+            .to_string();
+
+        if already_canceled {
+            info!("[StripePortal] subscription {} already scheduled to cancel at period end, skipping", sub_id);
+            return Ok(json!({
+                "success": true,
+                "already_canceled": true,
+                "subscription_id": sub_id,
+                "raw_response": "subscription already scheduled to cancel at period end",
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+            }));
+        }
+
+        // 2) POST cancel
+        let cancel_url = format!(
+            "https://billing.stripe.com/v1/billing_portal/sessions/{}/subscriptions/{}/cancel\
+             ?include_only[]=id\
+             &include_only[]=status\
+             &include_only[]=cancel_at\
+             &include_only[]=cancel_at_period_end",
+            bps, sub_id
+        );
+        let body = format!("refund={}", refund);
+        info!("[StripePortal] POST cancel sub_id={} body={}", sub_id, body);
+
+        let resp = self.client
+            .post(&cancel_url)
+            .bearer_auth(ek)
+            .header("Accept", "application/json")
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .header("X-Requested-With", "XMLHttpRequest")
+            .header("X-Stripe-Csrf-Token", "fake-deprecated-token")
+            .header("Stripe-Version", STRIPE_VERSION_BASE)
+            .header("Referer", portal_url)
+            .body(body)
+            .send()
+            .await
+            .map_err(|e| AppError::Network(format!("Stripe cancel failed: {}", e)))?;
+
+        let status_code = resp.status().as_u16();
+        let resp_text = resp.text().await.unwrap_or_default();
+        info!(
+            "[StripePortal] cancel response status={} len={}",
+            status_code,
+            resp_text.len()
+        );
+
+        let parsed: serde_json::Value = serde_json::from_str(&resp_text)
+            .unwrap_or(json!({ "raw": resp_text.clone() }));
+        // Stripe 返回 200 + body 中无 error 字段则视为成功
+        let success = status_code == 200 && parsed.get("error").is_none();
+
+        Ok(json!({
+            "success": success,
+            "subscription_id": sub_id,
+            "status_code": status_code,
+            "raw_response": resp_text,
+            "parsed": parsed,
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+        }))
+    }
+
     /// 更新订阅计划
     /// 
     /// # Arguments
@@ -1072,21 +1393,39 @@ impl WindsurfService {
     ///
     /// # Arguments
     /// * `token` - Firebase ID Token
-    /// * `reason` - 取消原因（例如："too_expensive", "not_using", "missing_features", "switching_service", "other"）
+    /// * `reason` - 取消原因（例如："customer_service", "low_quality", "missing_features", "switching_service", "too_complex", "too_expensive", "unused"）
     ///
     /// # Returns
     /// 返回包含操作结果的 JSON 对象
-    pub async fn cancel_plan(&self, token: &str, reason: &str) -> AppResult<serde_json::Value> {
+    pub async fn cancel_plan(&self, token: &str, auth1_token: Option<&str>, reason: &str) -> AppResult<serde_json::Value> {
+        // 端点：始终 web-backend.windsurf.com（不走 `_backend/` 代理，否则被 turnstile 拦）。
+        //
+        // 鉴权头（参照 reference @auth_context.rs 的 `with_auth` / `devin_session_only` 模式）：
+        //   - Firebase 账号 (token 不含 `devin-session-token$` 前缀)：仅发 `x-auth-token`
+        //   - Devin 账号 (token 形如 `devin-session-token$...`)：必须同时发
+        //       * `x-auth-token: <token>`
+        //       * `x-devin-session-token: <token>`（值与 x-auth-token 相同）
+        //       * 可选 `x-devin-auth1-token: <auth1_token>`（refresh_token 以 `auth1_` 开头时）
+        //
+        // 实测：单发 `x-auth-token` 或 `x-api-key` 在 Devin 账号上都 401；
+        // 必须凑齐 `x-auth-token + x-devin-session-token` 两头才能通过。
         let url = format!("{}/exa.seat_management_pb.SeatManagementService/CancelPlan", WINDSURF_BASE_URL);
-
-        println!("[CancelPlan] Canceling subscription with reason: {}", reason);
 
         let body = self.build_cancel_plan_body(token, reason);
 
-        println!("[CancelPlan] Request body length: {} bytes", body.len());
-        println!("[CancelPlan] Request body hex: {}", body.iter().map(|b| format!("{:02x}", b)).collect::<String>());
+        let is_devin_token = token.starts_with("devin-session-token$") || auth1_token.is_some();
 
-        let response = self.client
+        info!(
+            "[CancelPlan] POST {} reason={} body_size={} is_devin={} has_auth1={} token_prefix={}",
+            url,
+            reason,
+            body.len(),
+            is_devin_token,
+            auth1_token.is_some(),
+            &token[..token.len().min(25)]
+        );
+
+        let mut req = self.client
             .post(&url)
             .body(body)
             .header("accept", "*/*")
@@ -1102,19 +1441,31 @@ impl WindsurfService {
             .header("sec-fetch-dest", "empty")
             .header("sec-fetch-mode", "cors")
             .header("sec-fetch-site", "same-site")
-            .header("x-api-key", token)
+            .header("x-auth-token", token)
             .header("x-debug-email", "")
             .header("x-debug-team-name", "")
-            .header("Referer", "https://windsurf.com/")
-            .send()
-            .await?;
+            .header("Referer", "https://windsurf.com/");
+
+        // Devin 账号：补齐 x-devin-session-token + 可选 x-devin-auth1-token
+        if is_devin_token {
+            req = req.header("x-devin-session-token", token);
+            if let Some(a1) = auth1_token {
+                req = req.header("x-devin-auth1-token", a1);
+            }
+        }
+
+        let response = req.send().await?;
 
         let status_code = response.status().as_u16();
         let response_bytes = response.bytes().await.unwrap_or_default();
         let response_text = String::from_utf8_lossy(&response_bytes).to_string();
 
-        println!("[CancelPlan] Response status: {}", status_code);
-        println!("[CancelPlan] Response length: {} bytes", response_bytes.len());
+        info!(
+            "[CancelPlan] status={} response_size={} reason={}",
+            status_code,
+            response_bytes.len(),
+            reason
+        );
 
         Ok(serde_json::json!({
             "success": status_code == 200,
@@ -1158,7 +1509,7 @@ impl WindsurfService {
             .header("sec-fetch-dest", "empty")
             .header("sec-fetch-mode", "cors")
             .header("sec-fetch-site", "same-site")
-            .header("x-api-key", token)
+            .header("x-auth-token", token)
             .header("x-debug-email", "")
             .header("x-debug-team-name", "")
             .header("Referer", "https://windsurf.com/")

@@ -155,7 +155,7 @@
               </div>
             </div>
             <div v-else-if="billingData.is_new_account" class="no-payment new-account-hint">
-              银行卡信息需在 Stripe Portal 查看
+              {{ paymentMethodHint }}
             </div>
             <div v-else class="no-payment">
               未绑定支付方式
@@ -177,7 +177,7 @@
                 @click="openBillingPortal"
                 plain
               >
-                在浏览器打开完整账单
+                {{ billingPortalButtonText }}
               </el-button>
             </div>
           </div>
@@ -219,11 +219,119 @@
         :closable="false"
         show-icon
       />
-      
+
+      <!-- Stripe Portal: 订阅明细 -->
+      <div class="stripe-section" v-if="stripeSubscriptions.length > 0">
+        <div class="section-title">
+          <el-icon><Trophy /></el-icon>
+          <span>订阅明细</span>
+          <el-tag size="small" type="info" effect="plain">{{ stripeSubscriptions.length }}</el-tag>
+        </div>
+        <div class="sub-list">
+          <div
+            v-for="sub in stripeSubscriptions"
+            :key="sub.id"
+            class="sub-item"
+          >
+            <div class="sub-item-header">
+              <div class="sub-desc">{{ sub.description || formatSubItem(sub) || '订阅' }}</div>
+              <div class="sub-tags">
+                <el-tag size="small" :type="subscriptionStatusType(sub.status)" effect="dark" round>
+                  {{ formatSubscriptionStatus(sub.status) }}
+                </el-tag>
+                <el-tag v-if="sub.cancel_at_period_end" size="small" type="danger" effect="dark" round>
+                  期末取消
+                </el-tag>
+              </div>
+            </div>
+            <div class="sub-item-body">
+              <div class="sub-meta-row" v-if="sub.trial_end">
+                <span class="meta-label">试用期截止</span>
+                <span class="meta-value">{{ formatUnixTime(sub.trial_end) }}</span>
+              </div>
+              <div class="sub-meta-row" v-if="sub.current_period_end">
+                <span class="meta-label">本期结束</span>
+                <span class="meta-value">{{ formatUnixTime(sub.current_period_end) }}</span>
+              </div>
+              <div class="sub-meta-row" v-if="sub.cancel_at">
+                <span class="meta-label">取消生效</span>
+                <span class="meta-value">{{ formatUnixTime(sub.cancel_at) }}</span>
+              </div>
+              <div class="sub-meta-row" v-if="sub.id">
+                <span class="meta-label">订阅 ID</span>
+                <span class="meta-value mono">{{ sub.id }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Stripe Portal: 账单记录 -->
+      <div class="stripe-section" v-if="stripeInvoices.length > 0">
+        <div class="section-title">
+          <el-icon><CreditCard /></el-icon>
+          <span>账单记录</span>
+          <el-tag size="small" type="info" effect="plain">{{ stripeInvoices.length }}</el-tag>
+        </div>
+        <div class="invoice-table">
+          <div class="invoice-header">
+            <div class="col-date">日期</div>
+            <div class="col-amount">金额</div>
+            <div class="col-status">状态</div>
+            <div class="col-actions">操作</div>
+          </div>
+          <div
+            v-for="inv in stripeInvoices"
+            :key="inv.id"
+            class="invoice-row"
+          >
+            <div class="col-date">{{ formatUnixTime(inv.effective_at || inv.finalized_at || inv.due_date) }}</div>
+            <div class="col-amount mono">{{ formatCurrencyAmount(inv.amount_due, inv.currency) }}</div>
+            <div class="col-status">
+              <el-tag size="small" :type="invoiceStatusType(inv.status)" effect="plain">
+                {{ formatInvoiceStatus(inv.status) }}
+              </el-tag>
+            </div>
+            <div class="col-actions">
+              <el-link
+                v-if="inv.hosted_invoice_url"
+                type="primary"
+                size="small"
+                :underline="false"
+                @click="openInvoice(inv.hosted_invoice_url)"
+              >
+                查看
+              </el-link>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 客户账单地址（Stripe Portal） -->
+      <div class="stripe-section" v-if="billingData.customer_name || billingData.customer_address">
+        <div class="section-title">
+          <el-icon><User /></el-icon>
+          <span>账单联系信息</span>
+        </div>
+        <div class="customer-card">
+          <div class="customer-row" v-if="billingData.customer_name">
+            <span class="meta-label">姓名</span>
+            <span class="meta-value">{{ billingData.customer_name }}</span>
+          </div>
+          <div class="customer-row" v-if="billingData.customer_address">
+            <span class="meta-label">地址</span>
+            <span class="meta-value">{{ formatAddress(billingData.customer_address) }}</span>
+          </div>
+        </div>
+      </div>
+
       <!-- 原始数据（折叠） -->
-      <el-collapse v-if="billingData.raw_data" class="raw-data-collapse">
-        <el-collapse-item title="开发者原始数据">
+      <el-collapse v-if="billingData.raw_data || billingData.stripe_portal" class="raw-data-collapse">
+        <el-collapse-item v-if="billingData.raw_data" title="开发者原始数据">
           <pre class="raw-data">{{ JSON.stringify(billingData.raw_data, null, 2) }}</pre>
+        </el-collapse-item>
+        <el-collapse-item v-if="billingData.stripe_portal" title="Stripe Portal 原始响应">
+          <pre class="raw-data">{{ JSON.stringify(billingData.stripe_portal, null, 2) }}</pre>
         </el-collapse-item>
       </el-collapse>
     </div>
@@ -253,10 +361,12 @@ import {
   CreditCard, 
   CopyDocument 
 } from '@element-plus/icons-vue';
+import type { Account } from '@/types';
 
 const props = defineProps<{
   modelValue: boolean;
   accountId: string;
+  account?: Account;
   billingData?: any;
   loading?: boolean;
 }>();
@@ -269,6 +379,9 @@ const emit = defineEmits<{
 const visible = ref(props.modelValue);
 const showFullResponse = ref(false);
 const openingPortal = ref(false);
+const isDevinAccount = computed(() => props.account?.account_source === 'devin');
+const paymentMethodHint = computed(() => isDevinAccount.value ? '银行卡信息需在 Stripe Portal 查看' : '银行卡信息需在 Windsurf 账号页查看');
+const billingPortalButtonText = computed(() => isDevinAccount.value ? '在浏览器打开完整账单' : '在浏览器打开 Windsurf 账号');
 
 async function openBillingPortal() {
   if (!props.accountId) {
@@ -277,6 +390,12 @@ async function openBillingPortal() {
   }
   openingPortal.value = true;
   try {
+    if (!isDevinAccount.value) {
+      await openUrl('https://windsurf.com/account');
+      ElMessage.success('已在默认浏览器打开 Windsurf 账号页');
+      return;
+    }
+
     const url = await invoke<string>('create_billing_portal_session', { id: props.accountId });
     if (!url || !url.includes('billing.stripe.com')) {
       ElMessage.error('未能获取有效的账单 Portal 链接');
@@ -308,6 +427,117 @@ watch(() => props.modelValue, (val) => {
 watch(visible, (val) => {
   emit('update:modelValue', val);
 });
+
+// Stripe Portal: 订阅明细列表（来自 fetch_stripe_portal_billing 的 subscriptions.data）
+const stripeSubscriptions = computed<any[]>(() => {
+  const subs = props.billingData?.stripe_portal?.subscriptions?.data;
+  return Array.isArray(subs) ? subs : [];
+});
+
+// Stripe Portal: 账单记录（合并自 stripe_portal.invoices.data，或 MainLayout 提升后的 invoices）
+const stripeInvoices = computed<any[]>(() => {
+  const direct = props.billingData?.invoices;
+  if (Array.isArray(direct)) return direct;
+  const fromPortal = props.billingData?.stripe_portal?.invoices?.data;
+  return Array.isArray(fromPortal) ? fromPortal : [];
+});
+
+// Unix 时间戳转 yyyy-MM-dd HH:mm
+function formatUnixTime(unix?: number | null): string {
+  if (!unix) return '-';
+  try {
+    const d = new Date(unix * 1000);
+    const pad = (n: number) => n.toString().padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  } catch {
+    return String(unix);
+  }
+}
+
+// Stripe 金额按 currency 单位换算（最小货币单位 -> 主单位）
+function formatCurrencyAmount(amount?: number | null, currency?: string | null): string {
+  if (amount == null) return '-';
+  const code = (currency || 'usd').toUpperCase();
+  const symbol = code === 'USD' ? '$' : code === 'CNY' ? '¥' : code === 'EUR' ? '€' : '';
+  return `${symbol}${(amount / 100).toFixed(2)} ${symbol ? '' : code}`.trim();
+}
+
+// 订阅描述兜底（从 items.price_details 拼出 "Windsurf Pro · 1×"）
+function formatSubItem(sub: any): string {
+  const items = sub?.items?.data || sub?.items;
+  if (Array.isArray(items) && items.length > 0) {
+    const first = items[0];
+    const name = first?.price_details?.product?.name || first?.price_details?.id || '';
+    const qty = first?.quantity ? `${first.quantity}×` : '';
+    return [name, qty].filter(Boolean).join(' · ');
+  }
+  return '';
+}
+
+function formatSubscriptionStatus(status?: string): string {
+  switch (status) {
+    case 'active': return '活跃';
+    case 'trialing': return '试用中';
+    case 'past_due': return '逾期';
+    case 'canceled': return '已取消';
+    case 'unpaid': return '未支付';
+    case 'incomplete': return '未完成';
+    case 'incomplete_expired': return '已过期';
+    case 'paused': return '已暂停';
+    default: return status || '-';
+  }
+}
+
+function subscriptionStatusType(status?: string): 'success' | 'warning' | 'danger' | 'info' | '' {
+  switch (status) {
+    case 'active': return 'success';
+    case 'trialing': return 'warning';
+    case 'past_due':
+    case 'unpaid':
+    case 'canceled':
+    case 'incomplete_expired': return 'danger';
+    case 'paused':
+    case 'incomplete': return 'info';
+    default: return '';
+  }
+}
+
+function formatInvoiceStatus(status?: string): string {
+  switch (status) {
+    case 'paid': return '已付';
+    case 'open': return '待支付';
+    case 'draft': return '草稿';
+    case 'uncollectible': return '无法收取';
+    case 'void': return '已作废';
+    default: return status || '-';
+  }
+}
+
+function invoiceStatusType(status?: string): 'success' | 'warning' | 'danger' | 'info' | '' {
+  switch (status) {
+    case 'paid': return 'success';
+    case 'open': return 'warning';
+    case 'uncollectible': return 'danger';
+    case 'void':
+    case 'draft': return 'info';
+    default: return '';
+  }
+}
+
+function formatAddress(addr: any): string {
+  if (!addr) return '-';
+  const parts = [addr.line1, addr.line2, addr.city, addr.state, addr.postal_code, addr.country]
+    .filter((s: any) => !!s);
+  return parts.join(', ');
+}
+
+async function openInvoice(url: string) {
+  try {
+    await openUrl(url);
+  } catch (err) {
+    ElMessage.error(`打开账单失败: ${err}`);
+  }
+}
 
 // 配额百分比
 const quotaPercentage = computed(() => {
@@ -716,6 +946,123 @@ async function copyToClipboard() {
     color: #e6a23c !important;
     font-size: 12px;
     line-height: 1.6;
+  }
+}
+
+/* Stripe Portal 数据区域 */
+.stripe-section {
+  background: #fff;
+  border: 1px solid #e4e7ed;
+  border-radius: 12px;
+  padding: 16px 20px;
+
+  .section-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: #303133;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+
+    .el-icon {
+      color: #909399;
+    }
+  }
+}
+
+.sub-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+
+  .sub-item {
+    background: #f8f9fc;
+    border: 1px solid #e8eaef;
+    border-radius: 10px;
+    padding: 12px 14px;
+
+    .sub-item-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 10px;
+      margin-bottom: 10px;
+
+      .sub-desc {
+        font-size: 14px;
+        font-weight: 600;
+        color: #303133;
+      }
+
+      .sub-tags {
+        display: flex;
+        gap: 6px;
+        flex-shrink: 0;
+      }
+    }
+
+    .sub-item-body {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 6px 16px;
+
+      .sub-meta-row {
+        display: flex;
+        justify-content: space-between;
+        font-size: 12px;
+
+        .meta-label { color: #909399; }
+        .meta-value { color: #303133; font-weight: 500; }
+        .meta-value.mono { font-family: 'Roboto Mono', monospace; font-size: 11px; }
+      }
+    }
+  }
+}
+
+.invoice-table {
+  border: 1px solid #ebeef5;
+  border-radius: 8px;
+  overflow: hidden;
+
+  .invoice-header,
+  .invoice-row {
+    display: grid;
+    grid-template-columns: 2fr 1fr 1fr 0.7fr;
+    align-items: center;
+    padding: 10px 14px;
+    font-size: 13px;
+  }
+
+  .invoice-header {
+    background: #f5f7fa;
+    color: #606266;
+    font-weight: 600;
+    font-size: 12px;
+  }
+
+  .invoice-row {
+    border-top: 1px solid #f0f2f5;
+    color: #303133;
+
+    &:hover { background: #fafbfc; }
+
+    .col-amount.mono { font-family: 'Roboto Mono', monospace; }
+  }
+}
+
+.customer-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+
+  .customer-row {
+    display: flex;
+    gap: 12px;
+    font-size: 13px;
+
+    .meta-label { color: #909399; min-width: 50px; }
+    .meta-value { color: #303133; }
   }
 }
 

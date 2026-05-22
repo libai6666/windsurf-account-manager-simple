@@ -560,6 +560,7 @@
       v-if="uiStore.currentViewingAccountId"
       v-model="uiStore.showBillingDialog"
       :account-id="uiStore.currentViewingAccountId"
+      :account="currentViewingAccount"
       :billing-data="currentBillingData"
       :loading="billingLoading"
       @refresh="refreshBillingData"
@@ -789,6 +790,10 @@ import logger from '@/utils/logger';
 const accountsStore = useAccountsStore();
 const settingsStore = useSettingsStore();
 const uiStore = useUIStore();
+const currentViewingAccount = computed(() => {
+  if (!uiStore.currentViewingAccountId) return undefined;
+  return accountsStore.accounts.find(a => a.id === uiStore.currentViewingAccountId);
+});
 
 const activeMenu = ref('overview');
 const searchQuery = ref('');
@@ -1255,18 +1260,87 @@ async function handleBatchTransfer() {
 }
 
 async function refreshBillingData() {
-  if (uiStore.currentViewingAccountId) {
-    billingLoading.value = true;
-    currentBillingData.value = null;
-    
-    try {
-      const result = await apiService.getBilling(uiStore.currentViewingAccountId);
-      currentBillingData.value = result;
-    } catch (error) {
-      ElMessage.error(`获取账单信息失败: ${error}`);
-    } finally {
-      billingLoading.value = false;
+  if (!uiStore.currentViewingAccountId) return;
+  const accountId = uiStore.currentViewingAccountId;
+
+  billingLoading.value = true;
+  currentBillingData.value = null;
+
+  const account = accountsStore.accounts.find(a => a.id === accountId);
+  const isNewAccount = !!account?.refresh_token?.startsWith('auth1_');
+  const isDevinAccount = account?.account_source === 'devin';
+
+  const billingPromise = apiService.getBilling(accountId).catch(err => {
+    console.warn('[Billing] getBilling failed:', err);
+    return null;
+  });
+  const stripePromise = isNewAccount && isDevinAccount
+    ? apiService.fetchStripePortalBilling(accountId).catch(err => {
+        console.warn('[Billing] fetchStripePortalBilling failed:', err);
+        return null;
+      })
+    : Promise.resolve(null);
+
+  try {
+    const [billingResult, stripeResult] = await Promise.all([billingPromise, stripePromise]);
+
+    const merged: any = billingResult ? { ...billingResult } : { success: false, error: '账单查询失败' };
+    merged.is_new_account = isNewAccount || merged.is_new_account || false;
+
+    // 合并 Stripe Portal 数据：补全卡号 + 订阅明细 + 发票
+    if (stripeResult && stripeResult.success) {
+      merged.stripe_portal = stripeResult;
+      // 卡号补全：老接口拿不到的情况下，用 Stripe 的 default_payment_method
+      const card = stripeResult.customer?.default_payment_method?.card;
+      if (card && card.last4) {
+        const stripePm = {
+          type: card.brand || 'card',
+          last4: card.last4,
+          exp_month: card.exp_month,
+          exp_year: card.exp_year,
+          funding: card.funding,
+        };
+        // 优先用 Stripe 的（更完整），若老接口已有则覆盖以保证准确
+        merged.payment_method = stripePm;
+      }
+      // 客户地址/姓名
+      if (stripeResult.customer?.name) {
+        merged.customer_name = stripeResult.customer.name;
+      }
+      if (stripeResult.customer?.address) {
+        merged.customer_address = stripeResult.customer.address;
+      }
+      // 把第一条活跃订阅的关键字段提升到顶层，便于现有 UI 渲染
+      const subs = stripeResult.subscriptions?.data;
+      if (Array.isArray(subs) && subs.length > 0) {
+        const primary = subs.find((s: any) => ['active', 'trialing'].includes(s.status)) || subs[0];
+        if (primary) {
+          if (primary.cancel_at_period_end != null) merged.cancel_at_period_end = primary.cancel_at_period_end;
+          if (primary.status) merged.subscription_status = primary.status;
+          if (primary.current_period_end) merged.subscription_current_period_end = primary.current_period_end;
+          if (primary.trial_end) merged.subscription_trial_end = primary.trial_end;
+        }
+      }
+      // 把发票列表提升到顶层
+      const invs = stripeResult.invoices?.data;
+      if (Array.isArray(invs) && invs.length > 0) {
+        merged.invoices = invs;
+        // 顶层 invoice_url 若缺失则用最近一张账单
+        if (!merged.invoice_url && invs[0].hosted_invoice_url) {
+          merged.invoice_url = invs[0].hosted_invoice_url;
+        }
+      }
     }
+
+    if (!billingResult && !stripeResult) {
+      ElMessage.error('获取账单信息失败');
+    }
+
+    currentBillingData.value = merged;
+  } catch (error) {
+    ElMessage.error(`获取账单信息失败: ${error}`);
+  } finally {
+    billingLoading.value = false;
   }
 }
 

@@ -349,11 +349,13 @@ const billingPreview = ref<{
 
 // 取消原因选项
 const cancelReasons = [
-  { value: 'too_expensive', label: '价格太贵' },
-  { value: 'not_using', label: '不再使用' },
+  { value: 'customer_service', label: '客户服务' },
+  { value: 'low_quality', label: '质量不佳' },
   { value: 'missing_features', label: '缺少功能' },
   { value: 'switching_service', label: '切换到其他服务' },
-  { value: 'other', label: '其他原因' }
+  { value: 'too_complex', label: '太复杂' },
+  { value: 'too_expensive', label: '价格太贵' },
+  { value: 'unused', label: '不再使用' }
 ];
 
 watch(() => props.modelValue, (val) => {
@@ -535,7 +537,7 @@ async function handleConfirm() {
 async function handleCancelSubscription() {
   try {
     // 第一步：选择取消原因
-    let selectedReason = 'too_expensive'; // 默认值
+    let selectedReason = 'unused'; // 默认值
 
     const reasonHtml = `
       <div style="text-align: left; padding: 10px 0;">
@@ -545,7 +547,7 @@ async function handleCancelSubscription() {
             <label style="display: flex; align-items: center; padding: 8px; cursor: pointer; border-radius: 4px; transition: background 0.2s;"
                    onmouseover="this.style.background='#f5f7fa'"
                    onmouseout="this.style.background='transparent'">
-              <input type="radio" name="cancel-reason" value="${r.value}" ${r.value === 'too_expensive' ? 'checked' : ''}
+              <input type="radio" name="cancel-reason" value="${r.value}" ${r.value === 'unused' ? 'checked' : ''}
                      style="margin-right: 8px;"
                      onchange="window.__selectedCancelReason='${r.value}'">
               <span style="color: #303133;">${r.label}</span>
@@ -556,7 +558,7 @@ async function handleCancelSubscription() {
     `;
 
     // 初始化全局变量
-    (window as any).__selectedCancelReason = 'too_expensive';
+    (window as any).__selectedCancelReason = 'unused';
 
     await ElMessageBox.confirm(reasonHtml, '取消订阅确认', {
       confirmButtonText: '确认取消',
@@ -565,14 +567,17 @@ async function handleCancelSubscription() {
       dangerouslyUseHTMLString: true,
       beforeClose: async (action, instance, done) => {
         if (action === 'confirm') {
-          selectedReason = (window as any).__selectedCancelReason || 'too_expensive';
+          selectedReason = (window as any).__selectedCancelReason || 'unused';
 
           instance.confirmButtonLoading = true;
           instance.confirmButtonText = '取消中...';
 
           try {
             console.log('取消订阅，原因:', selectedReason);
-            const result = await apiService.cancelSubscription(props.accountId, selectedReason);
+            const isWindsurfAccount = !props.account?.account_source || props.account.account_source === 'windsurf';
+            const result = isWindsurfAccount
+              ? await apiService.cancelWindsurfSubscription(props.accountId, selectedReason)
+              : await apiService.cancelSubscription(props.accountId, selectedReason);
 
             if (result.success) {
               ElMessage.success('订阅已成功取消');
