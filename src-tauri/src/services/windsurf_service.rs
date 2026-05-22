@@ -747,70 +747,59 @@ impl WindsurfService {
     }
     
     pub async fn get_team_billing(&self, token: &str, auth1_token: Option<&str>) -> AppResult<serde_json::Value> {
-        // 新账号 (Windsurf 2.0, refresh_token 以 auth1_ 开头) 走 _backend/ 代理 + Devin 认证头
-        // 老账号 (Firebase) 直连 web-backend.windsurf.com + x-auth-token
+        // 端点：统一走 web-backend.windsurf.com（与 cancel_plan / WindsurfPostAuth 同样的修复模式）。
+        // _backend/ 代理已确认会返回降级响应（导致"账单查询失败"），不再使用。
+        //
+        // 鉴权头（对齐 reference @auth_context.rs::AuthHeaderExt::with_auth）：
+        //   - Firebase 账号 (auth1_token=None)：仅 `x-auth-token: <token>`
+        //   - Devin 账号 (auth1_token=Some)：`x-auth-token` + `x-devin-session-token` (= token) + `x-devin-auth1-token`
         let is_new_account = auth1_token.is_some();
-        let url = if is_new_account {
-            "https://windsurf.com/_backend/exa.seat_management_pb.SeatManagementService/GetTeamBilling".to_string()
-        } else {
-            format!("{}/exa.seat_management_pb.SeatManagementService/GetTeamBilling", WINDSURF_BASE_URL)
-        };
+        let url = format!("{}/exa.seat_management_pb.SeatManagementService/GetTeamBilling", WINDSURF_BASE_URL);
 
-        // GetTeamBilling的body格式: 0x0a + token长度 + token
-        // 注意：不是 0x0a 0xa1 0x07，那是UpdatePlan用的
+        // GetTeamBilling 的 body 格式: 0x0a + token长度(varint) + token
         let token_bytes = token.as_bytes();
         let token_length = token_bytes.len();
-        
         let mut full_body = vec![0x0a];
-        
-        // Token长度（使用varint编码）
         if token_length < 128 {
             full_body.push(token_length as u8);
         } else {
             full_body.push(((token_length & 0x7F) | 0x80) as u8);
             full_body.push((token_length >> 7) as u8);
         }
-        
         full_body.extend_from_slice(token_bytes);
-        
-        println!("[GetTeamBilling] Sending request to {} (new_account={})", url, is_new_account);
-        
-        let result = if is_new_account {
-            let a1 = auth1_token.unwrap(); // is_new_account 保证 auth1_token.is_some()
-            self.client
-                .post(&url)
-                .body(full_body)
-                .header("content-type", "application/proto")
-                .header("connect-protocol-version", "1")
-                .header("X-Devin-Auth1-Token", a1)
-                .header("X-Devin-Session-Token", token)
-                .header("Referer", "https://windsurf.com/")
-                .send()
-                .await
-        } else {
-            self.client
-                .post(&url)
-                .body(full_body)
-                .header("accept", "*/*")
-                .header("accept-language", "zh-CN,zh;q=0.9")
-                .header("cache-control", "no-cache")
-                .header("connect-protocol-version", "1")
-                .header("content-type", "application/proto")
-                .header("pragma", "no-cache")
-                .header("priority", "u=1, i")
-                .header("sec-ch-ua", r#""Chromium";v="142", "Google Chrome";v="142", "Not_A Brand";v="99""#)
-                .header("sec-ch-ua-mobile", "?0")
-                .header("sec-ch-ua-platform", r#""Windows""#)
-                .header("sec-fetch-dest", "empty")
-                .header("sec-fetch-mode", "cors")
-                .header("sec-fetch-site", "same-site")
-                .header("x-auth-token", token)
-                .header("x-debug-email", "")
-                .header("x-debug-team-name", "")
-                .header("Referer", "https://windsurf.com/")
-                .send()
-                .await
-        };
+
+        info!("[GetTeamBilling] POST {} new_account={} body_size={}", url, is_new_account, full_body.len());
+
+        let mut req = self.client
+            .post(&url)
+            .body(full_body)
+            .header("accept", "*/*")
+            .header("accept-language", "zh-CN,zh;q=0.9")
+            .header("cache-control", "no-cache")
+            .header("connect-protocol-version", "1")
+            .header("content-type", "application/proto")
+            .header("pragma", "no-cache")
+            .header("priority", "u=1, i")
+            .header("sec-ch-ua", r#""Chromium";v="142", "Google Chrome";v="142", "Not_A Brand";v="99""#)
+            .header("sec-ch-ua-mobile", "?0")
+            .header("sec-ch-ua-platform", r#""Windows""#)
+            .header("sec-fetch-dest", "empty")
+            .header("sec-fetch-mode", "cors")
+            .header("sec-fetch-site", "same-site")
+            .header("x-auth-token", token)
+            .header("x-debug-email", "")
+            .header("x-debug-team-name", "")
+            .header("Referer", "https://windsurf.com/");
+
+        // Devin 账号：补齐 x-devin-session-token (= token) + x-devin-auth1-token
+        if is_new_account {
+            req = req.header("x-devin-session-token", token);
+            if let Some(a1) = auth1_token {
+                req = req.header("x-devin-auth1-token", a1);
+            }
+        }
+
+        let result = req.send().await;
         
         match result {
             Ok(response) => {
@@ -1159,6 +1148,7 @@ impl WindsurfService {
             .stripe_portal_get(&invoices_url, ek)
             .await
             .unwrap_or_else(|e| json!({ "error": e.to_string() }));
+        let payment_method = extract_card_details(&customer);
 
         Ok(json!({
             "success": true,
@@ -1166,6 +1156,7 @@ impl WindsurfService {
             "customer": customer,
             "subscriptions": subscriptions,
             "invoices": invoices,
+            "payment_method": payment_method,
             "timestamp": chrono::Utc::now().to_rfc3339(),
         }))
     }

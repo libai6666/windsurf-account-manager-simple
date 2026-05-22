@@ -13,8 +13,46 @@
     </div>
     
     <div v-else-if="billingData" class="billing-content">
+      <!-- 速览面板：卡号 + 订阅类型 + 到期（精简核心 3 件套，无需打开浏览器） -->
+      <div class="quick-summary">
+        <div class="qs-item qs-card">
+          <div class="qs-icon"><el-icon><CreditCard /></el-icon></div>
+          <div class="qs-body">
+            <div class="qs-label">卡号</div>
+            <div class="qs-value mono" v-if="summaryCard.last4">
+              <span class="qs-brand">{{ formatPaymentType(summaryCard.brand || '') }}</span>
+              <span class="qs-mask">•••• {{ summaryCard.last4 }}</span>
+              <span class="qs-exp" v-if="summaryCard.exp_month">
+                ({{ String(summaryCard.exp_month).padStart(2, '0') }}/{{ summaryCard.exp_year }})
+              </span>
+            </div>
+            <div class="qs-value qs-empty" v-else>未绑定</div>
+          </div>
+        </div>
+        <div class="qs-item qs-plan">
+          <div class="qs-icon"><el-icon><Trophy /></el-icon></div>
+          <div class="qs-body">
+            <div class="qs-label">订阅类型</div>
+            <div class="qs-value">
+              <span class="qs-plan-name">{{ summaryPlanName }}</span>
+              <el-tag v-if="billingData.on_trial" type="warning" effect="light" size="small" round>试用</el-tag>
+              <el-tag v-else-if="billingData.subscription_active" type="success" effect="light" size="small" round>活跃</el-tag>
+              <el-tag v-else-if="billingData.subscription_active === false" type="info" effect="light" size="small" round>未激活</el-tag>
+              <el-tag v-if="billingData.cancel_at_period_end" type="danger" effect="light" size="small" round>期末取消</el-tag>
+            </div>
+          </div>
+        </div>
+        <div class="qs-item qs-expiry">
+          <div class="qs-icon"><el-icon><Clock /></el-icon></div>
+          <div class="qs-body">
+            <div class="qs-label">{{ summaryExpiryLabel }}</div>
+            <div class="qs-value mono">{{ summaryExpiryValue }}</div>
+          </div>
+        </div>
+      </div>
+
       <!-- 顶部订阅卡片 -->
-      <div class="subscription-card" :class="`plan-${billingData.plan_name?.toLowerCase() || 'free'}`">
+      <div class="subscription-card" :class="`plan-${summaryPlanCode}`">
         <div class="card-bg-icon">
           <el-icon><Trophy /></el-icon>
         </div>
@@ -22,7 +60,7 @@
           <div class="plan-info">
             <div class="plan-name">
               <el-icon><Trophy /></el-icon>
-              {{ formatPlanName(billingData.plan_name) }}
+              {{ summaryPlanName }}
             </div>
             <div class="plan-status">
               <el-tag v-if="billingData.on_trial" type="warning" effect="dark" round size="small">试用期</el-tag>
@@ -167,19 +205,7 @@
               </el-link>
             </div>
 
-            <!-- 新账号: 复刻官网 "Manage billing" 按钮, 打开 Stripe Billing Portal -->
-            <div class="portal-link" v-if="billingData.is_new_account">
-              <el-button
-                type="primary"
-                size="small"
-                :loading="openingPortal"
-                :icon="Link"
-                @click="openBillingPortal"
-                plain
-              >
-                {{ billingPortalButtonText }}
-              </el-button>
-            </div>
+            <!-- 用户已要求不打开外部 Stripe Portal；帐单数据已在顶部 quick-summary 内嵌呈现 -->
           </div>
         </div>
       </div>
@@ -350,7 +376,6 @@
 <script setup lang="ts">
 import { ref, watch, computed } from 'vue';
 import { ElMessage } from 'element-plus';
-import { invoke } from '@tauri-apps/api/core';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { 
   Loading, 
@@ -359,7 +384,8 @@ import {
   User, 
   DataAnalysis, 
   CreditCard, 
-  CopyDocument 
+  CopyDocument,
+  Clock
 } from '@element-plus/icons-vue';
 import type { Account } from '@/types';
 
@@ -378,47 +404,8 @@ const emit = defineEmits<{
 
 const visible = ref(props.modelValue);
 const showFullResponse = ref(false);
-const openingPortal = ref(false);
 const isDevinAccount = computed(() => props.account?.account_source === 'devin');
-const paymentMethodHint = computed(() => isDevinAccount.value ? '银行卡信息需在 Stripe Portal 查看' : '银行卡信息需在 Windsurf 账号页查看');
-const billingPortalButtonText = computed(() => isDevinAccount.value ? '在浏览器打开完整账单' : '在浏览器打开 Windsurf 账号');
-
-async function openBillingPortal() {
-  if (!props.accountId) {
-    ElMessage.error('账户信息缺失');
-    return;
-  }
-  openingPortal.value = true;
-  try {
-    if (!isDevinAccount.value) {
-      await openUrl('https://windsurf.com/account');
-      ElMessage.success('已在默认浏览器打开 Windsurf 账号页');
-      return;
-    }
-
-    const url = await invoke<string>('create_billing_portal_session', { id: props.accountId });
-    if (!url || !url.includes('billing.stripe.com')) {
-      ElMessage.error('未能获取有效的账单 Portal 链接');
-      return;
-    }
-    await openUrl(url);
-    ElMessage.success('已在默认浏览器打开完整账单');
-  } catch (err: any) {
-    const raw = String(err?.message || err || '');
-    // 业务预期: 免费 Trial 账号未关联 Devin 组织, 后端会返回 401 + "No organizations found"
-    if (raw.includes('No organizations found') || raw.includes('HTTP 401')) {
-      ElMessage({
-        message: '此账号未关联付费订阅组织，无完整账单可查看（仅付费账号可用）',
-        type: 'warning',
-        duration: 4000,
-      });
-    } else {
-      ElMessage.error(`打开账单失败: ${raw}`);
-    }
-  } finally {
-    openingPortal.value = false;
-  }
-}
+const paymentMethodHint = computed(() => isDevinAccount.value ? '银行卡信息仅试用账号未绑卡' : '未获取到支付方式');
 
 watch(() => props.modelValue, (val) => {
   visible.value = val;
@@ -427,6 +414,109 @@ watch(() => props.modelValue, (val) => {
 watch(visible, (val) => {
   emit('update:modelValue', val);
 });
+
+// 速览卡片：优先用后端 merged 后的 payment_method，其次源于 stripe_portal
+const summaryCard = computed<{ last4?: string; brand?: string; exp_month?: number | string; exp_year?: number | string }>(() => {
+  const pm = props.billingData?.payment_method;
+  if (pm?.last4) {
+    return {
+      last4: pm.last4,
+      brand: pm.type || pm.brand,
+      exp_month: pm.exp_month,
+      exp_year: pm.exp_year,
+    };
+  }
+  const stripeCard = props.billingData?.stripe_portal?.customer?.default_payment_method?.card;
+  if (stripeCard?.last4) {
+    return {
+      last4: stripeCard.last4,
+      brand: stripeCard.brand,
+      exp_month: stripeCard.exp_month,
+      exp_year: stripeCard.exp_year,
+    };
+  }
+  return {};
+});
+
+// 订阅名称 + 主题色代码的多源 fallback：
+//   1. billingData.plan_name (后端 GetTeamBilling parser)
+//   2. stripe_portal.subscriptions[0].items.data[0].price_details.product.name (付费 Devin 账号)
+//   3. stripe_portal.subscriptions[0].description / plan.nickname
+// 可限定枚举到 formatPlanName 表；CSS 主题色默认 free
+const summaryPlanRaw = computed<string>(() => {
+  const direct = (props.billingData?.plan_name || '').toString().trim();
+  if (direct) return direct;
+  const sub = props.billingData?.stripe_portal?.subscriptions?.data?.[0];
+  const item = sub?.items?.data?.[0] || sub?.items?.[0];
+  const productName = item?.price_details?.product?.name
+    || item?.price?.product?.name
+    || item?.price_details?.nickname
+    || sub?.plan?.nickname;
+  if (productName) return String(productName);
+  if (sub?.description) return String(sub.description);
+  return '';
+});
+const summaryPlanName = computed(() => {
+  const raw = summaryPlanRaw.value;
+  if (!raw) return '未知';
+  const formatted = formatPlanName(raw);
+  // formatPlanName 未命中枚举时会原样返回 raw（如 'Windsurf Pro'），这里保留。
+  return formatted;
+});
+// CSS 类名仅取枚举关键字（pro/teams/enterprise/trial/free/starter/enterprise_self_serve）
+const summaryPlanCode = computed(() => {
+  const raw = summaryPlanRaw.value.toLowerCase();
+  if (!raw) return 'free';
+  if (raw.includes('enterprise_self_serve') || raw.includes('self-serve') || raw.includes('self serve')) return 'enterprise_self_serve';
+  if (raw.includes('enterprise')) return 'enterprise';
+  if (raw.includes('teams') || raw.includes('team')) return 'teams';
+  if (raw.includes('trial')) return 'trial';
+  if (raw.includes('starter')) return 'starter';
+  if (raw.includes('pro')) return 'pro';
+  return 'free';
+});
+
+// 选出主订阅（50%场景为未取消的 trialing/active）
+const primarySubscription = computed<any | null>(() => {
+  const subs = props.billingData?.stripe_portal?.subscriptions?.data;
+  if (!Array.isArray(subs) || subs.length === 0) return null;
+  return subs.find((s: any) => ['active', 'trialing'].includes(s.status)) || subs[0];
+});
+
+// 到期标签 + 值：优先级 cancel_at > trial_end > current_period_end > next_billing_date
+const summaryExpiry = computed<{ label: string; value: string }>(() => {
+  const data = props.billingData;
+  const sub = primarySubscription.value;
+  const fmtUnix = (u: number) => formatUnixTime(u);
+
+  if (sub?.cancel_at) {
+    return { label: '取消生效', value: fmtUnix(sub.cancel_at) };
+  }
+  if (data?.cancel_at_period_end && (sub?.current_period_end || data?.subscription_renewal_time)) {
+    return {
+      label: '期末取消',
+      value: sub?.current_period_end ? fmtUnix(sub.current_period_end) : (data?.subscription_renewal_time || data?.next_billing_date || '-'),
+    };
+  }
+  if (data?.on_trial && sub?.trial_end) {
+    return { label: '试用期至', value: fmtUnix(sub.trial_end) };
+  }
+  if (data?.on_trial) {
+    return { label: '试用期至', value: data?.subscription_renewal_time || data?.next_billing_date || '-' };
+  }
+  if (sub?.current_period_end) {
+    return { label: '下次续费', value: fmtUnix(sub.current_period_end) };
+  }
+  if (data?.subscription_renewal_time) {
+    return { label: '下次续费', value: data.subscription_renewal_time };
+  }
+  if (data?.next_billing_date) {
+    return { label: '下次扣费', value: data.next_billing_date };
+  }
+  return { label: '到期时间', value: '-' };
+});
+const summaryExpiryLabel = computed(() => summaryExpiry.value.label);
+const summaryExpiryValue = computed(() => summaryExpiry.value.value);
 
 // Stripe Portal: 订阅明细列表（来自 fetch_stripe_portal_billing 的 subscriptions.data）
 const stripeSubscriptions = computed<any[]>(() => {
@@ -612,16 +702,31 @@ function formatPaymentType(type: string) {
   return types[type?.toLowerCase()] || type || '未知';
 }
 
-// 格式化套餐名称
+// 格式化套餐名称（覆盖完整 TeamsTier 枚举，与后端 proto_parser 同表）
 function formatPlanName(name: string) {
   const names: Record<string, string> = {
     'pro': 'Pro 专业版',
+    'pro_ultimate': 'Pro Ultimate',
     'teams': 'Teams 团队版',
+    'teams_ultimate': 'Teams Ultimate',
     'enterprise': 'Enterprise 企业版',
+    'enterprise_saas': 'Enterprise SaaS',
     'enterprise_self_serve': 'Enterprise 企业自助版',
+    'enterprise_self_hosted': 'Enterprise 自建版',
+    'enterprise_saas_pooled': 'Enterprise SaaS Pooled',
+    'hybrid': 'Hybrid 混合版',
+    'waitlist_pro': 'Pro 候补',
     'trial': 'Trial 试用版',
     'free': 'Free 免费版',
-    'starter': 'Starter 入门版'
+    'starter': 'Starter 入门版',
+    'max': 'Max',
+    'devin_enterprise': 'Devin Enterprise',
+    'devin_teams': 'Devin Teams',
+    'devin_teams_v2': 'Devin Teams v2',
+    'devin_pro': 'Devin Pro',
+    'devin_max': 'Devin Max',
+    'devin_free': 'Devin Free',
+    'devin_trial': 'Devin Trial 试用版',
   };
   return names[name?.toLowerCase()] || name || '未知';
 }
@@ -664,6 +769,115 @@ async function copyToClipboard() {
   display: flex;
   flex-direction: column;
   gap: 24px;
+}
+
+/* 速览面板：卡号 + 订阅类型 + 到期 */
+.quick-summary {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  padding: 16px;
+  background: linear-gradient(135deg, #f0f9ff 0%, #faf5ff 100%);
+  border: 1px solid #e0e7ff;
+  border-radius: 12px;
+
+  .qs-item {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    background: #fff;
+    border-radius: 10px;
+    padding: 12px;
+    transition: box-shadow 0.2s ease;
+
+    &:hover {
+      box-shadow: 0 2px 8px rgba(99, 102, 241, 0.08);
+    }
+  }
+
+  .qs-icon {
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    background: #eef2ff;
+    color: #6366f1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+    flex-shrink: 0;
+  }
+
+  .qs-card .qs-icon {
+    background: #ecfdf5;
+    color: #10b981;
+  }
+
+  .qs-plan .qs-icon {
+    background: #fef3c7;
+    color: #f59e0b;
+  }
+
+  .qs-expiry .qs-icon {
+    background: #fee2e2;
+    color: #ef4444;
+  }
+
+  .qs-body {
+    min-width: 0;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .qs-label {
+    font-size: 11px;
+    color: #94a3b8;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-weight: 500;
+  }
+
+  .qs-value {
+    font-size: 14px;
+    color: #0f172a;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    line-height: 1.4;
+
+    &.mono {
+      font-family: 'Roboto Mono', 'Cascadia Code', monospace;
+    }
+
+    &.qs-empty {
+      color: #94a3b8;
+      font-weight: 400;
+    }
+  }
+
+  .qs-brand {
+    font-size: 12px;
+    color: #64748b;
+    font-weight: 500;
+  }
+
+  .qs-mask {
+    color: #0f172a;
+  }
+
+  .qs-exp {
+    font-size: 11px;
+    color: #94a3b8;
+    font-weight: 400;
+  }
+
+  .qs-plan-name {
+    color: #0f172a;
+  }
 }
 
 /* 顶部订阅卡片 */

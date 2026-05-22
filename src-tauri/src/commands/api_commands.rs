@@ -1604,12 +1604,6 @@ pub async fn fetch_stripe_portal_billing(
 
         .map_err(|e| e.to_string())?;
 
-    if !account.is_devin() {
-
-        return Err("Current account is not a Devin account".to_string());
-
-    }
-
     let auth1_token = account.refresh_token
 
         .as_deref()

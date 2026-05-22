@@ -1268,13 +1268,12 @@ async function refreshBillingData() {
 
   const account = accountsStore.accounts.find(a => a.id === accountId);
   const isNewAccount = !!account?.refresh_token?.startsWith('auth1_');
-  const isDevinAccount = account?.account_source === 'devin';
 
   const billingPromise = apiService.getBilling(accountId).catch(err => {
     console.warn('[Billing] getBilling failed:', err);
     return null;
   });
-  const stripePromise = isNewAccount && isDevinAccount
+  const stripePromise = isNewAccount
     ? apiService.fetchStripePortalBilling(accountId).catch(err => {
         console.warn('[Billing] fetchStripePortalBilling failed:', err);
         return null;
@@ -1291,7 +1290,16 @@ async function refreshBillingData() {
     if (stripeResult && stripeResult.success) {
       merged.stripe_portal = stripeResult;
       // 卡号补全：老接口拿不到的情况下，用 Stripe 的 default_payment_method
-      const card = stripeResult.customer?.default_payment_method?.card;
+      const directPm = stripeResult.payment_method;
+      const card = directPm?.last4
+        ? {
+            brand: directPm.type || directPm.brand,
+            last4: directPm.last4,
+            exp_month: directPm.exp_month,
+            exp_year: directPm.exp_year,
+            funding: directPm.funding,
+          }
+        : stripeResult.customer?.default_payment_method?.card;
       if (card && card.last4) {
         const stripePm = {
           type: card.brand || 'card',

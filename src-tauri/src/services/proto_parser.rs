@@ -954,6 +954,45 @@ impl ProtobufParser {
                 if let Some(plan_name) = plan.get("string_2").and_then(|v: &Value| v.as_str()) {
                     billing_info["plan_name"] = json!(plan_name);
                 }
+                // Devin 新版响应里 PlanInfo 只有 int_1 (teams_tier enum) 没有 string_2 (plan_name)。
+                // 此处用 teams_tier 枚举值兜底映射，与 WindsurfService::build_update_plan_body 同表。
+                // 同时根据是否含 TRIAL 推断 on_trial（覆盖 int_2 默认 false 的情况）。
+                if let Some(teams_tier) = plan.get("int_1").and_then(|v: &Value| v.as_i64()) {
+                    billing_info["teams_tier"] = json!(teams_tier);
+                    let tier_name = match teams_tier {
+                        0 => "free",
+                        1 => "teams",
+                        2 => "pro",
+                        3 => "enterprise_saas",
+                        4 => "hybrid",
+                        5 => "enterprise_self_hosted",
+                        6 => "waitlist_pro",
+                        7 => "teams_ultimate",
+                        8 => "pro_ultimate",
+                        9 => "trial",
+                        10 => "enterprise_self_serve",
+                        11 => "enterprise_saas_pooled",
+                        12 => "devin_enterprise",
+                        14 => "devin_teams",
+                        15 => "devin_teams_v2",
+                        16 => "devin_pro",
+                        17 => "devin_max",
+                        18 => "max",
+                        19 => "devin_free",
+                        20 => "devin_trial",
+                        _ => "",
+                    };
+                    if !tier_name.is_empty() {
+                        // 仅在 string_2 缺失时填入，避免覆盖更精确的 plan_name 字符串
+                        if billing_info.get("plan_name").and_then(|v| v.as_str()).map_or(true, str::is_empty) {
+                            billing_info["plan_name"] = json!(tier_name);
+                        }
+                        // TRIAL 类套餐强制 on_trial=true
+                        if tier_name.contains("trial") {
+                            billing_info["on_trial"] = json!(true);
+                        }
+                    }
+                }
                 // 从套餐信息中提取基础配额
                 if let Some(base_quota) = plan.get("int_12").and_then(|v: &Value| v.as_i64()) {
                     billing_info["base_quota"] = json!(base_quota);

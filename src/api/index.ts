@@ -546,6 +546,7 @@ export const apiService = {
     customer?: any;
     subscriptions?: any;
     invoices?: any;
+    payment_method?: any;
     timestamp?: string;
     error?: string;
   }> {
