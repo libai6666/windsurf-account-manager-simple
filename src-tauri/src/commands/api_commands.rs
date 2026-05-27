@@ -427,6 +427,11 @@ pub async fn login_account(
                         updated_account.weekly_quota_reset = Some(v);
 
                     }
+                    if let Some(v) = plan_status.get("overage_balance_micros").and_then(|v| v.as_i64()) {
+                        updated_account.overage_balance_micros = Some(v);
+                    } else {
+                        updated_account.overage_balance_micros = Some(0);
+                    }
 
 
 
@@ -569,6 +574,11 @@ pub async fn login_account(
                             updated_account.weekly_quota_reset = Some(v);
 
                         }
+                        if let Some(v) = plan_status.get("overage_balance_micros").and_then(|v| v.as_i64()) {
+                            updated_account.overage_balance_micros = Some(v);
+                        } else {
+                            updated_account.overage_balance_micros = Some(0);
+                        }
 
                     }
 
@@ -642,7 +652,9 @@ pub async fn login_account(
 
         "is_disabled": updated_account.is_disabled,
 
-        "is_team_owner": updated_account.is_team_owner
+        "is_team_owner": updated_account.is_team_owner,
+
+        "overage_balance_micros": updated_account.overage_balance_micros
 
     }))
 
@@ -813,6 +825,11 @@ pub async fn refresh_token(
                         updated_account.weekly_quota_reset = Some(v);
 
                     }
+                    if let Some(v) = plan_status.get("overage_balance_micros").and_then(|v| v.as_i64()) {
+                        updated_account.overage_balance_micros = Some(v);
+                    } else {
+                        updated_account.overage_balance_micros = Some(0);
+                    }
 
 
 
@@ -947,6 +964,11 @@ pub async fn refresh_token(
                             updated_account.weekly_quota_reset = Some(v);
 
                         }
+                        if let Some(v) = ps.get("overage_balance_micros").and_then(|v| v.as_i64()) {
+                            updated_account.overage_balance_micros = Some(v);
+                        } else {
+                            updated_account.overage_balance_micros = Some(0);
+                        }
 
                     }
 
@@ -1040,7 +1062,9 @@ pub async fn refresh_token(
 
         "daily_quota_reset": updated_account.daily_quota_reset,
 
-        "weekly_quota_reset": updated_account.weekly_quota_reset
+        "weekly_quota_reset": updated_account.weekly_quota_reset,
+
+        "overage_balance_micros": updated_account.overage_balance_micros
 
     }))
 
@@ -2464,6 +2488,11 @@ fn get_current_user_internal<'a>(
                     updated_account.weekly_quota_reset = Some(v);
 
                 }
+                if let Some(v) = plan_status.get("overage_balance_micros").and_then(|v| v.as_i64()) {
+                    updated_account.overage_balance_micros = Some(v);
+                } else {
+                    updated_account.overage_balance_micros = Some(0);
+                }
 
 
 
@@ -2681,6 +2710,11 @@ fn get_current_user_internal<'a>(
 
                         updated_account.weekly_quota_reset = Some(v);
 
+                    }
+                    if let Some(v) = plan_status.get("overage_balance_micros").and_then(|v| v.as_i64()) {
+                        updated_account.overage_balance_micros = Some(v);
+                    } else {
+                        updated_account.overage_balance_micros = Some(0);
                     }
 
                 }
@@ -3336,6 +3370,11 @@ async fn refresh_token_internal(
                         updated_account.weekly_quota_reset = Some(v);
 
                     }
+                    if let Some(v) = plan_status.get("overage_balance_micros").and_then(|v| v.as_i64()) {
+                        updated_account.overage_balance_micros = Some(v);
+                    } else {
+                        updated_account.overage_balance_micros = Some(0);
+                    }
 
 
 
@@ -3466,6 +3505,11 @@ async fn refresh_token_internal(
                             updated_account.weekly_quota_reset = Some(v);
 
                         }
+                        if let Some(v) = plan_status.get("overage_balance_micros").and_then(|v| v.as_i64()) {
+                            updated_account.overage_balance_micros = Some(v);
+                        } else {
+                            updated_account.overage_balance_micros = Some(0);
+                        }
 
                     }
 
@@ -3547,7 +3591,9 @@ async fn refresh_token_internal(
 
         "daily_quota_reset": updated_account.daily_quota_reset,
 
-        "weekly_quota_reset": updated_account.weekly_quota_reset
+        "weekly_quota_reset": updated_account.weekly_quota_reset,
+
+        "overage_balance_micros": updated_account.overage_balance_micros
 
     }))
 

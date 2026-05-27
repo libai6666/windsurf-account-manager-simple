@@ -468,6 +468,10 @@ export const apiService = {
 
 
 
+    overage_balance_micros?: number;
+
+
+
     used_trial?: boolean;
 
 

@@ -1270,6 +1270,9 @@ impl ProtobufParser {
             result["weekly_quota_remaining"] = json!(
                 plan_status.get("int_15").and_then(|v| v.as_i64()).unwrap_or(0)
             );
+            if let Some(v) = plan_status.get("int_16").and_then(|v| v.as_i64()) {
+                result["overage_balance_micros"] = json!(v);
+            }
             // field 17: daily_quota_reset (每日配额重置时间, Unix时间戳)
             if let Some(v) = plan_status.get("int_17").and_then(|v| v.as_i64()) {
                 result["daily_quota_reset"] = json!(v);

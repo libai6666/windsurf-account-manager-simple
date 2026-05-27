@@ -495,7 +495,8 @@ function accountOptionLabel(account: Account, currentProfileId?: string) {
   const daily = account.daily_quota_remaining;
   const weekly = account.weekly_quota_remaining;
   const plan = account.plan_name || '未知';
-  const emailWithPlan = `${account.email} [${plan}]`;
+  const overage = `$${((account.overage_balance_micros ?? 0) / 1_000_000).toFixed(2)}`;
+  const emailWithPlan = `${account.email} [${plan}] +${overage}`;
   const base = (daily === undefined && weekly === undefined)
     ? emailWithPlan
     : `${emailWithPlan} (日${daily ?? '?'}%/周${weekly ?? '?'}%)`;

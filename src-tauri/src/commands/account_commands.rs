@@ -224,6 +224,11 @@ pub async fn add_account_by_refresh_token(
             if let Some(v) = plan_status.get("weekly_quota_reset").and_then(|v| v.as_i64()) {
                 account.weekly_quota_reset = Some(v);
             }
+            if let Some(v) = plan_status.get("overage_balance_micros").and_then(|v| v.as_i64()) {
+                account.overage_balance_micros = Some(v);
+            } else {
+                account.overage_balance_micros = Some(0);
+            }
             account.last_quota_update = Some(chrono::Utc::now());
         }
     }
@@ -789,6 +794,11 @@ async fn apply_plan_status_to_account(account: &mut Account, windsurf_service: &
             }
             if let Some(v) = plan_status.get("weekly_quota_reset").and_then(|v| v.as_i64()) {
                 account.weekly_quota_reset = Some(v);
+            }
+            if let Some(v) = plan_status.get("overage_balance_micros").and_then(|v| v.as_i64()) {
+                account.overage_balance_micros = Some(v);
+            } else {
+                account.overage_balance_micros = Some(0);
             }
             account.last_quota_update = Some(chrono::Utc::now());
         }

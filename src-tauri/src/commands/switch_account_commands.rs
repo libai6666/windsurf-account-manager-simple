@@ -1737,6 +1737,11 @@ pub async fn check_auto_switch(
                                 let mut updated = (*acc).clone();
                                 updated.daily_quota_remaining = Some(daily);
                                 updated.weekly_quota_remaining = Some(weekly);
+                                if let Some(v) = plan_status.get("overage_balance_micros").and_then(|v| v.as_i64()) {
+                                    updated.overage_balance_micros = Some(v);
+                                } else {
+                                    updated.overage_balance_micros = Some(0);
+                                }
                                 updated.last_quota_update = Some(now);
                                 let _ = data_store.update_account(updated).await;
                                 let acc_is_free = is_free_plan(acc);
@@ -1814,6 +1819,7 @@ pub async fn check_auto_switch(
     let windsurf_service = crate::services::windsurf_service::WindsurfService::new();
     let mut current_daily_remaining = current_account.daily_quota_remaining.unwrap_or(100);
     let mut current_weekly_remaining = current_account.weekly_quota_remaining.unwrap_or(100);
+    let mut current_overage_balance_micros = current_account.overage_balance_micros.unwrap_or(0);
 
     if let Some(ref token) = current_account.token {
         if let Ok(result) = windsurf_service.get_plan_status(token).await {
@@ -1824,6 +1830,9 @@ pub async fn check_auto_switch(
                 if let Some(v) = plan_status.get("weekly_quota_remaining").and_then(|v| v.as_i64()) {
                     current_weekly_remaining = v as i32;
                 }
+                current_overage_balance_micros = plan_status.get("overage_balance_micros")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
                 // 更新数据库
                 let mut updated = current_account.clone();
                 updated.daily_quota_remaining = Some(current_daily_remaining);
@@ -1833,6 +1842,11 @@ pub async fn check_auto_switch(
                 }
                 if let Some(v) = plan_status.get("weekly_quota_reset").and_then(|v| v.as_i64()) {
                     updated.weekly_quota_reset = Some(v);
+                }
+                if let Some(v) = plan_status.get("overage_balance_micros").and_then(|v| v.as_i64()) {
+                    updated.overage_balance_micros = Some(v);
+                } else {
+                    updated.overage_balance_micros = Some(0);
                 }
                 updated.last_quota_update = Some(chrono::Utc::now());
                 let _ = data_store.update_account(updated).await;
@@ -1865,6 +1879,17 @@ pub async fn check_auto_switch(
             "current_account": current_account.email,
             "daily_remaining": current_daily_remaining,
             "weekly_remaining": current_weekly_remaining
+        }));
+    }
+
+    if current_overage_balance_micros > 0 {
+        return Ok(json!({
+            "action": "skip",
+            "reason": format!("当前账号还有额外额度 ${:.2}，暂不自动换号", current_overage_balance_micros as f64 / 1_000_000.0),
+            "current_account": current_account.email,
+            "daily_remaining": current_daily_remaining,
+            "weekly_remaining": current_weekly_remaining,
+            "overage_balance_micros": current_overage_balance_micros
         }));
     }
 
@@ -1989,6 +2014,11 @@ pub async fn check_auto_switch(
                         }
                         if let Some(v) = plan_status.get("weekly_quota_reset").and_then(|v| v.as_i64()) {
                             updated.weekly_quota_reset = Some(v);
+                        }
+                        if let Some(v) = plan_status.get("overage_balance_micros").and_then(|v| v.as_i64()) {
+                            updated.overage_balance_micros = Some(v);
+                        } else {
+                            updated.overage_balance_micros = Some(0);
                         }
                         updated.last_quota_update = Some(now);
                         let _ = data_store.update_account(updated).await;
