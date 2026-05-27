@@ -1187,7 +1187,6 @@ fn launch_main_windsurf_windows(exe_path: &str) -> Result<(), String> {
 
 #[cfg(target_os = "windows")]
 async fn switch_main_account_direct_windows(
-    app: &tauri::AppHandle,
     auth: &SwitchAuthResult,
     account: &crate::models::Account,
 ) -> Result<bool, String> {
@@ -1199,9 +1198,13 @@ async fn switch_main_account_direct_windows(
     prepare_profile_local_state(&user_data_dir)
         .map_err(|e| format!("初始化主实例 Local State 失败: {}", e))?;
 
+    if was_running {
+        stop_main_windsurf_processes_windows()?;
+        tokio::time::sleep(tokio::time::Duration::from_millis(1200)).await;
+    }
+
     let email = auth.email.as_deref().unwrap_or(&account.email);
-    let mut restarted = false;
-    let write_result = write_windsurf_auth_direct(
+    write_windsurf_auth_direct(
         &auth.register_result.api_key,
         &auth.register_result.name,
         email,
@@ -1210,47 +1213,15 @@ async fn switch_main_account_direct_windows(
         auth.org_id.as_deref(),
         &auth.register_result.api_server_url,
         &user_data_dir,
-    );
+    ).map_err(|e| format!("写入主实例认证失败: {}", e))?;
 
-    if let Err(first_error) = write_result {
-        if !was_running {
-            return Err(format!("写入主实例认证失败: {}", first_error));
-        }
-        warn!("Direct-write main auth failed while Windsurf is running, restarting main instance before retry: {}", first_error);
-        stop_main_windsurf_processes_windows()?;
-        tokio::time::sleep(tokio::time::Duration::from_millis(900)).await;
-        write_windsurf_auth_direct(
-            &auth.register_result.api_key,
-            &auth.register_result.name,
-            email,
-            account.plan_name.as_deref(),
-            auth.account_id.as_deref(),
-            auth.org_id.as_deref(),
-            &auth.register_result.api_server_url,
-            &user_data_dir,
-        ).map_err(|e| format!("重启后写入主实例认证失败: {}", e))?;
-        restarted = true;
-    }
-
-    if restarted || !was_running {
-        if let Some(exe_path) = exe_path {
-            launch_main_windsurf_windows(&exe_path)?;
-        } else {
-            warn!("Windsurf.exe not found after direct-write main switch");
-        }
+    if let Some(exe_path) = exe_path {
+        launch_main_windsurf_windows(&exe_path)?;
     } else {
-        let refresh_url = "windsurf://codeium.windsurf/refresh-authentication-session";
-        if let Err(e) = trigger_windsurf_callback_url(
-            app,
-            refresh_url,
-            "refresh-authentication-session",
-            None,
-        ).await {
-            warn!("Failed to dispatch main auth refresh URI after direct-write: {}", e);
-        }
+        warn!("Windsurf.exe not found after direct-write main switch");
     }
 
-    Ok(restarted)
+    Ok(was_running)
 }
 
 #[cfg(target_os = "macos")]
@@ -1385,7 +1356,7 @@ pub async fn switch_account(
         #[cfg(target_os = "windows")]
         {
             info!("Switching main Windsurf account via direct state write...");
-            match switch_main_account_direct_windows(&app, &auth, &account).await {
+            match switch_main_account_direct_windows(&auth, &account).await {
                 Ok(restarted) => restarted,
                 Err(e) => {
                     error!("Direct main account switch failed: {}", e);
