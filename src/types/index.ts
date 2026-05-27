@@ -93,6 +93,8 @@ export interface Account {
   weekly_quota_remaining?: number;  // 每周配额剩余百分比 (0-100)
   daily_quota_reset?: number;       // 每日配额重置时间 (Unix时间戳秒)
   weekly_quota_reset?: number;      // 每周配额重置时间 (Unix时间戳秒)
+  // 额外使用余额（微美元，除以 1_000_000 得到美元；对应 Usage 页 "Extra usage balance available"）
+  overage_balance_micros?: number;
   // 订阅到期时间
   subscription_expires_at?: string;
   // 订阅是否激活 (从 GetCurrentUser API 的 team_info.subscription_active 获取)

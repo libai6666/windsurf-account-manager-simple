@@ -213,6 +213,11 @@ pub async fn login_account(
                     if let Some(v) = plan_status.get("weekly_quota_reset").and_then(|v| v.as_i64()) {
                         updated_account.weekly_quota_reset = Some(v);
                     }
+                    if let Some(v) = plan_status.get("overage_balance_micros").and_then(|v| v.as_i64()) {
+                        updated_account.overage_balance_micros = Some(v);
+                    } else {
+                        updated_account.overage_balance_micros = Some(0);
+                    }
                     
                     updated_account.last_quota_update = Some(chrono::Utc::now());
                     store.update_account(updated_account.clone()).await
@@ -283,6 +288,11 @@ pub async fn login_account(
                         }
                         if let Some(v) = plan_status.get("weekly_quota_reset").and_then(|v| v.as_i64()) {
                             updated_account.weekly_quota_reset = Some(v);
+                        }
+                        if let Some(v) = plan_status.get("overage_balance_micros").and_then(|v| v.as_i64()) {
+                            updated_account.overage_balance_micros = Some(v);
+                        } else {
+                            updated_account.overage_balance_micros = Some(0);
                         }
                     }
                 }
@@ -406,6 +416,11 @@ pub async fn refresh_token(
                     if let Some(v) = plan_status.get("weekly_quota_reset").and_then(|v| v.as_i64()) {
                         updated_account.weekly_quota_reset = Some(v);
                     }
+                    if let Some(v) = plan_status.get("overage_balance_micros").and_then(|v| v.as_i64()) {
+                        updated_account.overage_balance_micros = Some(v);
+                    } else {
+                        updated_account.overage_balance_micros = Some(0);
+                    }
 
                     updated_account.last_quota_update = Some(chrono::Utc::now());
                     store.update_account(updated_account.clone()).await
@@ -473,6 +488,11 @@ pub async fn refresh_token(
                         if let Some(v) = ps.get("weekly_quota_reset").and_then(|v| v.as_i64()) {
                             updated_account.weekly_quota_reset = Some(v);
                         }
+                        if let Some(v) = ps.get("overage_balance_micros").and_then(|v| v.as_i64()) {
+                            updated_account.overage_balance_micros = Some(v);
+                        } else {
+                            updated_account.overage_balance_micros = Some(0);
+                        }
                     }
                 }
 
@@ -518,7 +538,8 @@ pub async fn refresh_token(
         "daily_quota_remaining": updated_account.daily_quota_remaining,
         "weekly_quota_remaining": updated_account.weekly_quota_remaining,
         "daily_quota_reset": updated_account.daily_quota_reset,
-        "weekly_quota_reset": updated_account.weekly_quota_reset
+        "weekly_quota_reset": updated_account.weekly_quota_reset,
+        "overage_balance_micros": updated_account.overage_balance_micros
     }))
 }
 
@@ -1162,6 +1183,11 @@ fn get_current_user_internal<'a>(
                 if let Some(v) = plan_status.get("weekly_quota_reset").and_then(|v| v.as_i64()) {
                     updated_account.weekly_quota_reset = Some(v);
                 }
+                if let Some(v) = plan_status.get("overage_balance_micros").and_then(|v| v.as_i64()) {
+                    updated_account.overage_balance_micros = Some(v);
+                } else {
+                    updated_account.overage_balance_micros = Some(0);
+                }
 
                 updated_account.last_quota_update = Some(chrono::Utc::now());
                 // API 调通说明账号有效，把 status 重置为 Active（防止被历史 Error 状态卡住前端 UI）
@@ -1270,6 +1296,11 @@ fn get_current_user_internal<'a>(
                     }
                     if let Some(v) = plan_status.get("weekly_quota_reset").and_then(|v| v.as_i64()) {
                         updated_account.weekly_quota_reset = Some(v);
+                    }
+                    if let Some(v) = plan_status.get("overage_balance_micros").and_then(|v| v.as_i64()) {
+                        updated_account.overage_balance_micros = Some(v);
+                    } else {
+                        updated_account.overage_balance_micros = Some(0);
                     }
                 }
             }
@@ -1598,6 +1629,11 @@ async fn refresh_token_internal(
                     if let Some(v) = plan_status.get("weekly_quota_reset").and_then(|v| v.as_i64()) {
                         updated_account.weekly_quota_reset = Some(v);
                     }
+                    if let Some(v) = plan_status.get("overage_balance_micros").and_then(|v| v.as_i64()) {
+                        updated_account.overage_balance_micros = Some(v);
+                    } else {
+                        updated_account.overage_balance_micros = Some(0);
+                    }
                     
                     updated_account.last_quota_update = Some(chrono::Utc::now());
                 }
@@ -1663,6 +1699,11 @@ async fn refresh_token_internal(
                         if let Some(v) = plan_status.get("weekly_quota_reset").and_then(|v| v.as_i64()) {
                             updated_account.weekly_quota_reset = Some(v);
                         }
+                        if let Some(v) = plan_status.get("overage_balance_micros").and_then(|v| v.as_i64()) {
+                            updated_account.overage_balance_micros = Some(v);
+                        } else {
+                            updated_account.overage_balance_micros = Some(0);
+                        }
                     }
                 }
 
@@ -1703,7 +1744,8 @@ async fn refresh_token_internal(
         "daily_quota_remaining": updated_account.daily_quota_remaining,
         "weekly_quota_remaining": updated_account.weekly_quota_remaining,
         "daily_quota_reset": updated_account.daily_quota_reset,
-        "weekly_quota_reset": updated_account.weekly_quota_reset
+        "weekly_quota_reset": updated_account.weekly_quota_reset,
+        "overage_balance_micros": updated_account.overage_balance_micros
     }))
 }
 

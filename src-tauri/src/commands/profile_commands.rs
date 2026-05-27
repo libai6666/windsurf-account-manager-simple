@@ -854,6 +854,12 @@ async fn choose_best_candidate(
                                 .get("weekly_quota_remaining")
                                 .and_then(|v| v.as_i64())
                                 .unwrap_or(0) as i32;
+                            // 额外使用余额 (微美元) - 即 Usage 页 "Extra usage balance available"
+                            // 接口未返回视为 0，候选号刷新时一并同步到 DB
+                            let overage_micros = plan_status
+                                .get("overage_balance_micros")
+                                .and_then(|v| v.as_i64())
+                                .unwrap_or(0);
 
                             let mut updated = acc.clone();
                             updated.daily_quota_remaining = Some(daily);
@@ -864,10 +870,12 @@ async fn choose_best_candidate(
                             if let Some(v) = plan_status.get("weekly_quota_reset").and_then(|v| v.as_i64()) {
                                 updated.weekly_quota_reset = Some(v);
                             }
+                            updated.overage_balance_micros = Some(overage_micros);
                             updated.last_quota_update = Some(now);
                             let _ = store.update_account(updated).await;
                             refreshed += 1;
-                            println!("[分身自动换号] 刷新账号 {}: 日{}%, 周{}%", acc.email, daily, weekly);
+                            println!("[分身自动换号] 刷新账号 {}: 日{}%, 周{}%, 额外额度 ${:.2}",
+                                acc.email, daily, weekly, overage_micros as f64 / 1_000_000.0);
                             (daily, weekly)
                         }
                         None => (
@@ -1654,6 +1662,7 @@ pub async fn check_profile_auto_switch(
     let windsurf_service = crate::services::windsurf_service::WindsurfService::new();
     let mut current_daily_remaining = current_account.daily_quota_remaining.unwrap_or(100);
     let mut current_weekly_remaining = current_account.weekly_quota_remaining.unwrap_or(100);
+    let mut current_overage_micros = current_account.overage_balance_micros.unwrap_or(0);
 
     if let Some(ref token) = current_account.token {
         if let Ok(result) = windsurf_service.get_plan_status(token).await {
@@ -1664,6 +1673,12 @@ pub async fn check_profile_auto_switch(
                 if let Some(v) = plan_status.get("weekly_quota_remaining").and_then(|v| v.as_i64()) {
                     current_weekly_remaining = v as i32;
                 }
+                // 额外使用余额 (微美元) - 即 Usage 页 "Extra usage balance available"
+                // 接口未返回视为 0，避免旧缓存值误导换号判断
+                current_overage_micros = plan_status
+                    .get("overage_balance_micros")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
                 let mut updated = current_account.clone();
                 updated.daily_quota_remaining = Some(current_daily_remaining);
                 updated.weekly_quota_remaining = Some(current_weekly_remaining);
@@ -1673,11 +1688,14 @@ pub async fn check_profile_auto_switch(
                 if let Some(v) = plan_status.get("weekly_quota_reset").and_then(|v| v.as_i64()) {
                     updated.weekly_quota_reset = Some(v);
                 }
+                updated.overage_balance_micros = Some(current_overage_micros);
                 updated.last_quota_update = Some(Utc::now());
                 let _ = store.update_account(updated).await;
             }
         }
     }
+
+    let current_overage_dollars = current_overage_micros as f64 / 1_000_000.0;
 
     let need_switch_daily = current_daily_remaining <= threshold;
     let need_switch_weekly = current_weekly_remaining <= 0;
@@ -1698,7 +1716,23 @@ pub async fn check_profile_auto_switch(
             "profile_id": profile_id,
             "current_account": current_account.email,
             "daily_remaining": current_daily_remaining,
-            "weekly_remaining": current_weekly_remaining
+            "weekly_remaining": current_weekly_remaining,
+            "overage_balance_micros": current_overage_micros
+        }));
+    }
+
+    // 额外额度未消耗完时，即使配额已到阈值也暂不切号（Windsurf 仍可用 free models / overage 继续工作）
+    if current_overage_micros > 0 {
+        println!("[分身自动换号][{}] {} 但当前账号仍有额外额度 ${:.2}，跳过切号",
+            profile_id, switch_reason, current_overage_dollars);
+        return Ok(json!({
+            "action": "skip",
+            "reason": format!("{}，但当前账号还有额外额度 ${:.2}，暂不切号", switch_reason, current_overage_dollars),
+            "profile_id": profile_id,
+            "current_account": current_account.email,
+            "daily_remaining": current_daily_remaining,
+            "weekly_remaining": current_weekly_remaining,
+            "overage_balance_micros": current_overage_micros
         }));
     }
 

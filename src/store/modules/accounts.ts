@@ -477,6 +477,9 @@ export const useAccountsStore = defineStore('accounts', () => {
         if (result.weekly_quota_reset !== undefined && result.weekly_quota_reset !== null) {
           updatedAccount.weekly_quota_reset = result.weekly_quota_reset;
         }
+        if (result.overage_balance_micros !== undefined && result.overage_balance_micros !== null) {
+          updatedAccount.overage_balance_micros = result.overage_balance_micros;
+        }
         updatedAccount.last_quota_update = dayjs().toISOString();
         
         // 根据模式选择更新方式
@@ -573,6 +576,7 @@ export const useAccountsStore = defineStore('accounts', () => {
             if (item.data.weekly_quota_remaining !== undefined && item.data.weekly_quota_remaining !== null) updatedAcc.weekly_quota_remaining = item.data.weekly_quota_remaining;
             if (item.data.daily_quota_reset !== undefined && item.data.daily_quota_reset !== null) updatedAcc.daily_quota_reset = item.data.daily_quota_reset;
             if (item.data.weekly_quota_reset !== undefined && item.data.weekly_quota_reset !== null) updatedAcc.weekly_quota_reset = item.data.weekly_quota_reset;
+            if (item.data.overage_balance_micros !== undefined && item.data.overage_balance_micros !== null) updatedAcc.overage_balance_micros = item.data.overage_balance_micros;
             updatedAcc.status = 'active';
             accounts.value.splice(idx, 1, updatedAcc);
             

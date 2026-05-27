@@ -139,6 +139,7 @@ export const apiService = {
     weekly_quota_remaining?: number;
     daily_quota_reset?: number;
     weekly_quota_reset?: number;
+    overage_balance_micros?: number;
   }> {
     return await invoke('refresh_token', { id });
   },

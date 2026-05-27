@@ -87,6 +87,11 @@
             <span>{{ weeklyResetText }}</span>
           </div>
         </div>
+        <div class="quota-extra">
+          <el-icon class="extra-icon"><Money /></el-icon>
+          <span class="extra-label">额外额度:</span>
+          <span class="extra-value" :class="{ active: overageBalanceMicros > 0 }">{{ formattedOverageBalance }}</span>
+        </div>
         <!-- 订阅到期时间（与旧配额系统样式一致） -->
         <div class="quota-expiry" v-if="account.subscription_expires_at">
           <el-icon class="expiry-icon"><Clock /></el-icon>
@@ -127,6 +132,11 @@
         </div>
         
         <!-- 订阅到期时间（整合在配额区块内） -->
+        <div class="quota-extra">
+          <el-icon class="extra-icon"><Money /></el-icon>
+          <span class="extra-label">额外额度:</span>
+          <span class="extra-value" :class="{ active: overageBalanceMicros > 0 }">{{ formattedOverageBalance }}</span>
+        </div>
         <div class="quota-expiry" v-if="account.subscription_expires_at">
           <el-icon class="expiry-icon"><Clock /></el-icon>
           <span class="expiry-label">到期时间:</span>
@@ -688,6 +698,12 @@ const getDailyQuotaColor = computed(() => {
 
 const getWeeklyQuotaColor = computed(() => {
   return getQuotaColorByRemaining(props.account.weekly_quota_remaining ?? 0);
+});
+
+const overageBalanceMicros = computed(() => props.account.overage_balance_micros ?? 0);
+
+const formattedOverageBalance = computed(() => {
+  return `$${(overageBalanceMicros.value / 1_000_000).toFixed(2)}`;
 });
 
 // 格式化重置时间
@@ -2123,7 +2139,7 @@ async function handleSwitchAccount() {
 }
 
 .quota-item-value {
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 700;
   font-family: 'Segoe UI', system-ui, sans-serif;
   letter-spacing: 0.3px;
@@ -2132,30 +2148,60 @@ async function handleSwitchAccount() {
 .quota-reset-time {
   display: flex;
   align-items: center;
-  gap: 3px;
+  gap: 4px;
   margin-top: 2px;
-  font-size: 10px;
+  font-size: 11px;
   color: #94a3b8;
 }
 
 .quota-reset-time .reset-icon {
-  font-size: 10px;
+  font-size: 13px;
+}
+
+.quota-extra {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
+  font-size: 11px;
+}
+
+.quota-extra .extra-icon {
+  color: #64748b;
+  font-size: 13px;
+}
+
+.quota-extra .extra-label {
+  color: #64748b;
+  font-weight: 500;
+}
+
+.quota-extra .extra-value {
+  color: #94a3b8;
+  font-weight: 800;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+}
+
+.quota-extra .extra-value.active {
+  color: #10b981;
 }
 
 /* 配额区块内的订阅到期时间样式 */
 .quota-expiry {
   display: flex;
   align-items: center;
-  gap: 3px;
+  gap: 4px;
   margin-top: 4px;
   padding-top: 4px;
   border-top: 1px solid rgba(0, 0, 0, 0.06);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .quota-expiry .expiry-icon {
   color: #64748b;
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .quota-expiry .expiry-label {
@@ -2170,7 +2216,7 @@ async function handleSwitchAccount() {
 }
 
 .quota-expiry .expiry-badge {
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   padding: 1px 6px;
   border-radius: 10px;
@@ -2631,6 +2677,26 @@ async function handleSwitchAccount() {
 
 :root.dark .quota-progress :deep(.el-progress-bar__outer) {
   background-color: #374151;
+}
+
+:root.dark .quota-extra {
+  border-top-color: rgba(255, 255, 255, 0.08);
+}
+
+:root.dark .quota-extra .extra-icon {
+  color: #94a3b8;
+}
+
+:root.dark .quota-extra .extra-label {
+  color: #94a3b8;
+}
+
+:root.dark .quota-extra .extra-value {
+  color: #64748b;
+}
+
+:root.dark .quota-extra .extra-value.active {
+  color: #34d399;
 }
 
 /* 暗色主题下的订阅到期时间样式 */

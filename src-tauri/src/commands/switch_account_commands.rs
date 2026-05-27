@@ -1765,6 +1765,8 @@ pub async fn check_auto_switch(
                                 Some(plan_status) => {
                                     let daily = plan_status.get("daily_quota_remaining").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
                                     let weekly = plan_status.get("weekly_quota_remaining").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+                                    // 额外使用余额 (微美元) - 即 Usage 页 "Extra usage balance available"
+                                    let overage_micros = plan_status.get("overage_balance_micros").and_then(|v| v.as_i64()).unwrap_or(0);
                                     let mut updated = (*acc).clone();
                                     updated.daily_quota_remaining = Some(daily);
                                     updated.weekly_quota_remaining = Some(weekly);
@@ -1774,10 +1776,11 @@ pub async fn check_auto_switch(
                                     if let Some(v) = plan_status.get("weekly_quota_reset").and_then(|v| v.as_i64()) {
                                         updated.weekly_quota_reset = Some(v);
                                     }
+                                    updated.overage_balance_micros = Some(overage_micros);
                                     updated.last_quota_update = Some(now);
                                     let _ = data_store.update_account(updated).await;
                                     refreshed_count += 1;
-                                    println!("[自动换号] 刷新账号 {}: 日{}%, 周{}%", acc.email, daily, weekly);
+                                    println!("[自动换号] 刷新账号 {}: 日{}%, 周{}%, 额外额度 ${:.2}", acc.email, daily, weekly, overage_micros as f64 / 1_000_000.0);
                                     (daily, weekly)
                                 }
                                 None => (acc.daily_quota_remaining.unwrap_or(0), acc.weekly_quota_remaining.unwrap_or(0)),
@@ -1863,10 +1866,11 @@ pub async fn check_auto_switch(
     
     let current_uuid = current_account.id;
     
-    // 先刷新当前账号的配额信息（日配额+周配额）
+    // 先刷新当前账号的配额信息（日配额+周配额+额外额度）
     let windsurf_service = crate::services::windsurf_service::WindsurfService::new();
     let mut current_daily_remaining = current_account.daily_quota_remaining.unwrap_or(100);
     let mut current_weekly_remaining = current_account.weekly_quota_remaining.unwrap_or(100);
+    let mut current_overage_micros = current_account.overage_balance_micros.unwrap_or(0);
     
     if let Some(ref token) = current_account.token {
         if let Ok(result) = windsurf_service.get_plan_status(token).await {
@@ -1877,6 +1881,12 @@ pub async fn check_auto_switch(
                 if let Some(v) = plan_status.get("weekly_quota_remaining").and_then(|v| v.as_i64()) {
                     current_weekly_remaining = v as i32;
                 }
+                // 额外使用余额 (微美元) - 即 Usage 页 "Extra usage balance available"
+                // 接口未返回视为 0，避免旧缓存值误导换号判断
+                current_overage_micros = plan_status
+                    .get("overage_balance_micros")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
                 // 更新数据库
                 let mut updated = current_account.clone();
                 updated.daily_quota_remaining = Some(current_daily_remaining);
@@ -1887,14 +1897,16 @@ pub async fn check_auto_switch(
                 if let Some(v) = plan_status.get("weekly_quota_reset").and_then(|v| v.as_i64()) {
                     updated.weekly_quota_reset = Some(v);
                 }
+                updated.overage_balance_micros = Some(current_overage_micros);
                 updated.last_quota_update = Some(chrono::Utc::now());
                 let _ = data_store.update_account(updated).await;
             }
         }
     }
     
-    println!("[自动换号] 当前账号: {}, 每日配额剩余: {}%, 每周配额剩余: {}%, 阈值: {}%", 
-        current_account.email, current_daily_remaining, current_weekly_remaining, threshold);
+    let current_overage_dollars = current_overage_micros as f64 / 1_000_000.0;
+    println!("[自动换号] 当前账号: {}, 每日配额剩余: {}%, 每周配额剩余: {}%, 额外额度: ${:.2}, 阈值: {}%",
+        current_account.email, current_daily_remaining, current_weekly_remaining, current_overage_dollars, threshold);
     
     // 检查是否需要切换（满足任一条件即触发）：
     // 1. 每日配额 <= 阈值
@@ -1917,7 +1929,21 @@ pub async fn check_auto_switch(
             "reason": format!("当前账号配额充足 (日{}% > {}%, 周{}%)", current_daily_remaining, threshold, current_weekly_remaining),
             "current_account": current_account.email,
             "daily_remaining": current_daily_remaining,
-            "weekly_remaining": current_weekly_remaining
+            "weekly_remaining": current_weekly_remaining,
+            "overage_balance_micros": current_overage_micros
+        }));
+    }
+
+    // 额外额度未消耗完时，即使配额已到阈值也暂不切号（Windsurf 仍可用 free models / overage 继续工作）
+    if current_overage_micros > 0 {
+        println!("[自动换号] {} 但当前账号仍有额外额度 ${:.2}，跳过切号", switch_reason, current_overage_dollars);
+        return Ok(json!({
+            "action": "skip",
+            "reason": format!("{}，但当前账号还有额外额度 ${:.2}，暂不切号", switch_reason, current_overage_dollars),
+            "current_account": current_account.email,
+            "daily_remaining": current_daily_remaining,
+            "weekly_remaining": current_weekly_remaining,
+            "overage_balance_micros": current_overage_micros
         }));
     }
     
@@ -2001,6 +2027,9 @@ pub async fn check_auto_switch(
                                 .and_then(|v| v.as_i64()).unwrap_or(0) as i32;
                             let weekly = plan_status.get("weekly_quota_remaining")
                                 .and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+                            // 额外使用余额 (微美元) - 即 Usage 页 "Extra usage balance available"
+                            let overage_micros = plan_status.get("overage_balance_micros")
+                                .and_then(|v| v.as_i64()).unwrap_or(0);
                             let mut updated = (*acc).clone();
                             updated.daily_quota_remaining = Some(daily);
                             updated.weekly_quota_remaining = Some(weekly);
@@ -2010,10 +2039,11 @@ pub async fn check_auto_switch(
                             if let Some(v) = plan_status.get("weekly_quota_reset").and_then(|v| v.as_i64()) {
                                 updated.weekly_quota_reset = Some(v);
                             }
+                            updated.overage_balance_micros = Some(overage_micros);
                             updated.last_quota_update = Some(now);
                             let _ = data_store.update_account(updated).await;
                             refreshed_count += 1;
-                            println!("[自动换号] 刷新账号 {}: 日{}%, 周{}%", acc.email, daily, weekly);
+                            println!("[自动换号] 刷新账号 {}: 日{}%, 周{}%, 额外额度 ${:.2}", acc.email, daily, weekly, overage_micros as f64 / 1_000_000.0);
                             (daily, weekly)
                         }
                         None => (acc.daily_quota_remaining.unwrap_or(0), acc.weekly_quota_remaining.unwrap_or(0)),

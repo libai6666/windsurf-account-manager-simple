@@ -40,6 +40,9 @@ pub struct Account {
     pub daily_quota_reset: Option<i64>,       // 每日配额重置时间 (Unix时间戳)
     #[serde(default)]
     pub weekly_quota_reset: Option<i64>,      // 每周配额重置时间 (Unix时间戳)
+    // 额外使用余额 (微美元，除以 1_000_000 得到美元；对应 Windsurf Usage 页 "Extra usage balance available")
+    #[serde(default)]
+    pub overage_balance_micros: Option<i64>,
     // 订阅到期时间
     pub subscription_expires_at: Option<DateTime<Utc>>,
     // 订阅是否激活 (从 GetCurrentUser API 的 subscription.subscription_active 获取)
@@ -91,6 +94,7 @@ impl Account {
             weekly_quota_remaining: None,
             daily_quota_reset: None,
             weekly_quota_reset: None,
+            overage_balance_micros: None,
             subscription_expires_at: None,
             subscription_active: None,
             windsurf_api_key: None,

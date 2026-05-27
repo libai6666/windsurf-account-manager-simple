@@ -1231,6 +1231,12 @@ impl ProtobufParser {
             result["weekly_quota_remaining"] = json!(
                 plan_status.get("int_15").and_then(|v| v.as_i64()).unwrap_or(0)
             );
+            // field 16: overage_balance_micros (额外使用余额，微美元单位，除以1_000_000得到美元)
+            // 即 Windsurf Usage 页面的 "Extra usage balance available"
+            // 例如 int_16 = 199_820_000 → $199.82
+            if let Some(v) = plan_status.get("int_16").and_then(|v| v.as_i64()) {
+                result["overage_balance_micros"] = json!(v);
+            }
             // field 17: daily_quota_reset (每日配额重置时间, Unix时间戳)
             if let Some(v) = plan_status.get("int_17").and_then(|v| v.as_i64()) {
                 result["daily_quota_reset"] = json!(v);
