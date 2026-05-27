@@ -884,7 +884,7 @@ async fn switch_profile_to_account(
     let already_authenticated = is_profile_authenticated(&profile.user_data_dir);
     let was_running = is_profile_running_from_cmds(profile, &list_windsurf_process_command_lines());
 
-    let used_file_based_login = if already_authenticated && was_running && !cfg!(target_os = "macos") && !cfg!(target_os = "windows") {
+    let used_file_based_login = if already_authenticated && was_running && !cfg!(target_os = "macos") {
         // 已认证且正在运行 → 走 callback URL，让正在跑的 Windsurf 实例直接接管，无需重启窗口
         if let Err(e) = trigger_windsurf_callback(app, &auth.callback_token, Some(&profile.user_data_dir)).await {
             error!("Profile callback failed: {}", e);

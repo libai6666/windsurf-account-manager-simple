@@ -512,6 +512,16 @@ fn is_file_patched(file_path: &Path) -> bool {
     }
 }
 
+/// 给定 Windsurf 安装根目录，检测无感补丁是否已生效。
+/// 返回 None 表示路径无效或 extension.js 不存在；Some(true/false) 为是否已打补丁。
+pub fn is_seamless_patch_active(windsurf_path: &str) -> Option<bool> {
+    let extension_file = PathBuf::from(windsurf_path).join(get_extension_js_relative_path());
+    if !extension_file.exists() {
+        return None;
+    }
+    Some(is_file_patched(&extension_file))
+}
+
 fn rfind_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.is_empty() || haystack.len() < needle.len() {
         return None;
