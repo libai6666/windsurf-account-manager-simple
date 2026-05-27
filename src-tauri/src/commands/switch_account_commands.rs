@@ -8,6 +8,8 @@ use std::sync::Arc;
 use tauri::State;
 use uuid::Uuid;
 use std::path::PathBuf;
+#[cfg(target_os = "windows")]
+use crate::models::main_user_data_dir;
 
 #[cfg(target_os = "windows")]
 use winreg::{RegKey, enums::{HKEY_LOCAL_MACHINE, KEY_ALL_ACCESS}};
@@ -1105,6 +1107,152 @@ if ($p -and $p.ExecutablePath) { $p.ExecutablePath }
     }
 }
 
+#[cfg(target_os = "windows")]
+fn main_windsurf_process_ids_windows() -> Vec<u32> {
+    use std::os::windows::process::CommandExt;
+
+    let script = r#"
+Get-CimInstance Win32_Process -Filter "Name='Windsurf.exe'" | ForEach-Object {
+    $cmd = if ($_.CommandLine) { $_.CommandLine.ToLowerInvariant() } else { "" }
+    if ($cmd -notlike "*--user-data-dir*" -and $cmd -notlike "*windsurfprofiles*") {
+        $_.ProcessId
+    }
+}
+"#;
+    let output = std::process::Command::new("powershell")
+        .arg("-NoProfile")
+        .arg("-ExecutionPolicy")
+        .arg("Bypass")
+        .arg("-Command")
+        .arg(script)
+        .creation_flags(0x08000000)
+        .output();
+
+    match output {
+        Ok(output) if output.status.success() => String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| line.trim().parse::<u32>().ok())
+            .collect(),
+        Ok(output) => {
+            warn!(
+                "Failed to list main Windsurf processes: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+            Vec::new()
+        }
+        Err(e) => {
+            warn!("Failed to run process list for main Windsurf: {}", e);
+            Vec::new()
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn stop_main_windsurf_processes_windows() -> Result<usize, String> {
+    use std::os::windows::process::CommandExt;
+
+    let pids = main_windsurf_process_ids_windows();
+    for pid in &pids {
+        let output = std::process::Command::new("taskkill")
+            .arg("/PID")
+            .arg(pid.to_string())
+            .arg("/T")
+            .arg("/F")
+            .creation_flags(0x08000000)
+            .output()
+            .map_err(|e| format!("关闭主实例失败: {}", e))?;
+        if !output.status.success() {
+            warn!(
+                "taskkill failed for main Windsurf PID {}: {}",
+                pid,
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+    }
+    Ok(pids.len())
+}
+
+#[cfg(target_os = "windows")]
+fn launch_main_windsurf_windows(exe_path: &str) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+
+    std::process::Command::new(exe_path)
+        .creation_flags(0x08000000)
+        .spawn()
+        .map(|child| {
+            info!("Main Windsurf spawn requested: pid={}", child.id());
+        })
+        .map_err(|e| format!("启动 Windsurf 失败: {}", e))
+}
+
+#[cfg(target_os = "windows")]
+async fn switch_main_account_direct_windows(
+    app: &tauri::AppHandle,
+    auth: &SwitchAuthResult,
+    account: &crate::models::Account,
+) -> Result<bool, String> {
+    let user_data_dir = main_user_data_dir()
+        .ok_or_else(|| "无法定位 Windsurf 主实例数据目录".to_string())?;
+    let was_running = !main_windsurf_process_ids_windows().is_empty();
+    let exe_path = find_windsurf_exe();
+
+    prepare_profile_local_state(&user_data_dir)
+        .map_err(|e| format!("初始化主实例 Local State 失败: {}", e))?;
+
+    let email = auth.email.as_deref().unwrap_or(&account.email);
+    let mut restarted = false;
+    let write_result = write_windsurf_auth_direct(
+        &auth.register_result.api_key,
+        &auth.register_result.name,
+        email,
+        account.plan_name.as_deref(),
+        auth.account_id.as_deref(),
+        auth.org_id.as_deref(),
+        &auth.register_result.api_server_url,
+        &user_data_dir,
+    );
+
+    if let Err(first_error) = write_result {
+        if !was_running {
+            return Err(format!("写入主实例认证失败: {}", first_error));
+        }
+        warn!("Direct-write main auth failed while Windsurf is running, restarting main instance before retry: {}", first_error);
+        stop_main_windsurf_processes_windows()?;
+        tokio::time::sleep(tokio::time::Duration::from_millis(900)).await;
+        write_windsurf_auth_direct(
+            &auth.register_result.api_key,
+            &auth.register_result.name,
+            email,
+            account.plan_name.as_deref(),
+            auth.account_id.as_deref(),
+            auth.org_id.as_deref(),
+            &auth.register_result.api_server_url,
+            &user_data_dir,
+        ).map_err(|e| format!("重启后写入主实例认证失败: {}", e))?;
+        restarted = true;
+    }
+
+    if restarted || !was_running {
+        if let Some(exe_path) = exe_path {
+            launch_main_windsurf_windows(&exe_path)?;
+        } else {
+            warn!("Windsurf.exe not found after direct-write main switch");
+        }
+    } else {
+        let refresh_url = "windsurf://codeium.windsurf/refresh-authentication-session";
+        if let Err(e) = trigger_windsurf_callback_url(
+            app,
+            refresh_url,
+            "refresh-authentication-session",
+            None,
+        ).await {
+            warn!("Failed to dispatch main auth refresh URI after direct-write: {}", e);
+        }
+    }
+
+    Ok(restarted)
+}
+
 #[cfg(target_os = "macos")]
 pub(crate) fn find_windsurf_exe() -> Option<String> {
     let mut candidates: Vec<std::path::PathBuf> = vec![
@@ -1187,7 +1335,7 @@ pub async fn switch_account(
         }));
     }
 
-    let refresh_token = account.refresh_token.unwrap();
+    let refresh_token = account.refresh_token.clone().unwrap();
 
     // Step 1: 刷新Firebase token + 调用RegisterUser获取apiKey
     info!("Getting auth token via Firebase refresh...");
@@ -1232,15 +1380,35 @@ pub async fn switch_account(
         false
     };
 
-    // Step 3: 通过回调URL触发无感切号（extension.js 补丁中的 handleAuthToken 会处理全部流程）
-    info!("Triggering seamless account switch via callback URL...");
-    if let Err(e) = trigger_windsurf_callback(&app, &auth.callback_token, None).await {
-        error!("Callback failed: {}", e);
-        return Ok(json!({
-            "success": false,
-            "error": format!("触发回调URL失败: {}", e)
-        }));
-    }
+    // Step 3: 执行主实例无感切号
+    let restarted_editor = {
+        #[cfg(target_os = "windows")]
+        {
+            info!("Switching main Windsurf account via direct state write...");
+            match switch_main_account_direct_windows(&app, &auth, &account).await {
+                Ok(restarted) => restarted,
+                Err(e) => {
+                    error!("Direct main account switch failed: {}", e);
+                    return Ok(json!({
+                        "success": false,
+                        "error": e
+                    }));
+                }
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            info!("Triggering seamless account switch via callback URL...");
+            if let Err(e) = trigger_windsurf_callback(&app, &auth.callback_token, None).await {
+                error!("Callback failed: {}", e);
+                return Ok(json!({
+                    "success": false,
+                    "error": format!("触发回调URL失败: {}", e)
+                }));
+            }
+            false
+        }
+    };
 
     // 更新账号的token信息
     let expires_at = Utc::now() + chrono::Duration::seconds(auth.expires_in.parse::<i64>().unwrap_or(3600));
@@ -1269,6 +1437,7 @@ pub async fn switch_account(
             "已成功无感切换账号"
         },
         "api_key": auth.register_result.api_key,
+        "editor_restarted": restarted_editor,
         "machine_id_reset": machine_id_reset
     }))
 }
