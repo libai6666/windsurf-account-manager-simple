@@ -12,53 +12,6 @@ use std::path::PathBuf;
 #[cfg(target_os = "windows")]
 use winreg::{RegKey, enums::{HKEY_LOCAL_MACHINE, KEY_ALL_ACCESS}};
 
-
-#[derive(Debug, Serialize, Deserialize)]
-struct GoogleTokenResponse {
-    access_token: String,
-    expires_in: String,
-    token_type: String,
-    refresh_token: String,
-    id_token: String,
-    user_id: String,
-    project_id: String,
-}
-
-/// 使用refresh_token获取新的access_token
-async fn refresh_access_token(refresh_token: &str) -> AppResult<GoogleTokenResponse> {
-    // 使用专门用于 googleapis 的 HTTP 客户端（支持代理）
-    let client = crate::services::get_google_api_client();
-    
-    // Google Token API
-    let url = "https://securetoken.googleapis.com/v1/token";
-    let api_key = "AIzaSyDsOl-1XpT5err0Tcnx8FFod1H8gVGIycY"; // Firebase API Key (与auth_service保持一致)
-    
-    let params = [
-        ("grant_type", "refresh_token"),
-        ("refresh_token", refresh_token),
-    ];
-    
-    let response = client
-        .post(&format!("{}?key={}", url, api_key))
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .header("Referer", "https://windsurf.com/")
-        .form(&params)
-        .send()
-        .await
-        .map_err(|e| AppError::Network(e.to_string()))?;
-    
-    if !response.status().is_success() {
-        let error_text = response.text().await.unwrap_or_default();
-        error!("Failed to refresh token: {}", error_text);
-        return Err(AppError::ApiRequest(format!("Failed to refresh token: {}", error_text)));
-    }
-    
-    let token_response = response.json::<GoogleTokenResponse>().await
-        .map_err(|e| AppError::Network(e.to_string()))?;
-    
-    Ok(token_response)
-}
-
 /// 序列化Protobuf字符串（field 1, wire type 2）
 fn serialize_protobuf_string(value: &str) -> Vec<u8> {
     if value.is_empty() {
@@ -260,7 +213,7 @@ async fn get_auth_token_from_auth_result(
 /// 获取 auth token 并调用 RegisterUser
 /// 支持两种 refresh_token 类型：
 /// - auth1_... : Windsurf 2.0 devin-auth token → WindsurfPostAuth → GetOneTimeAuthToken → RegisterUser
-/// - 其他 : Firebase refresh token → securetoken refresh → RegisterUser
+/// - 其他 : 旧版 Firebase refresh token 不再支持
 async fn get_auth_token(refresh_token: &str) -> AppResult<SwitchAuthResult> {
     if refresh_token.starts_with("auth1_") {
         // Windsurf 2.0 devin-auth 流程
@@ -269,26 +222,9 @@ async fn get_auth_token(refresh_token: &str) -> AppResult<SwitchAuthResult> {
         let auth_result = auth_service.refresh_ott(refresh_token).await?;
         get_auth_token_from_auth_result(&auth_service, auth_result).await
     } else {
-        // 传统 Firebase refresh token 流程
-        let token_response = refresh_access_token(refresh_token).await?;
-        info!("Successfully obtained Firebase ID token, calling RegisterUser...");
-        
-        let register_result = call_register_user(&token_response.id_token).await?;
-        info!("RegisterUser SUCCESS: apiKey={}..., name={}, server={}", 
-            &register_result.api_key[..std::cmp::min(register_result.api_key.len(), 20)],
-            register_result.name,
-            register_result.api_server_url);
-        
-        Ok(SwitchAuthResult {
-            register_result,
-            callback_token: token_response.id_token,
-            access_token: token_response.access_token,
-            refresh_token: Some(token_response.refresh_token),
-            expires_in: token_response.expires_in,
-            account_id: None,
-            org_id: None,
-            email: None,
-        })
+        Err(AppError::AuthFailed(
+            "旧版 Firebase refresh_token 已不再支持，请重新登录账号以保存 auth1_token".to_string(),
+        ))
     }
 }
 
@@ -1246,8 +1182,8 @@ pub async fn switch_account(
     
     let refresh_token = account.refresh_token.unwrap();
     
-    // Step 1: 刷新Firebase token + 调用RegisterUser获取apiKey
-    info!("Getting auth token via Firebase refresh...");
+    // Step 1: 刷新 auth token + 调用RegisterUser获取apiKey
+    info!("Getting auth token via Windsurf auth...");
     let auth = match get_auth_token_for_account(&data_store, account_id, &account.email, &refresh_token).await {
         Ok(result) => result,
         Err(e) => {

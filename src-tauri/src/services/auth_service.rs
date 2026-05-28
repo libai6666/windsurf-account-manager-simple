@@ -463,19 +463,12 @@ impl AuthService {
         Utc::now() + buffer >= *expires_at
     }
 
-    /// 兼容登录：先尝试 Windsurf 2.0 (devin-auth)，失败则回退到 Firebase
+    /// 兼容登录：使用 Windsurf 2.0 (devin-auth)
     /// 返回与旧 sign_in 相同的 (token, refresh_token, expires_at) 格式
     pub async fn sign_in_compat(&self, email: &str, password: &str) -> AppResult<(String, String, DateTime<Utc>)> {
-        match self.sign_in_v2_session(email, password).await {
-            Ok(result) => {
-                let expires_at = Utc::now() + Duration::hours(1);
-                Ok((result.session_token, result.auth1_token, expires_at))
-            }
-            Err(e) => {
-                info!("[sign_in_compat] sign_in_v2_session 失败({}), 回退到 Firebase: {}", e, email);
-                self.sign_in(email, password).await
-            }
-        }
+        let result = self.sign_in_v2_session(email, password).await?;
+        let expires_at = Utc::now() + Duration::hours(1);
+        Ok((result.session_token, result.auth1_token, expires_at))
     }
 
     // ============= Windsurf 2.0 新认证方法 =============
@@ -521,11 +514,15 @@ impl AuthService {
         info!("[sign_in_v2_session] Step 2: Calling WindsurfPostAuth...");
         let post_auth_body = encode_protobuf_string(1, &login_data.token);
         let post_auth_resp = match self.client
-            .post("https://windsurf.com/_backend/exa.seat_management_pb.SeatManagementService/WindsurfPostAuth")
-            .header("Content-Type", "application/proto")
-            .header("Accept", "application/proto")
-            .header("Connect-Protocol-Version", "1")
-            .header("User-Agent", "connect-es/1.6.1")
+            .post("https://web-backend.windsurf.com/exa.seat_management_pb.SeatManagementService/WindsurfPostAuth")
+            .header("accept", "*/*")
+            .header("accept-language", "zh-CN,zh;q=0.9")
+            .header("content-type", "application/proto")
+            .header("origin", "https://windsurf.com")
+            .header("referer", "https://windsurf.com/account/login")
+            .header("sec-fetch-dest", "empty")
+            .header("sec-fetch-mode", "cors")
+            .header("sec-fetch-site", "same-site")
             .header("X-Devin-Auth1-Token", &login_data.token)
             .body(post_auth_body)
             .send()
@@ -587,11 +584,15 @@ impl AuthService {
 
         let post_auth_body = encode_protobuf_string(1, auth1_token);
         let post_auth_resp = match self.client
-            .post("https://windsurf.com/_backend/exa.seat_management_pb.SeatManagementService/WindsurfPostAuth")
-            .header("Content-Type", "application/proto")
-            .header("Accept", "application/proto")
-            .header("Connect-Protocol-Version", "1")
-            .header("User-Agent", "connect-es/1.6.1")
+            .post("https://web-backend.windsurf.com/exa.seat_management_pb.SeatManagementService/WindsurfPostAuth")
+            .header("accept", "*/*")
+            .header("accept-language", "zh-CN,zh;q=0.9")
+            .header("content-type", "application/proto")
+            .header("origin", "https://windsurf.com")
+            .header("referer", "https://windsurf.com/account/login")
+            .header("sec-fetch-dest", "empty")
+            .header("sec-fetch-mode", "cors")
+            .header("sec-fetch-site", "same-site")
             .header("X-Devin-Auth1-Token", auth1_token)
             .body(post_auth_body)
             .send()
@@ -655,11 +656,15 @@ impl AuthService {
         // WindsurfPostAuth
         let post_auth_body = encode_protobuf_string(1, auth1_token);
         let post_auth_resp = self.client
-            .post("https://windsurf.com/_backend/exa.seat_management_pb.SeatManagementService/WindsurfPostAuth")
-            .header("Content-Type", "application/proto")
-            .header("Accept", "application/proto")
-            .header("Connect-Protocol-Version", "1")
-            .header("User-Agent", "connect-es/1.6.1")
+            .post("https://web-backend.windsurf.com/exa.seat_management_pb.SeatManagementService/WindsurfPostAuth")
+            .header("accept", "*/*")
+            .header("accept-language", "zh-CN,zh;q=0.9")
+            .header("content-type", "application/proto")
+            .header("origin", "https://windsurf.com")
+            .header("referer", "https://windsurf.com/account/login")
+            .header("sec-fetch-dest", "empty")
+            .header("sec-fetch-mode", "cors")
+            .header("sec-fetch-site", "same-site")
             .header("X-Devin-Auth1-Token", auth1_token)
             .body(post_auth_body)
             .send()
@@ -750,10 +755,23 @@ fn parse_protobuf_fields(data: &[u8]) -> std::collections::HashMap<u32, String> 
     let mut fields = std::collections::HashMap::new();
     let mut i = 0;
     while i < data.len() {
-        let tag = data[i];
+        let mut tag: u64 = 0;
+        let mut tag_shift = 0;
+        loop {
+            if i >= data.len() || tag_shift >= 64 {
+                return fields;
+            }
+            let b = data[i];
+            i += 1;
+            tag |= ((b & 0x7F) as u64) << tag_shift;
+            if b & 0x80 == 0 {
+                break;
+            }
+            tag_shift += 7;
+        }
+
         let field_num = (tag >> 3) as u32;
-        let wire_type = tag & 0x07;
-        i += 1;
+        let wire_type = (tag & 0x07) as u8;
 
         match wire_type {
             2 => { // length-delimited (string)
@@ -780,6 +798,20 @@ fn parse_protobuf_fields(data: &[u8]) -> std::collections::HashMap<u32, String> 
                     let b = data[i];
                     i += 1;
                     if b & 0x80 == 0 { break; }
+                }
+            }
+            1 => {
+                if i + 8 <= data.len() {
+                    i += 8;
+                } else {
+                    break;
+                }
+            }
+            5 => {
+                if i + 4 <= data.len() {
+                    i += 4;
+                } else {
+                    break;
                 }
             }
             _ => break, // 不支持的 wire type

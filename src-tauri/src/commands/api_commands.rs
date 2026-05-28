@@ -40,12 +40,11 @@ pub fn is_401_error(result: &serde_json::Value) -> bool {
         .unwrap_or(false)
 }
 
-/// 按 refresh_token 类型选择刷新方式，失败时才回退到密码登录。
+/// 按 refresh_token 类型选择刷新方式，失败时才改用密码登录。
 /// - `auth1_` 开头: 调 `WindsurfPostAuth`（新版 Windsurf 2.0 账号，无需密码）
-/// - 其他: 调 Firebase `securetoken` 端点（老版 Firebase 账号）
-/// - 两者都失败或没有 refresh_token 时，才调 `sign_in_compat` 走密码登录
+/// - 其他: 跳过旧版 Firebase refresh_token，直接调 `sign_in_compat` 走密码登录
 ///
-/// 这样可以避免批量刷新时，因为 Firebase 端点对 auth1 token 的必然失败，
+/// 这样可以避免批量刷新时，因为旧 Firebase 端点对 auth1 token 的必然失败，
 /// 导致 20+ 并发同时打 `_devin-auth/password/login` 触发 429 Rate Limit。
 async fn refresh_token_or_relogin(
     auth_service: &AuthService,
@@ -55,24 +54,25 @@ async fn refresh_token_or_relogin(
     refresh_token: Option<&str>,
 ) -> Result<(String, String, chrono::DateTime<chrono::Utc>), String> {
     if let Some(rt) = refresh_token {
-        let refresh_result = if rt.starts_with("auth1_") {
-            auth_service.refresh_session_with_auth1(rt).await
-        } else {
-            auth_service.refresh_token(rt).await
-        };
-
-        match refresh_result {
-            Ok(result) => return Ok(result),
-            Err(e) => {
-                log::warn!(
-                    "[refresh_token_or_relogin] {} refresh 失败 ({})，回退到密码登录",
-                    email, e
-                );
+        if rt.starts_with("auth1_") {
+            match auth_service.refresh_session_with_auth1(rt).await {
+                Ok(result) => return Ok(result),
+                Err(e) => {
+                    log::warn!(
+                        "[refresh_token_or_relogin] {} auth1 refresh 失败 ({})，改用密码登录",
+                        email, e
+                    );
+                }
             }
+        } else {
+            log::warn!(
+                "[refresh_token_or_relogin] {} 使用旧版 Firebase refresh_token，已跳过并改用密码登录",
+                email
+            );
         }
     }
 
-    // 回退：调 _devin-auth/password/login 重新登录
+    // 调 _devin-auth/password/login 重新登录
     let password = store
         .get_decrypted_password(uuid)
         .await
@@ -144,20 +144,17 @@ pub async fn login_account(
         .await
         .map_err(|e| e.to_string())?;
     
-    // 登录获取Token：先尝试 Windsurf 2.0 (devin-auth)，失败则回退到 Firebase
     let auth_service = AuthService::new();
-    let (token, refresh_token, expires_at) = match auth_service.sign_in_v2_session(&account.email, &password).await {
-        Ok(auth_result) => {
-            info!("[login_account] sign_in_v2_session 成功: {}", account.email);
-            (auth_result.session_token, auth_result.auth1_token, chrono::Utc::now() + chrono::Duration::hours(1))
-        }
-        Err(e) => {
-            info!("[login_account] sign_in_v2_session 失败({}), 回退到 Firebase: {}", e, account.email);
-            auth_service.sign_in(&account.email, &password)
-                .await
-                .map_err(|e| e.to_string())?
-        }
-    };
+    let auth_result = auth_service
+        .sign_in_v2_session(&account.email, &password)
+        .await
+        .map_err(|e| format!("新版认证登录失败: {}", e))?;
+    info!("[login_account] sign_in_v2_session 成功: {}", account.email);
+    let (token, refresh_token, expires_at) = (
+        auth_result.session_token,
+        auth_result.auth1_token,
+        chrono::Utc::now() + chrono::Duration::hours(1),
+    );
     
     // 更新Token和Refresh Token
     store.update_account_tokens(uuid, token.clone(), refresh_token, expires_at)
@@ -1348,9 +1345,9 @@ pub async fn get_account_info(
     // 使用缓存的或新刷新的Token
     let token = account.token.ok_or("No token available")?;
     
-    // 使用AuthService获取Firebase账户信息
-    let auth_service = AuthService::new();
-    let account_info = auth_service.get_account_info(&token)
+    // 使用 Windsurf 当前用户接口获取账户信息，避免旧 Firebase App Check 拦截
+    let windsurf_service = WindsurfService::new();
+    let user_info_result = windsurf_service.get_current_user(&token)
         .await
         .map_err(|e| e.to_string())?;
     
@@ -1368,20 +1365,7 @@ pub async fn get_account_info(
             "token_expires_at": account.token_expires_at,
             "status": account.status
         },
-        "firebase_info": {
-            "localId": account_info.local_id,
-            "email": account_info.email,
-            "displayName": account_info.display_name,
-            "emailVerified": account_info.email_verified,
-            "passwordHash": account_info.password_hash,
-            "passwordUpdatedAt": account_info.password_updated_at,
-            "validSince": account_info.valid_since,
-            "disabled": account_info.disabled,
-            "createdAt": account_info.created_at,
-            "lastLoginAt": account_info.last_login_at,
-            "lastRefreshAt": account_info.last_refresh_at,
-            "providerUserInfo": account_info.provider_user_info
-        }
+        "windsurf_info": user_info_result.get("user_info").cloned().unwrap_or(user_info_result)
     }))
 }
 

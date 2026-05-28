@@ -1495,34 +1495,39 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
         selection.addRange(range);
         document.execCommand?.("delete", false);
       }} catch {{}}
-      if (readEditorText(editor).trim()) {{
-        editor.textContent = "";
-      }}
       editor.dispatchEvent(new InputEvent("input", {{ bubbles: true, inputType: "deleteContentBackward", data: null }}));
     }};
-    const fillEditor = (editor, text) => {{
+    const fillEditor = async (editor, text) => {{
       editor.scrollIntoView?.({{ block: "center", inline: "nearest" }});
       editor.focus?.();
-      clearEditor(editor);
       if (editor.matches?.("textarea,input")) {{
+        clearEditor(editor);
         setNativeValue(editor, text);
         editor.dispatchEvent(new InputEvent("input", {{ bubbles: true, inputType: "insertText", data: text }}));
         editor.dispatchEvent(new Event("change", {{ bubbles: true }}));
+        if (!readEditorText(editor).includes(text)) {{
+          throw new Error("无法通过受控事件填入文本，已放弃避免覆盖目标内容");
+        }}
         return;
       }}
-      const selection = getSelection();
-      const range = document.createRange();
-      range.selectNodeContents(editor);
-      selection.removeAllRanges();
-      selection.addRange(range);
-      const inserted = document.execCommand?.("insertText", false, text);
-      if (!inserted || !visibleText(editor).includes(text)) {{
-        editor.textContent = text;
-      }}
-      if (readEditorText(editor).trim() !== text) {{
-        editor.textContent = text;
-      }}
-      editor.dispatchEvent(new InputEvent("input", {{ bubbles: true, inputType: "insertText", data: text }}));
+      const attemptInsert = () => {{
+        try {{
+          editor.focus?.();
+          clearEditor(editor);
+          const selection = getSelection();
+          const range = document.createRange();
+          range.selectNodeContents(editor);
+          selection.removeAllRanges();
+          selection.addRange(range);
+          document.execCommand?.("insertText", false, text);
+          editor.dispatchEvent(new InputEvent("input", {{ bubbles: true, inputType: "insertText", data: text }}));
+        }} catch {{}}
+        return readEditorText(editor).includes(text);
+      }};
+      if (attemptInsert()) return;
+      await sleep(200);
+      if (attemptInsert()) return;
+      throw new Error("无法通过受控事件填入文本，已放弃避免覆盖目标内容");
     }};
     const buttonLabel = (button) => String([
       button.getAttribute?.("aria-label"),
@@ -1533,6 +1538,15 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
       button.querySelector?.("[class*='codicon']")?.getAttribute("class"),
       button.textContent
     ].filter(Boolean).join(" ")).toLowerCase();
+    const dangerousActionPattern = /(^|[^a-z])(reject|discard|revert|undo|accept|approve|deny)([^a-z]|$)|apply\s*(all|changes|edit|edits|patch)|reject\s*(all|changes|edit|edits)|accept\s*(all|changes|edit|edits)|revert\s*(all|changes|edit|edits)|拒绝|撤销|还原|回退|放弃|接受|应用|批准|采纳/i;
+    const isDangerousActionButton = (target) => {{
+      try {{
+        if (!target) return false;
+        return dangerousActionPattern.test(buttonLabel(target));
+      }} catch {{
+        return false;
+      }}
+    }};
     const stopControlScopes = () => {{
       try {{
         const scopes = new Set();
@@ -1591,7 +1605,6 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
       for (const container of containers) {{
         buttons.push(...Array.from(container.querySelectorAll?.("button,[role='button'],a,[tabindex],[class*='send'],[class*='arrow-up'],[class*='codicon-send'],[class*='codicon-arrow']") || []));
       }}
-      buttons.push(...Array.from(document.querySelectorAll("button,[role='button'],a,[tabindex],[class*='send'],[class*='arrow-up'],[class*='codicon-send'],[class*='codicon-arrow']")));
       const editorRect = editor.getBoundingClientRect();
       const container = containers.find(item => {{
         const rect = item.getBoundingClientRect?.();
@@ -1615,6 +1628,7 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
         !editor.contains(button) &&
         !button.contains?.(editor) &&
         !isManualStopControl(button) &&
+        !isDangerousActionButton(button) &&
         !button.matches?.("textarea,input,[contenteditable='true'],[role='textbox']") &&
         isVisible(button) &&
         !button.disabled &&
@@ -1707,16 +1721,20 @@ fn build_auto_continue_workbench_script() -> Vec<u8> {
       const editors = candidateEditors();
       if (!editors.length) throw new Error("未找到可见的 Cascade 输入框");
       const errors = [];
-      for (const editor of editors.slice(0, 4)) {{
+      for (const editor of editors.slice(0, 1)) {{
         let touchedEditor = false;
         try {{
           if (hasQueuedMessages()) return "queued_existing";
-          fillEditor(editor, text);
+          await fillEditor(editor, text);
           touchedEditor = true;
           await sleep(350);
           const buttons = findSubmitCandidates(editor);
           const button = buttons[0];
           if (button) {{
+            if (isDangerousActionButton(button)) {{
+              cleanupResidualText(editor, text);
+              throw new Error("候选发送按钮为危险操作（reject/accept/discard/revert/undo/apply），已放弃避免改动 AI 代码");
+            }}
             clickControl(button);
             const buttonSubmission = await waitForSubmission(editor, text);
             if (buttonSubmission === "queued") {{

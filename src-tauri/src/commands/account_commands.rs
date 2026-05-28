@@ -75,16 +75,7 @@ pub async fn add_account_by_refresh_token(
 
         (token, new_refresh_token, expires_at, email)
     } else {
-        let (token, new_refresh_token, expires_at) = auth_service.refresh_token(&refresh_token)
-            .await
-            .map_err(|e| format!("刷新Token失败: {}", e))?;
-        
-        // Step 2: 使用 token 获取用户信息
-        let account_info = auth_service.get_account_info(&token)
-            .await
-            .map_err(|e| format!("获取用户信息失败: {}", e))?;
-        
-        (token, new_refresh_token, expires_at, account_info.email.clone())
+        return Err("旧版 Firebase refresh_token 已不再支持，请使用 auth1_ token 或邮箱密码添加账号".to_string());
     };
     
     // 检查账号是否已存在
