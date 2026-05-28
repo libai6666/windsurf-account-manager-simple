@@ -79,6 +79,180 @@ fn get_product_json_relative_path() -> PathBuf {
     }
 }
 
+fn is_permission_error(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::PermissionDenied
+        || error.raw_os_error() == Some(1)
+        || error.raw_os_error() == Some(13)
+}
+
+#[cfg(target_os = "macos")]
+fn shell_quote_path(path: &Path) -> String {
+    let escaped = path.to_string_lossy().replace('\'', "'\"'\"'");
+    format!("'{}'", escaped)
+}
+
+#[cfg(target_os = "macos")]
+fn escape_applescript_string(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+#[cfg(target_os = "macos")]
+fn temp_patch_file_path() -> PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    std::env::temp_dir().join(format!(
+        "windsurf-account-manager-patch-{}-{}.tmp",
+        std::process::id(),
+        nanos
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn run_macos_admin_shell(shell_script: &str, original_error: String) -> Result<(), String> {
+    let apple_script = format!(
+        "do shell script \"{}\" with administrator privileges",
+        escape_applescript_string(shell_script)
+    );
+    let output = Command::new("osascript")
+        .arg("-e")
+        .arg(apple_script)
+        .output()
+        .map_err(|e| format!("{}；无法请求 macOS 管理员授权: {}", original_error, e))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let detail = if stderr.is_empty() { stdout } else { stderr };
+    Err(format!(
+        "{}；macOS 管理员授权写入失败: {}",
+        original_error,
+        if detail.is_empty() { "未知错误".to_string() } else { detail }
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn write_existing_file_macos_admin(target_file: &Path, content: &[u8], original_error: String) -> Result<(), String> {
+    let temp_file = temp_patch_file_path();
+    fs::write(&temp_file, content)
+        .map_err(|e| format!("{}；无法创建临时补丁文件: {}", original_error, e))?;
+    let shell_script = format!(
+        "set -e; /bin/cat {} > {}; /bin/rm -f {}",
+        shell_quote_path(&temp_file),
+        shell_quote_path(target_file),
+        shell_quote_path(&temp_file)
+    );
+    let result = run_macos_admin_shell(&shell_script, original_error);
+    let _ = fs::remove_file(&temp_file);
+    result
+}
+
+fn write_existing_file(target_file: &Path, content: &[u8], error_prefix: &str) -> Result<(), String> {
+    match fs::write(target_file, content) {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            let message = format!("{}: {}", error_prefix, e);
+            #[cfg(target_os = "macos")]
+            {
+                if is_permission_error(&e) {
+                    return write_existing_file_macos_admin(target_file, content, message);
+                }
+            }
+            Err(message)
+        }
+    }
+}
+
+fn copy_file_to_existing(source_file: &Path, target_file: &Path, error_prefix: &str) -> Result<(), String> {
+    match fs::copy(source_file, target_file) {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            let message = format!("{}: {} (备份文件: {:?})", error_prefix, e, source_file);
+            #[cfg(target_os = "macos")]
+            {
+                if is_permission_error(&e) {
+                    let content = fs::read(source_file)
+                        .map_err(|read_error| format!("{}；读取源文件失败: {}", message, read_error))?;
+                    return write_existing_file_macos_admin(target_file, &content, message);
+                }
+            }
+            Err(message)
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn remove_file_macos_admin(target_file: &Path, original_error: String) -> Result<(), String> {
+    let shell_script = format!(
+        "set -e; /bin/rm -f {}",
+        shell_quote_path(target_file)
+    );
+    run_macos_admin_shell(&shell_script, original_error)
+}
+
+fn remove_file_with_permission_fallback(target_file: &Path, error_prefix: &str) -> Result<(), String> {
+    match fs::remove_file(target_file) {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            let message = format!("{}: {}", error_prefix, e);
+            #[cfg(target_os = "macos")]
+            {
+                if is_permission_error(&e) {
+                    return remove_file_macos_admin(target_file, message);
+                }
+            }
+            Err(message)
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn write_file_with_backup_macos_admin(
+    target_file: &Path,
+    backup_file: &Path,
+    content: &[u8],
+    original_error: String,
+) -> Result<(), String> {
+    let temp_file = temp_patch_file_path();
+    fs::write(&temp_file, content)
+        .map_err(|e| format!("{}；无法创建临时补丁文件: {}", original_error, e))?;
+    let shell_script = format!(
+        "set -e; /bin/cp -p {} {}; /bin/cat {} > {}; /bin/rm -f {}",
+        shell_quote_path(target_file),
+        shell_quote_path(backup_file),
+        shell_quote_path(&temp_file),
+        shell_quote_path(target_file),
+        shell_quote_path(&temp_file)
+    );
+    let result = run_macos_admin_shell(&shell_script, original_error);
+    let _ = fs::remove_file(&temp_file);
+    result
+}
+
+fn write_file_with_backup(
+    target_file: &Path,
+    backup_file: &Path,
+    content: &[u8],
+    backup_error_prefix: &str,
+    write_error_prefix: &str,
+) -> Result<(), String> {
+    match fs::copy(target_file, backup_file) {
+        Ok(_) => write_existing_file(target_file, content, write_error_prefix),
+        Err(e) => {
+            let message = format!("{}: {}", backup_error_prefix, e);
+            #[cfg(target_os = "macos")]
+            {
+                if is_permission_error(&e) {
+                    return write_file_with_backup_macos_admin(target_file, backup_file, content, message);
+                }
+            }
+            Err(message)
+        }
+    }
+}
+
 /// 获取Windsurf的安装路径
 #[command]
 pub async fn get_windsurf_path() -> Result<String, String> {
@@ -233,8 +407,7 @@ pub async fn apply_seamless_patch(
             .patch_backup_path
             .clone();
         let backup_path = find_latest_backup(&extension_dir, &saved_backup)?;
-        fs::copy(&backup_path, &extension_file)
-            .map_err(|e| format!("还原备份失败: {} (备份文件: {:?})", e, backup_path))?;
+        copy_file_to_existing(&backup_path, &extension_file, "还原备份失败")?;
         restored_from_backup = Some(backup_path.to_string_lossy().to_string());
     }
     
@@ -376,8 +549,7 @@ pub async fn apply_seamless_patch(
     // 如果备份文件数量达到3个或更多，删除最早的备份
     while backup_files.len() >= 3 {
         if let Some(oldest) = backup_files.first() {
-            fs::remove_file(oldest)
-                .map_err(|e| format!("删除旧备份失败: {}", e))?;
+            remove_file_with_permission_fallback(oldest, "删除旧备份失败")?;
             println!("删除旧备份文件: {:?}", oldest);
             backup_files.remove(0);
         } else {
@@ -391,12 +563,13 @@ pub async fn apply_seamless_patch(
         Local::now().format("%Y%m%d_%H%M%S")
     ));
     
-    fs::copy(&extension_file, &backup_file)
-        .map_err(|e| format!("备份失败: {}", e))?;
-    
-    // 6. 写入修改后的文件
-    fs::write(&extension_file, &modified_content)
-        .map_err(|e| format!("写入文件失败: {}", e))?;
+    write_file_with_backup(
+        &extension_file,
+        &backup_file,
+        &modified_content,
+        "备份失败",
+        "写入文件失败",
+    )?;
     
     // 7. 保存补丁状态到设置
     let mut settings = data_store.get_settings().await.map_err(|e| e.to_string())?;
@@ -443,8 +616,7 @@ pub async fn restore_seamless_patch(
     println!("使用备份文件还原: {:?}", backup_path);
     
     // 还原备份文件
-    fs::copy(&backup_path, &extension_file)
-        .map_err(|e| format!("还原失败: {} (备份文件: {:?})", e, backup_path))?;
+    copy_file_to_existing(&backup_path, &extension_file, "还原失败")?;
     
     // 更新设置
     let mut settings = data_store.get_settings().await.map_err(|e| e.to_string())?;
@@ -1130,14 +1302,17 @@ fn sync_workbench_product_checksum(windsurf_path: &str, workbench_content: &[u8]
         "json.backup.auto_continue_checksum.{}",
         Local::now().format("%Y%m%d_%H%M%S")
     ));
-    fs::copy(&product_file, &backup_file)
-        .map_err(|e| format!("备份 product.json 失败: {}", e))?;
     checksums.insert(key.to_string(), serde_json::Value::String(new_checksum.clone()));
     let mut serialized = serde_json::to_vec_pretty(&product_json)
         .map_err(|e| format!("序列化 product.json 失败: {}", e))?;
     serialized.push(b'\n');
-    fs::write(&product_file, serialized)
-        .map_err(|e| format!("写入 product.json 失败: {}", e))?;
+    write_file_with_backup(
+        &product_file,
+        &backup_file,
+        &serialized,
+        "备份 product.json 失败",
+        "写入 product.json 失败",
+    )?;
     Ok(Some(format!(
         "{} -> {}",
         old_checksum.unwrap_or_else(|| "<missing>".to_string()),
@@ -1181,10 +1356,13 @@ fn apply_auto_continue_bridge_to_workbench(windsurf_path: &str) -> Result<Option
         "js.backup.auto_continue.{}",
         Local::now().format("%Y%m%d_%H%M%S")
     ));
-    fs::copy(&workbench_file, &backup_file)
-        .map_err(|e| format!("备份 workbench 文件失败: {}", e))?;
-    fs::write(&workbench_file, &modified_content)
-        .map_err(|e| format!("写入 workbench 文件失败: {}", e))?;
+    write_file_with_backup(
+        &workbench_file,
+        &backup_file,
+        &modified_content,
+        "备份 workbench 文件失败",
+        "写入 workbench 文件失败",
+    )?;
     sync_workbench_product_checksum(windsurf_path, &modified_content)?;
     Ok(Some(backup_file.to_string_lossy().to_string()))
 }
@@ -1204,14 +1382,17 @@ fn apply_auto_continue_sender_to_extension(windsurf_path: &str) -> Result<Option
         "js.backup.auto_continue_extension.{}",
         Local::now().format("%Y%m%d_%H%M%S")
     ));
-    fs::copy(&extension_file, &backup_file)
-        .map_err(|e| format!("备份 extension.js 文件失败: {}", e))?;
     let mut modified_content = cleaned_content;
     modified_content.extend_from_slice(b"\n");
     modified_content.extend_from_slice(&build_auto_continue_extension_script());
     modified_content.extend_from_slice(b"\n");
-    fs::write(&extension_file, &modified_content)
-        .map_err(|e| format!("写入 extension.js 文件失败: {}", e))?;
+    write_file_with_backup(
+        &extension_file,
+        &backup_file,
+        &modified_content,
+        "备份 extension.js 文件失败",
+        "写入 extension.js 文件失败",
+    )?;
     Ok(Some(backup_file.to_string_lossy().to_string()))
 }
 
